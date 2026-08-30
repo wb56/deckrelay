@@ -1,5 +1,11 @@
 # BPM- und Energieanalyse-Prototyp
 
+> **Historisches Dokument:** Dieses Papier beschreibt die ursprüngliche
+> v0.1-Prototypentscheidung und deren damalige offene Punkte. Die produktive reale
+> Abnahme wurde mit `ffmpeg-onset-acf-v0.5` und `tempo-profile-v3` abgeschlossen.
+> Maßgeblicher Nachweis ist
+> [Tempo analysis, planning and diagnostics](tempo-analysis-diagnostics.md).
+
 Stand: 2026-08-22. Dieser Prototyp ist nicht mit GUI, Datenbank, Playback oder dem
 Composition Root verbunden. Er verändert weder Audiodateien noch Tags.
 
@@ -96,6 +102,11 @@ Messlauf hatte 2.255 Byte. Die Messung ist eine Arbeitsmessung, kein garantierte
 Speicherhöchstwert.
 
 ## Bekannte Grenzen und nächster Schritt
+
+Die nachstehenden Punkte dokumentieren den damaligen Prototypstand. Die offene reale
+BPM-Korpusabnahme, die Formatintegration und die Sicherheitskalibrierung wurden im
+v0.5-Arbeitsblock abgeschlossen; geschlossene Findings und weiterhin gültige Grenzen
+sind im aktuellen Diagnosepapier eingeordnet.
 
 - Es standen keine lizenzklaren realen Musiktitel mit verifiziertem Referenztempo im
   Repository zur Verfügung. Genauigkeit bei Liveaufnahmen, schwachem Beat, komplexer

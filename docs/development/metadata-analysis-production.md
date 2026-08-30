@@ -1,5 +1,14 @@
 # Produktive Metadatenanalyse (Paket 6B-2)
 
+> **Aktueller Stand:** Die Tempoanalyse ist mit `ffmpeg-onset-acf-v0.5`,
+> `tempo-profile-v3` und Datenbankschema 41 real abgenommen. Der vollständige
+> technische Stand, die 36 realen Referenzläufe in sechs musikalischen Risikokategorien,
+> geschlossene Findings und bekannte
+> Grenzen stehen in
+> [Tempo analysis, planning and diagnostics](tempo-analysis-diagnostics.md).
+> Die nachfolgende Beschreibung von v0.1 bleibt als historischer Produktionsstart
+> erhalten und ist keine aktuelle Algorithmusspezifikation.
+
 Das produktive Backend `ffmpeg-onset-autocorrelation` verwendet die versionierte
 Konfiguration `ffmpeg-onset-acf-v0.1`: externes FFmpeg/FFprobe, Mono mit 11.025 Hz und
 drei getrennte, nicht überlappende Ausschnitte von insgesamt höchstens 90 Sekunden.
@@ -39,6 +48,13 @@ Supervisor registriert und entfernt den Prozess in der WorkerRegistry, beendet b
 Abbruch oder Timeout den Kindprozess begrenzt und schließt Pipe- und Prozesshandles.
 Supportdiagnosen enthalten keine Dateipfade oder PID.
 
-Bis zur Abnahme mit einem vielfältigen, lizenzklaren realen Referenzkorpus bleiben BPM
-und `energy_experimental` ausschließlich Vorschläge. Energie ist ein technischer,
-versionierter Messindikator, keine Stimmung und keine objektive musikalische Wahrheit.
+Die damals ausstehende reale BPM-Abnahme ist unter `ffmpeg-onset-acf-v0.5` und
+`tempo-profile-v3` abgeschlossen. CBR-MP3, VBR-MP3 und FLAC sowie alle sechs
+vorgesehenen Musikkategorien wurden geprüft; positive und negative Referenzen
+bestanden. Es bestehen keine offenen produktionsrelevanten BPM-Findings. Der
+maßgebliche Nachweis und die bekannte Grenze der automatischen Shuffle-Freigabe sind
+in [Tempo analysis, planning and diagnostics](tempo-analysis-diagnostics.md)
+dokumentiert. Automatische Planungswerte werden ausschließlich nach den dort
+beschriebenen Sicherheitsregeln freigegeben. `energy_experimental` bleibt ein
+technischer, versionierter Messindikator, keine Stimmung und keine objektive
+musikalische Wahrheit.
