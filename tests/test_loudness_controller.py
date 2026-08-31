@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from threading import Event
+from unittest.mock import Mock
 
 import pytest
 
@@ -181,6 +182,24 @@ def test_controller_offers_single_and_serial_catalog_loudness_analysis(
     assert totals == [(2, 0)]
     assert repository.get(second.id).analysis_status == "COMPLETE"
     controller.close()
+
+
+def test_close_forwards_non_blocking_shutdown_to_analysis_service(tmp_path: Path) -> None:
+    database = Database(tmp_path / "loudness-close.db")
+    migrate(database)
+    analysis_service = Mock()
+    controller = LoudnessController(
+        LoudnessService(LoudnessRepository(database)),
+        LibraryService(TrackRepository(database)),
+        DeckController("A", FakeAudioBackend()),
+        DeckController("B", FakeAudioBackend()),
+        lambda _delay, callback: callback(),
+        analysis_service=analysis_service,
+    )
+
+    controller.close(wait=False)
+
+    analysis_service.close.assert_called_once_with(wait=False)
 
 
 def test_controller_reports_active_clip_protection(tmp_path: Path) -> None:

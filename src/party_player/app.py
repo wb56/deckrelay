@@ -37,7 +37,10 @@ from party_player.playback_history_service import PlaybackHistoryService
 from party_player.queue_service import QueueService
 from party_player.track_selection import TrackSelectionService
 from party_player.track_policy import PersistentTrackBlockService, TrackPolicyRepository
-from party_player.artist_policy import ArtistPolicyRepository, PersistentArtistBlockService
+from party_player.artist_policy import (
+    ArtistPolicyRepository,
+    PersistentArtistBlockService,
+)
 from party_player.track_suitability import (
     TrackSuitabilityRepository,
     TrackSuitabilityService,
@@ -54,7 +57,10 @@ from party_player.automatic_selection import (
 )
 from party_player.enums import EmptyQueuePolicy
 from party_player.file_availability import FileAvailabilityService
-from party_player.emergency_playlist import EmergencyMediaType, LocalEmergencyPlaylistService
+from party_player.emergency_playlist import (
+    EmergencyMediaType,
+    LocalEmergencyPlaylistService,
+)
 from party_player.emergency_storage import EmergencyStoragePolicy
 from party_player.emergency_state import EmergencyStateService
 from party_player.emergency_persistence import (
@@ -62,7 +68,10 @@ from party_player.emergency_persistence import (
     EmergencyPersistenceService,
 )
 from party_player.emergency_controller import EmergencyController
-from party_player.emergency_playback import EmergencyPlaybackResult, EmergencyPlaybackService
+from party_player.emergency_playback import (
+    EmergencyPlaybackResult,
+    EmergencyPlaybackService,
+)
 from party_player.emergency_history import (
     EmergencyHistoryEntry,
     EmergencyHistoryRepository,
@@ -180,7 +189,8 @@ class PartyPlayerApplication:
         audio_backend = settings.audio_backend()
         if audio_backend != "vlc":
             logger.warning(
-                "Audio-Backend %s ist nicht verfügbar; VLC wird verwendet", audio_backend
+                "Audio-Backend %s ist nicht verfügbar; VLC wird verwendet",
+                audio_backend,
             )
         audio_output_device = settings.audio_output_device()
         session_service = PartySessionService(party_repository)
@@ -561,10 +571,12 @@ class PartyPlayerApplication:
             report_after_vlc_reset,
             report_after_ffmpeg_reset,
             controller.can_change_vlc_installation,
-            lambda: not (
-                cue_controller.active_analysis_job_count
-                or loudness_controller.active_analysis_job_count
-                or metadata_analysis.active_job_count
+            lambda: (
+                not (
+                    cue_controller.active_analysis_job_count
+                    or loudness_controller.active_analysis_job_count
+                    or metadata_analysis.active_job_count
+                )
             ),
             capability_snapshots,
         )
@@ -763,7 +775,7 @@ class PartyPlayerApplication:
         )
         logger.info(
             "Restore-Runtime: %s",
-            "verfügbar (noch ohne UI)" if restore_runtime.available else restore_runtime.reason,
+            ("verfügbar (noch ohne UI)" if restore_runtime.available else restore_runtime.reason),
         )
         backup_restore_controller = BackupRestoreController(
             BackupService(
@@ -830,8 +842,10 @@ class PartyPlayerApplication:
             metadata_analysis.close()
             backup_restore_controller.close()
             overlay_controller.close()
-            cue_controller.close()
-            loudness_controller.close()
+            # Network/FFmpeg analysis cancellation is cooperative.  Normal app
+            # shutdown must not keep the closed GUI alive while workers return.
+            cue_controller.close(wait=False)
+            loudness_controller.close(wait=False)
             emergency_persistence.close()
             emergency_history.close()
             logger.info("%s wurde beendet", PRODUCT_NAME)

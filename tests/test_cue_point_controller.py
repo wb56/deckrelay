@@ -2,6 +2,7 @@ from pathlib import Path
 from threading import Event, enumerate as enumerate_threads
 from time import monotonic
 from collections.abc import Iterable, Sequence
+from unittest.mock import Mock
 
 import pytest
 
@@ -163,6 +164,21 @@ def test_async_save_persists_then_applies_loaded_deck_state(tmp_path: Path) -> N
     assert deck.model.cue_out == 240.0
     assert deck.model.cue_fade_duration == 6.0
     controller.close()
+
+
+def test_close_forwards_non_blocking_shutdown_to_analysis_workers(tmp_path: Path) -> None:
+    controller, _deck = _controller(tmp_path)
+    original_preview_executor = controller._preview_executor
+    original_preview_executor.shutdown(wait=True, cancel_futures=True)
+    preview_executor = Mock()
+    analysis_service = Mock()
+    controller._preview_executor = preview_executor
+    controller._analysis_service = analysis_service
+
+    controller.close(wait=False)
+
+    preview_executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+    analysis_service.close.assert_called_once_with(wait=False)
 
 
 def test_saved_cues_survive_controller_restart_and_individual_reset(tmp_path: Path) -> None:
