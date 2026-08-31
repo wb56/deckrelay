@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import replace
+import math
 from pathlib import Path
 from time import monotonic
 from tkinter import TclError
@@ -16,12 +17,13 @@ from party_player.ui.responsive_dialog import (
 
 from party_player.analysis.loudness_service import LoudnessAnalysisJob
 from party_player.controllers.cue_point_controller import CuePointController, CuePointEditorState
-from party_player.controllers.loudness_controller import LoudnessController
+from party_player.controllers.loudness_controller import LoudnessController, LoudnessEditorState
 from party_player.controllers.track_editor_controller import (
     TrackEditorChanges,
     TrackEditorController,
     TrackEditorViewModel,
 )
+from party_player.analysis import AudioFileInfo
 from party_player.models import Track
 from party_player.metadata_editor import (
     FIELD_LABELS,
@@ -34,7 +36,15 @@ from party_player.metadata_editor import (
 )
 from party_player.metadata_persistence import MetadataRevisionConflict
 from party_player.metadata_rules import MetadataFieldKey, RecordingClassification, RecordingKind
+from party_player.metadata_analysis_profiles import MetadataAnalysisProfile
+from party_player.metadata_analysis_service import (
+    MetadataAnalysisService,
+    SavedQueueTempoView,
+    TempoAnalysisView,
+)
+from party_player.metadata_analysis_contracts import TempoAnalysisScope
 from party_player.ui.tooltip import Tooltip
+from party_player.ui.help_content import tempo_analysis_help_text
 
 
 DialogKind = Literal["info", "error", "yes_no", "yes_no_cancel"]
@@ -339,6 +349,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             controller, loudness_controller, equalizer_state
         )
         self._view_model = view_model or self._editor_controller.build_view_model(track)
+        self._title_tooltip: Tooltip | None = None
         self._path_tooltip: Tooltip | None = None
         self._build_after_id: str | None = None
         self._lazy_tabs_built: set[str] = {"Cue"}
@@ -350,6 +361,9 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._metadata_suggestion_actions: dict[int, StagedSuggestionAction] = {}
         self._pending_metadata_changes: TrackMetadataChanges | None = None
         self._metadata_tooltips: list[Tooltip] = []
+        self._metadata_scroll_after_id: str | None = None
+        self._tempo_poll_after_id: str | None = None
+        self._technical_audio_generation = 0
         self.title("Titel bearbeiten")
         apply_responsive_dialog_geometry(
             self, parent, preferred_size=(780, 760), minimum_size=(620, 460)
@@ -370,10 +384,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._build_steps: list[Callable[[], None]] = [
             self._build_header,
             self._build_tab_container,
-            *(
-                lambda name=name: self._tabs.add(name)
-                for name in ("Cue", "Lautheit", "Equalizer", "Jingles", "Metadaten")
-            ),
+            *(lambda name=name: self._tabs.add(name) for name in ("Cue", "Lautheit", "Metadaten")),
             self._build_cue_fields,
             self._build_reset_buttons,
             self._build_sources,
@@ -389,7 +400,16 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         state = self._view_model.cue
         header = ctk.CTkFrame(self._editor_content, fg_color="transparent")
         header.grid(row=0, column=0, padx=20, pady=(18, 8), sticky="ew")
-        ctk.CTkLabel(header, text=state.title, font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        title_label = ctk.CTkLabel(
+            header,
+            text=state.title,
+            font=("Segoe UI", 18, "bold"),
+            justify="left",
+            anchor="w",
+            wraplength=540,
+        )
+        title_label.pack(fill="x", anchor="w")
+        self._title_tooltip = Tooltip(title_label, state.title)
         album = self._view_model.album or "Album nicht angegeben"
         year = self._view_model.original_release_year
         ctk.CTkLabel(
@@ -430,15 +450,24 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
 
     def _build_reset_buttons(self) -> None:
         cue = self._cue_parent
+        reset_actions = ctk.CTkFrame(cue, fg_color="transparent")
+        reset_actions.grid(row=4, column=0, columnspan=3, padx=20, pady=5, sticky="ew")
+        reset_actions.grid_columnconfigure(0, weight=1)
         ctk.CTkButton(
-            cue, text="Startpunkt zurücksetzen", command=lambda: self._clear(self._cue_in)
-        ).grid(row=4, column=0, padx=20, pady=5, sticky="ew")
+            reset_actions,
+            text="Startpunkt zurücksetzen",
+            command=lambda: self._clear(self._cue_in),
+        ).grid(row=0, column=0, pady=3, sticky="ew")
         ctk.CTkButton(
-            cue, text="Endpunkt zurücksetzen", command=lambda: self._clear(self._cue_out)
-        ).grid(row=4, column=1, padx=8, pady=5, sticky="ew")
+            reset_actions,
+            text="Endpunkt zurücksetzen",
+            command=lambda: self._clear(self._cue_out),
+        ).grid(row=1, column=0, pady=3, sticky="ew")
         ctk.CTkButton(
-            cue, text="Überblenddauer zurücksetzen", command=lambda: self._clear(self._fade)
-        ).grid(row=4, column=2, padx=20, pady=5, sticky="ew")
+            reset_actions,
+            text="Überblenddauer zurücksetzen",
+            command=lambda: self._clear(self._fade),
+        ).grid(row=2, column=0, pady=3, sticky="ew")
         ctk.CTkButton(
             cue,
             text="Sichere Standardwerte einsetzen",
@@ -491,8 +520,13 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             cue,
             text="",
             text_color="#b8c7d9",
+            justify="left",
+            anchor="w",
+            wraplength=520,
         )
-        self._analysis_status.grid(row=9, column=1, columnspan=2, padx=8, pady=4, sticky="w")
+        self._analysis_status.grid(
+            row=10, column=0, columnspan=3, padx=20, pady=(2, 6), sticky="ew"
+        )
         analysis_available, analysis_message = self._controller.analysis_availability()
         self._analysis_status.configure(
             text=analysis_message,
@@ -511,11 +545,11 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             wraplength=620,
         )
         self._analysis_details.grid(
-            row=10, column=0, columnspan=3, padx=20, pady=(2, 4), sticky="w"
+            row=11, column=0, columnspan=3, padx=20, pady=(2, 4), sticky="w"
         )
         self._show_analysis_details(self._view_model)
         analysis_actions = ctk.CTkFrame(cue, fg_color="transparent")
-        analysis_actions.grid(row=11, column=0, columnspan=3, padx=20, pady=(2, 4), sticky="w")
+        analysis_actions.grid(row=12, column=0, columnspan=3, padx=20, pady=(2, 4), sticky="w")
         ctk.CTkButton(
             analysis_actions,
             text="Vorschlag übernehmen",
@@ -528,7 +562,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             command=self._discard_analysis,
         ).pack(side="left", padx=6)
         self._error = ctk.CTkLabel(cue, text="", text_color="#ff8585", wraplength=650)
-        self._error.grid(row=12, column=0, columnspan=3, padx=20, pady=4, sticky="w")
+        self._error.grid(row=13, column=0, columnspan=3, padx=20, pady=4, sticky="w")
 
     def _build_footer(self) -> None:
         buttons = ctk.CTkFrame(self, fg_color="transparent")
@@ -570,21 +604,107 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._lazy_tabs_built.add(name)
             self._build_metadata_tab()
             return
-        descriptions = {
-            "Lautheit": "Lautheitsanalyse folgt in Phase B.",
-            "Equalizer": "Titelbezogene Presetzuweisung folgt in Phase B.",
-            "Jingles": "Jingle-Zuweisungen folgen in Phase C.",
-        }
-        description = descriptions.get(name)
-        if description is None:
+        if name == "Lautheit":
+            self._lazy_tabs_built.add(name)
+            self._build_loudness_tab()
+
+    def _build_loudness_tab(self) -> None:
+        tab = self._tabs.tab("Lautheit")
+        tab.grid_columnconfigure(0, weight=1)
+        self._loudness_details = ctk.CTkLabel(
+            tab,
+            text=self._loudness_text(),
+            text_color="#b8c7d9",
+            justify="left",
+            anchor="nw",
+            wraplength=650,
+        )
+        self._loudness_details.grid(row=0, column=0, padx=24, pady=(32, 12), sticky="ew")
+        available, message = self._editor_controller.loudness_analysis_availability()
+        self._loudness_button = ctk.CTkButton(
+            tab,
+            text="Diesen Titel analysieren",
+            command=self._analyze_loudness,
+            state="normal" if available else "disabled",
+        )
+        self._loudness_button.grid(row=1, column=0, padx=24, pady=6, sticky="w")
+        self._loudness_status = ctk.CTkLabel(
+            tab,
+            text=message,
+            text_color="#8fd9a8" if available else "#ff8585",
+            justify="left",
+            anchor="w",
+            wraplength=650,
+        )
+        self._loudness_status.grid(row=2, column=0, padx=24, pady=(2, 24), sticky="ew")
+
+    def _loudness_text(self) -> str:
+        state = self._view_model.loudness
+        if state is None:
+            return "Für diesen Titel sind keine Lautheitsdaten verfügbar."
+        stored = state.stored
+        integrated = (
+            f"{stored.integrated_loudness_lufs:.2f} LUFS"
+            if stored is not None and stored.integrated_loudness_lufs is not None
+            else "nicht analysiert"
+        )
+        loudness_range = (
+            f"{stored.loudness_range_lu:.2f} LU"
+            if stored is not None and stored.loudness_range_lu is not None
+            else "—"
+        )
+        true_peak = (
+            f"{stored.true_peak_dbfs:.2f} dBFS"
+            if stored is not None and stored.true_peak_dbfs is not None
+            else "—"
+        )
+        analysed_at = (
+            stored.analysed_at if stored is not None and stored.analysed_at is not None else "—"
+        )
+        version = (
+            stored.analysis_version
+            if stored is not None and stored.analysis_version is not None
+            else "—"
+        )
+        return (
+            "Gespeicherte Lautheitsanalyse\n\n"
+            f"Integrierte Lautheit: {integrated}\n"
+            f"Lautheitsbereich: {loudness_range}\n"
+            f"True Peak: {true_peak}\n"
+            f"Analyseversion: {version}\n"
+            f"Analysiert am: {analysed_at}\n\n"
+            f"Wirksame Quelle: {state.source_text}\n"
+            f"Verstärkung: {state.resolved.effective_gain_db:+.2f} dB\n"
+            f"{state.clip_protection_text}"
+        )
+
+    def _analyze_loudness(self) -> None:
+        self._loudness_button.configure(state="disabled")
+        self._loudness_status.configure(text="Lautheitsanalyse läuft …", text_color="#b8c7d9")
+        self._editor_controller.analyze_loudness(
+            self._track_id,
+            self._loudness_completed,
+            self._loudness_failed,
+        )
+
+    def _loudness_completed(self, state: LoudnessEditorState) -> None:
+        if not self._is_active():
             return
-        ctk.CTkLabel(
-            self._tabs.tab(name),
-            text=f"{name}\n\n{description}\n\nDer Bereich ist derzeit schreibgeschützt.",
-            text_color="#9aa4b2",
-            font=("Segoe UI", 15, "bold"),
-        ).pack(expand=True, padx=24, pady=40)
-        self._lazy_tabs_built.add(name)
+        self._view_model = replace(self._view_model, loudness=state)
+        self._loudness_details.configure(text=self._loudness_text())
+        self._loudness_status.configure(
+            text="Lautheitsanalyse abgeschlossen.", text_color="#8fd9a8"
+        )
+        self._loudness_button.configure(state="normal")
+
+    def _loudness_failed(self, error: Exception) -> None:
+        if not self._is_active():
+            return
+        self._loudness_status.configure(
+            text=f"Lautheitsanalyse nicht möglich: {error}", text_color="#ff8585"
+        )
+        available, _message = self._editor_controller.loudness_analysis_availability()
+        self._loudness_button.configure(state="normal" if available else "disabled")
 
     def _build_metadata_tab(self) -> None:
         tab = self._tabs.tab("Metadaten")
@@ -615,8 +735,258 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._metadata_loading = False
         self._view_model = self._editor_controller.with_metadata(self._view_model, model)
         self._clear_metadata_container()
-        self._render_metadata_fields(model)
+        self._render_tempo_analysis()
+        self._render_technical_audio_info(1)
+        self._render_metadata_fields(model, start_row=2)
         self._render_metadata_suggestions(model)
+        self._schedule_metadata_scroll_top()
+
+    def _schedule_metadata_scroll_top(self) -> None:
+        pending = self._metadata_scroll_after_id
+        if pending is not None:
+            try:
+                self.after_cancel(pending)
+            except (RuntimeError, TclError):
+                pass
+        self._metadata_scroll_after_id = self.after_idle(self._scroll_metadata_top)
+
+    def _scroll_metadata_top(self) -> None:
+        self._metadata_scroll_after_id = None
+        if not self._is_active() or not hasattr(self, "_metadata_container"):
+            return
+        canvas = getattr(self._metadata_container, "_parent_canvas", None)
+        if canvas is not None:
+            canvas.yview_moveto(0.0)
+
+    def _render_technical_audio_info(self, row: int) -> None:
+        self._technical_audio_generation += 1
+        generation = self._technical_audio_generation
+        frame = ctk.CTkFrame(self._metadata_container, border_width=1)
+        frame.grid(row=row, column=0, padx=10, pady=(12, 8), sticky="ew")
+        frame.grid_columnconfigure(0, weight=0, minsize=150)
+        frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(frame, text="TECHNISCHE AUDIODATEN", font=("Segoe UI", 15, "bold")).grid(
+            row=0, column=0, columnspan=2, padx=10, pady=(8, 2), sticky="w"
+        )
+        self._technical_audio_status = ctk.CTkLabel(
+            frame,
+            text="Technische Audiodaten werden ermittelt …",
+            justify="left",
+            anchor="w",
+            wraplength=620,
+        )
+        self._technical_audio_status.grid(
+            row=1, column=0, columnspan=2, padx=10, pady=(2, 5), sticky="ew"
+        )
+        self._technical_audio_value_labels: dict[str, Any] = {}
+        for field_row, name in enumerate(self._technical_audio_field_names(), start=2):
+            ctk.CTkLabel(
+                frame,
+                text=name,
+                anchor="w",
+                font=("Segoe UI", 12, "bold"),
+            ).grid(row=field_row, column=0, padx=(10, 8), pady=1, sticky="nw")
+            value = ctk.CTkLabel(
+                frame,
+                text="Wird ermittelt …",
+                anchor="w",
+                justify="left",
+                wraplength=450,
+            )
+            value.grid(
+                row=field_row,
+                column=1,
+                padx=(0, 10),
+                pady=(1, 8 if name == "Encoder" else 1),
+                sticky="ew",
+            )
+            self._technical_audio_value_labels[name] = value
+        accepted = self._editor_controller.load_technical_audio_info_async(
+            self._track_id,
+            lambda info: self._technical_audio_loaded(info, generation),
+            lambda error: self._technical_audio_failed(error, generation),
+        )
+        if not accepted:
+            self._technical_audio_failed(
+                RuntimeError("Technische Ermittlung konnte nicht gestartet werden."),
+                generation,
+            )
+
+    def _technical_audio_loaded(self, info: AudioFileInfo, generation: int | None = None) -> None:
+        if (
+            not self._is_active()
+            or not hasattr(self, "_technical_audio_status")
+            or generation is not None
+            and generation != self._technical_audio_generation
+        ):
+            return
+        fields = dict(self._technical_audio_fields(info))
+        labels = getattr(self, "_technical_audio_value_labels", None)
+        if labels is None:
+            self._technical_audio_status.configure(
+                text=self._technical_audio_text(info), text_color="#b8c7d9"
+            )
+            return
+        self._technical_audio_status.configure(text="Status: Verfügbar", text_color="#7fdda0")
+        for name, label in labels.items():
+            label.configure(text=fields.get(name, "Nicht verfügbar"), text_color="#b8c7d9")
+
+    def _technical_audio_failed(self, error: Exception, generation: int | None = None) -> None:
+        if (
+            not self._is_active()
+            or not hasattr(self, "_technical_audio_status")
+            or generation is not None
+            and generation != self._technical_audio_generation
+        ):
+            return
+        reason = self._technical_audio_error_text(error)
+        labels = getattr(self, "_technical_audio_value_labels", None)
+        if labels is None:
+            self._technical_audio_status.configure(
+                text=self._technical_audio_unavailable_text(reason), text_color="#9aa4b2"
+            )
+            return
+        self._technical_audio_status.configure(
+            text=f"Status: Nicht verfügbar · {reason}", text_color="#d7a0a0"
+        )
+        for label in labels.values():
+            label.configure(text="Nicht verfügbar", text_color="#9aa4b2")
+
+    @staticmethod
+    def _technical_audio_field_names() -> tuple[str, ...]:
+        return (
+            "Audioformat/Codec",
+            "Container",
+            "Bitratenmodus",
+            "Bitrate",
+            "Abtastrate",
+            "Bittiefe",
+            "Kanäle",
+            "Kanallayout",
+            "Technische Dauer",
+            "Codec-Profil",
+            "Encoder",
+        )
+
+    @classmethod
+    def _technical_audio_unavailable_text(cls, reason: str) -> str:
+        rows = "\n".join(f"{name}: Nicht verfügbar" for name in cls._technical_audio_field_names())
+        return f"Status: Nicht verfügbar\nGrund: {reason}\n\n{rows}"
+
+    @classmethod
+    def _technical_audio_text(cls, info: AudioFileInfo) -> str:
+        return "Status: Verfügbar\n" + "\n".join(
+            f"{name}: {value}" for name, value in cls._technical_audio_fields(info)
+        )
+
+    @classmethod
+    def _technical_audio_fields(cls, info: AudioFileInfo) -> tuple[tuple[str, str], ...]:
+        unavailable = "Nicht verfügbar"
+        codec_key = info.codec_name.casefold()
+        codec = {
+            "flac": "FLAC",
+            "mp3": "MP3 – MPEG Audio Layer III",
+        }.get(codec_key)
+        if codec is None:
+            short = info.codec_name.upper() if info.codec_name else unavailable
+            codec = (
+                f"{short} – {info.codec_long_name}"
+                if info.codec_long_name and info.codec_long_name.casefold() != codec_key
+                else short
+            )
+        format_key = info.format_name.split(",", 1)[0].casefold()
+        container = {"flac": "FLAC", "mp3": "MP3"}.get(
+            format_key, info.format_long_name or info.format_name.upper() or unavailable
+        )
+        if codec_key == "flac":
+            bitrate_mode = "Nicht als MP3-CBR/VBR klassifiziert"
+        else:
+            bitrate_mode = info.bitrate_mode or "Nicht zuverlässig bestimmbar"
+        if info.bitrate_bps is None:
+            bitrate = unavailable
+        else:
+            prefix = (
+                "durchschnittlich " if codec_key == "flac" or info.bitrate_mode == "VBR" else ""
+            )
+            bitrate = f"{prefix}{info.bitrate_bps / 1000:.0f} kbit/s"
+        sample_rate = (
+            f"{info.sample_rate_hz / 1000:g} kHz" if info.sample_rate_hz > 0 else unavailable
+        )
+        if codec_key in {"mp3", "mp2", "aac", "vorbis", "opus", "wma"}:
+            bit_depth = "Nicht anwendbar"
+        else:
+            bit_depth = (
+                f"{info.bits_per_sample} Bit" if info.bits_per_sample is not None else unavailable
+            )
+        channels = str(info.channels) if info.channels > 0 else unavailable
+        layout = cls._channel_layout_text(info.channel_layout, info.channels)
+        streams = (
+            f" · Audiostreams: {info.audio_stream_count}; verwendet wird Stream "
+            f"{info.selected_stream_index}"
+            if info.audio_stream_count > 1
+            else ""
+        )
+        return (
+            ("Audioformat/Codec", codec),
+            ("Container", container),
+            ("Bitratenmodus", bitrate_mode),
+            ("Bitrate", bitrate),
+            ("Abtastrate", sample_rate),
+            ("Bittiefe", bit_depth),
+            ("Kanäle", channels),
+            ("Kanallayout", layout),
+            ("Technische Dauer", cls._format_audio_duration(info.duration_seconds)),
+            ("Codec-Profil", info.codec_profile or unavailable),
+            ("Encoder", f"{info.encoder or unavailable}{streams}"),
+        )
+
+    @staticmethod
+    def _technical_audio_error_text(error: Exception) -> str:
+        text = str(error).casefold()
+        if isinstance(error, FileNotFoundError) or "nicht erreichbar" in text:
+            return "Datei fehlt oder ist nicht erreichbar."
+        if "timeout" in text or "timed out" in text or "zeitlimit" in text:
+            return "FFprobe hat das Zeitlimit überschritten."
+        if "geändert" in text:
+            return "Datei wurde während der Ermittlung geändert."
+        if "audiostream" in text or "unvollständige audiodaten" in text:
+            return "Datei enthält keinen verwendbaren Audiostream."
+        if "nicht verfügbar" in text or "nicht gefunden" in text:
+            return "FFprobe ist nicht verfügbar oder nicht ausführbar."
+        if "nicht gestartet" in text or "warteschlange" in text:
+            return "Hintergrundwarteschlange ist ausgelastet; bitte erneut versuchen."
+        return "Datei konnte technisch nicht gelesen werden."
+
+    @staticmethod
+    def _channel_description(channels: int) -> str:
+        if channels == 1:
+            return "Mono (1 Kanal)"
+        if channels == 2:
+            return "Stereo (2 Kanäle)"
+        return f"{channels} Kanäle" if channels > 0 else "Nicht verfügbar"
+
+    @staticmethod
+    def _channel_layout_text(layout: str, channels: int) -> str:
+        return {
+            "mono": "Mono",
+            "stereo": "Stereo",
+        }.get(layout.casefold(), layout or CuePointDialog._channel_description(channels))
+
+    @staticmethod
+    def _format_audio_duration(seconds: float) -> str:
+        if not math.isfinite(seconds) or seconds <= 0:
+            return "Nicht verfügbar"
+        whole_seconds = int(seconds)
+        milliseconds = round((seconds - whole_seconds) * 1000)
+        if milliseconds == 1000:
+            whole_seconds += 1
+            milliseconds = 0
+        minutes, remaining = divmod(whole_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        base = (
+            f"{hours:d}:{minutes:02d}:{remaining:02d}" if hours else f"{minutes:d}:{remaining:02d}"
+        )
+        return f"{base},{milliseconds:03d}"
 
     def _metadata_load_failed(self, error: Exception) -> None:
         if not self._is_active():
@@ -637,7 +1007,9 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._metadata_entries.clear()
         self._metadata_status_labels.clear()
 
-    def _render_metadata_fields(self, model: TrackMetadataEditorViewModel) -> None:
+    def _render_metadata_fields(
+        self, model: TrackMetadataEditorViewModel, *, start_row: int = 1
+    ) -> None:
         groups: tuple[tuple[str, tuple[tuple[MetadataFieldKey, str, str], ...]], ...] = (
             (
                 "Grunddaten",
@@ -684,7 +1056,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
                 ),
             ),
         )
-        row = 0
+        row = start_row
         for heading, fields in groups:
             ctk.CTkLabel(
                 self._metadata_container,
@@ -717,6 +1089,295 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             "Redaktioneller Katalogtext; die Musikdatei wird nicht verändert",
         )
         self._metadata_suggestions_row = row
+
+    def _render_tempo_analysis(self) -> None:
+        frame = ctk.CTkFrame(self._metadata_container, border_width=1)
+        frame.grid(row=0, column=0, padx=10, pady=(8, 4), sticky="ew")
+        frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(frame, text="TEMPOANALYSE", font=("Segoe UI", 15, "bold")).grid(
+            row=0, column=0, padx=10, pady=(8, 2), sticky="w"
+        )
+        self._tempo_status = ctk.CTkLabel(
+            frame,
+            text="Katalog-, Cue- und Volltitelwerte werden geladen …",
+            justify="left",
+            anchor="w",
+            wraplength=620,
+        )
+        self._tempo_status.grid(row=1, column=0, columnspan=2, padx=10, pady=4, sticky="ew")
+        controls = ctk.CTkFrame(frame, fg_color="transparent")
+        controls.grid(row=2, column=0, padx=8, pady=(2, 8), sticky="ew")
+        controls.grid_columnconfigure((0, 1), weight=1, uniform="tempo_actions")
+        self._tempo_profile = ctk.CTkOptionMenu(
+            controls,
+            values=("Tempo", "Tempo und experimentelle Energie"),
+        )
+        self._tempo_profile.grid(row=0, column=0, columnspan=2, padx=3, pady=3, sticky="ew")
+        self._tempo_button = ctk.CTkButton(
+            controls,
+            text="Vollständige Aufnahme analysieren",
+            command=lambda: self._start_tempo_analysis(TempoAnalysisScope.TRACK_FULL),
+        )
+        self._tempo_button.grid(row=1, column=0, padx=3, pady=3, sticky="ew")
+        self._tempo_cue_button = ctk.CTkButton(
+            controls,
+            text="Wirksamen Cue-Bereich analysieren",
+            command=lambda: self._start_tempo_analysis(TempoAnalysisScope.TRACK_DEFAULT_CUES),
+        )
+        self._tempo_cue_button.grid(row=1, column=1, padx=3, pady=3, sticky="ew")
+        self._tempo_cancel = ctk.CTkButton(
+            controls,
+            text="Abbrechen",
+            fg_color="#7d3030",
+            state="disabled",
+            command=self._cancel_tempo_analysis,
+        )
+        self._tempo_cancel.grid(row=2, column=0, padx=3, pady=3, sticky="ew")
+        self._tempo_reload = ctk.CTkButton(
+            controls,
+            text="Vorschläge laden",
+            fg_color="#555555",
+            command=self._reload_metadata_after_analysis,
+        )
+        self._tempo_reload.grid(row=2, column=1, padx=3, pady=3, sticky="ew")
+        ctk.CTkButton(
+            controls,
+            text="Diagnosedetails vergleichen",
+            fg_color="#555555",
+            command=self._open_tempo_diagnostics,
+        ).grid(row=3, column=0, columnspan=2, padx=3, pady=3, sticky="ew")
+        ctk.CTkButton(
+            controls,
+            text="? Hilfe zur Tempoanalyse",
+            fg_color="#555555",
+            command=lambda: show_tempo_analysis_help(self),
+        ).grid(row=4, column=0, columnspan=2, padx=3, pady=3, sticky="ew")
+        self._editor_controller.load_tempo_scope_async(
+            self._track_id, self._tempo_scopes_loaded, self._tempo_failed
+        )
+
+    def _tempo_scopes_loaded(self, values: tuple[TempoAnalysisView, TempoAnalysisView]) -> None:
+        if not self._is_active() or not hasattr(self, "_tempo_status"):
+            return
+        cue, full = values
+        catalog = (
+            f"{self._view_model.catalog_bpm:g} BPM · Katalogwert"
+            if self._view_model.catalog_bpm is not None
+            else "Nicht festgelegt"
+        )
+        cue_text = self._tempo_scope_line(cue)
+        full_text = self._tempo_scope_line(full)
+        cue_reliable = self._tempo_view_reliable(cue)
+        full_reliable = self._tempo_view_reliable(full)
+        planning = (
+            f"{self._view_model.catalog_bpm:g} BPM"
+            if self._view_model.catalog_bpm is not None
+            else (
+                cue_text.split(" · ", 1)[0]
+                if cue_reliable
+                else (
+                    full_text.split(" · ", 1)[0]
+                    if full_reliable
+                    else "Kein verlässlicher automatischer Wert"
+                )
+            )
+        )
+        source = (
+            "bestätigter Katalogwert"
+            if self._view_model.catalog_bpm is not None
+            else (
+                "wirksamer Katalog-Cue-Bereich"
+                if cue_reliable
+                else "vollständige Aufnahme" if full_reliable else "keine"
+            )
+        )
+        boundaries = self._view_model.cue.resolved
+        source_text = (
+            f"Cue In {boundaries.cue_in:.2f} s ({self._cue_source_text(boundaries.cue_in_source)}) · "
+            f"Cue Out {boundaries.cue_out:.2f} s ({self._cue_source_text(boundaries.cue_out_source)}) · "
+            f"Dauer {boundaries.cue_out - boundaries.cue_in:.2f} s"
+        )
+        if (
+            boundaries.cue_in_source == "FILE_BOUNDARY"
+            and boundaries.cue_out_source == "FILE_BOUNDARY"
+        ):
+            source_text += "\nFür diesen Titel werden derzeit die Dateigrenzen als wirksamer Bereich verwendet."
+        self._tempo_status.configure(
+            text=(
+                f"Katalogwert: {catalog}\n"
+                f"Cue-Bereich: {cue_text}\n"
+                f"Vollständige Aufnahme: {full_text}\n\n"
+                f"Wirksamer Planungswert: {planning}\nQuelle: {source}\n\n{source_text}"
+            )
+        )
+        running = cue.status in {"PENDING", "RUNNING"} or full.status in {
+            "PENDING",
+            "RUNNING",
+        }
+        self._tempo_button.configure(state="disabled" if running else "normal")
+        self._tempo_cue_button.configure(state="disabled" if running else "normal")
+        self._tempo_cancel.configure(state="normal" if running else "disabled")
+        if running:
+            self._schedule_tempo_poll()
+
+    @staticmethod
+    def _tempo_view_reliable(view: TempoAnalysisView) -> bool:
+        return bool(
+            view.current
+            and view.bpm is not None
+            and (view.bpm_confidence or 0.0) >= 0.8
+            and (view.rhythm_stability is None or view.rhythm_stability >= 0.65)
+        )
+
+    @staticmethod
+    def _cue_source_text(source: str) -> str:
+        return {
+            "MANUAL": "manuell",
+            "AUTOMATIC": "automatisch",
+            "FILE_BOUNDARY": "Dateigrenze",
+        }.get(source, source)
+
+    @staticmethod
+    def _tempo_scope_line(view: TempoAnalysisView) -> str:
+        if view.status == "NOT_ANALYSED":
+            return "Nicht analysiert"
+        if not view.current:
+            return "Ergebnis wegen geänderter Cue-Punkte veraltet"
+        if view.bpm is None:
+            return "Kein verlässlicher BPM-Wert"
+        confidence = (
+            "Hohe Aggregatkonfidenz"
+            if (view.bpm_confidence or 0.0) >= 0.8
+            else "Prüfung erforderlich"
+        )
+        details = [f"{view.bpm:g} BPM", confidence]
+        if view.rhythm_stability is not None:
+            details.append(f"Rhythmusstabilität {view.rhythm_stability:.0%}")
+        if view.alternative_bpm is not None:
+            details.append(f"Alternative {view.alternative_bpm:g} BPM")
+            details.append("Möglicherweise halbes oder doppeltes Tempo")
+        if (view.rhythm_stability or 1.0) < 0.65:
+            details.append("Unterschiedliche Tempi erkannt")
+        if view.experimental_energy is not None:
+            details.append(f"Experimenteller Energievorschlag {view.experimental_energy} %")
+        details.extend(item for item in (view.algorithm_version, view.finished_at) if item)
+        return " · ".join(details)
+
+    def _tempo_loaded(self, view: TempoAnalysisView) -> None:
+        if not self._is_active() or not hasattr(self, "_tempo_status"):
+            return
+        running = view.status in {"PENDING", "RUNNING"}
+        if view.run_id is None:
+            text = "BPM: noch nicht analysiert"
+        elif running:
+            text = "Tempoanalyse läuft …" if view.status == "RUNNING" else "Tempoanalyse wartet …"
+        else:
+            confidence = f"{view.bpm_confidence:.0%}" if view.bpm_confidence is not None else "—"
+            stability = f"{view.rhythm_stability:.0%}" if view.rhythm_stability is not None else "—"
+            energy = (
+                f"{view.experimental_energy} %" if view.experimental_energy is not None else "—"
+            )
+            warnings = "\n".join(f"⚠ {item}" for item in view.warnings)
+            text = (
+                f"BPM-Vorschlag: {view.bpm if view.bpm is not None else '—'} · "
+                f"Alternative: {view.alternative_bpm if view.alternative_bpm is not None else '—'}\n"
+                f"Konfidenz: {confidence} · Rhythmusstabilität: {stability}\n"
+                f"Experimenteller Energievorschlag: {energy}\n"
+                f"Letzte Analyse: {view.backend} · {view.algorithm_version} · "
+                f"{view.finished_at or view.status}"
+            )
+            if warnings:
+                text += f"\n{warnings}"
+            if view.error_text:
+                text += f"\nFehler: {view.error_text}"
+            text += "\nGespeicherte Vorschläge stehen unten zur fachlichen Prüfung bereit."
+        self._tempo_status.configure(text=text)
+        self._tempo_button.configure(
+            text=(
+                "Erneut analysieren"
+                if view.run_id is not None and not running
+                else "Tempo analysieren"
+            ),
+            state="disabled" if running else "normal",
+        )
+        self._tempo_cancel.configure(state="normal" if running else "disabled")
+        if running:
+            self._schedule_tempo_poll()
+
+    def _start_tempo_analysis(
+        self, scope: TempoAnalysisScope = TempoAnalysisScope.TRACK_FULL
+    ) -> None:
+        self._tempo_button.configure(state="disabled")
+        self._tempo_cue_button.configure(state="disabled")
+        self._tempo_status.configure(text="Tempoanalyse wird vorbereitet …")
+        profile = (
+            MetadataAnalysisProfile.TEMPO_AND_ENERGY_EXPERIMENTAL
+            if self._tempo_profile.get() == "Tempo und experimentelle Energie"
+            else MetadataAnalysisProfile.TEMPO
+        )
+        self._editor_controller.start_tempo_analysis_async(
+            self._track_id,
+            profile,
+            lambda _job: self._tempo_started(),
+            self._tempo_failed,
+            scope=scope,
+        )
+
+    def _tempo_started(self) -> None:
+        if not self._is_active():
+            return
+        self._tempo_status.configure(text="Tempoanalyse läuft …")
+        self._tempo_cancel.configure(state="normal")
+        self._schedule_tempo_poll()
+
+    def _schedule_tempo_poll(self) -> None:
+        if not self._is_active() or self._tempo_poll_after_id is not None:
+            return
+        self._tempo_poll_after_id = self.after(300, self._poll_tempo_analysis)
+
+    def _poll_tempo_analysis(self) -> None:
+        self._tempo_poll_after_id = None
+        if self._is_active():
+            self._editor_controller.load_tempo_scope_async(
+                self._track_id, self._tempo_scopes_loaded, self._tempo_failed
+            )
+
+    def _cancel_tempo_analysis(self) -> None:
+        self._editor_controller.cancel_tempo_analysis()
+        self._tempo_status.configure(text="Tempoanalyse wurde abgebrochen.")
+        self._tempo_cancel.configure(state="disabled")
+        self._tempo_button.configure(state="normal")
+        self._tempo_cue_button.configure(state="normal")
+
+    def _reload_metadata_after_analysis(self) -> None:
+        if self._metadata_loading:
+            return
+        self._metadata_loading = True
+        self._editor_controller.load_metadata_async(
+            self._track_id, self._metadata_loaded, self._metadata_load_failed
+        )
+
+    def _open_tempo_diagnostics(self) -> None:
+        def show(value: str) -> None:
+            def reload(completed: Callable[[str], None]) -> None:
+                self._editor_controller.load_tempo_diagnostics_async(
+                    self._track_id, completed, self._tempo_failed
+                )
+
+            TempoDiagnosticsDialog(self, value, reload)
+
+        self._editor_controller.load_tempo_diagnostics_async(
+            self._track_id,
+            show,
+            self._tempo_failed,
+        )
+
+    def _tempo_failed(self, error: Exception) -> None:
+        if not self._is_active() or not hasattr(self, "_tempo_status"):
+            return
+        self._tempo_status.configure(text=f"Tempoanalyse nicht möglich: {error}")
+        self._tempo_button.configure(state="normal")
+        self._tempo_cancel.configure(state="disabled")
 
     def _metadata_field_row(
         self,
@@ -899,7 +1560,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         textbox.delete("1.0", "end")
         textbox.insert("1.0", "\n".join(sorted(existing)))
 
-    def _render_metadata_suggestions(self, model: TrackMetadataEditorViewModel) -> None:
+    def _render_metadata_suggestions(self, model: TrackMetadataEditorViewModel) -> int:
         row = self._metadata_suggestions_row
         ctk.CTkLabel(
             self._metadata_container,
@@ -913,7 +1574,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
                 text="Für diesen Titel liegen keine offenen Vorschläge vor.",
                 text_color="#9aa4b2",
             ).grid(row=row, column=0, padx=16, pady=8, sticky="w")
-            return
+            return row + 1
         for suggestion in model.suggestions:
             frame = ctk.CTkFrame(self._metadata_container, border_width=1)
             frame.grid(row=row, column=0, padx=10, pady=4, sticky="ew")
@@ -946,6 +1607,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
                 actions, text="Später prüfen", fg_color="#555555", command=lambda: None
             ).pack(side="left", padx=3)
             row += 1
+        return row
 
     @staticmethod
     def _metadata_status_text(source: str, status: str, suggestion: bool) -> str:
@@ -1155,16 +1817,18 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         CuePointDialog._finish_successful_save(self)
 
     def _finish_successful_save(self) -> None:
-        preview_was_active = self._controller.active_preview_count > 0
-        self._controller.stop_preview()
-        self._controller.cancel_analysis()
-        if preview_was_active:
-            self._editor_controller.record_event("track_editor.cue_preview_stop")
-            self._editor_controller.record_event("track_editor_preview_stopped_total")
         if self._save_had_changes and self._on_saved is not None:
             self._on_saved(self._view_model)
         self._editor_controller.record_event("track_editor_save_total")
-        self._finish()
+        self._pending_metadata_changes = None
+        self._metadata_confirmations.clear()
+        self._metadata_removals.clear()
+        self._metadata_suggestion_actions.clear()
+        self._discard_automatic = False
+        self._save_had_changes = False
+        self._saving = False
+        self._save_button.configure(state="normal", text="Speichern")
+        self._error.configure(text="")
 
     def _metadata_save_failed(self, error: Exception) -> None:
         if not self._is_active():
@@ -1353,10 +2017,28 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             except (RuntimeError, TclError):
                 pass
             self._build_after_id = None
+        tempo_after_id = getattr(self, "_tempo_poll_after_id", None)
+        if tempo_after_id is not None:
+            try:
+                self.after_cancel(tempo_after_id)
+            except (RuntimeError, TclError):
+                pass
+            self._tempo_poll_after_id = None
+        metadata_scroll_after_id = getattr(self, "_metadata_scroll_after_id", None)
+        if metadata_scroll_after_id is not None:
+            try:
+                self.after_cancel(metadata_scroll_after_id)
+            except (RuntimeError, TclError):
+                pass
+            self._metadata_scroll_after_id = None
         path_tooltip = getattr(self, "_path_tooltip", None)
         if path_tooltip is not None:
             path_tooltip.close()
             self._path_tooltip = None
+        title_tooltip = getattr(self, "_title_tooltip", None)
+        if title_tooltip is not None:
+            title_tooltip.close()
+            self._title_tooltip = None
         for tooltip in getattr(self, "_metadata_tooltips", ()):
             tooltip.close()
         if hasattr(self, "_metadata_tooltips"):
@@ -1634,6 +2316,300 @@ class SilentDialog(ctk.CTkToplevel):  # type: ignore[misc]
 
     def _cancel(self) -> None:
         self._finish(None)
+
+
+class TempoDiagnosticsDialog(ctk.CTkToplevel):  # type: ignore[misc]
+    """Compact, copyable comparison of the latest full and cue runs."""
+
+    def __init__(
+        self,
+        parent: Any,
+        diagnostic_text: str,
+        reload: Callable[[Callable[[str], None]], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._diagnostic_text = diagnostic_text
+        self._reload = reload
+        self.title("Tempoanalyse – Diagnosedetails")
+        apply_responsive_dialog_geometry(
+            self, parent, preferred_size=(820, 720), minimum_size=(560, 420)
+        )
+        self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(
+            self,
+            text=(
+                "Gesamt- und Cue-Lauf im direkten Vergleich. Die Cue-Grenzen sind nicht "
+                "mit den tatsächlich dekodierten Stichproben gleichzusetzen."
+            ),
+            justify="left",
+            wraplength=760,
+        ).grid(row=0, column=0, padx=16, pady=(16, 8), sticky="ew")
+        self._details = ctk.CTkTextbox(self, wrap="none")
+        self._details.grid(row=1, column=0, padx=16, pady=8, sticky="nsew")
+        self._set_text(diagnostic_text)
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=2, column=0, padx=16, pady=(8, 16), sticky="e")
+        ctk.CTkButton(footer, text="Als Text kopieren", command=self._copy).pack(
+            side="left", padx=5
+        )
+        if reload is not None:
+            ctk.CTkButton(footer, text="Aktualisieren", command=self._refresh).pack(
+                side="left", padx=5
+            )
+        ctk.CTkButton(footer, text="Schließen", command=self._close).pack(side="left", padx=5)
+        bind_dialog_escape(self, self._close)
+        self.grab_set()
+
+    def _copy(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(self._diagnostic_text)
+
+    def _refresh(self) -> None:
+        if self._reload is not None:
+            self._reload(self._set_text)
+
+    def _set_text(self, diagnostic_text: str) -> None:
+        self._diagnostic_text = diagnostic_text
+        self._details.configure(state="normal")
+        self._details.delete("1.0", "end")
+        self._details.insert("1.0", diagnostic_text)
+        self._details.configure(state="disabled")
+
+    def _close(self) -> None:
+        release_dialog(self)
+        self.destroy()
+
+
+class TempoAnalysisHelpDialog(ctk.CTkToplevel):  # type: ignore[misc]
+    """Scrollable, work-area-safe central help for tempo analysis."""
+
+    def __init__(self, parent: Any) -> None:
+        super().__init__(parent)
+        self.title("Hilfe zur Tempoanalyse")
+        apply_responsive_dialog_geometry(
+            self, parent, preferred_size=(720, 720), minimum_size=(520, 420)
+        )
+        self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        content = ctk.CTkScrollableFrame(self)
+        content.grid(row=0, column=0, padx=12, pady=(12, 6), sticky="nsew")
+        content.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            content,
+            text=tempo_analysis_help_text(),
+            justify="left",
+            anchor="nw",
+            wraplength=640,
+        ).grid(row=0, column=0, padx=14, pady=14, sticky="ew")
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=1, column=0, padx=20, pady=(6, 14), sticky="e")
+        ctk.CTkButton(footer, text="Schließen", command=self._close).pack()
+        bind_dialog_escape(self, self._close)
+        self.grab_set()
+        self.focus_force()
+
+    def _close(self) -> None:
+        release_dialog(self)
+        self.destroy()
+
+
+def show_tempo_analysis_help(parent: Any) -> None:
+    """Open the central tempo-analysis help and retain modal focus."""
+    dialog = TempoAnalysisHelpDialog(parent)
+    parent.wait_window(dialog)
+
+
+class SavedQueueTempoDialog(ctk.CTkToplevel):  # type: ignore[misc]
+    """Edit tempo only for one persisted Saved-Queue entry."""
+
+    def __init__(
+        self,
+        parent: Any,
+        entry_id: int,
+        analysis: MetadataAnalysisService,
+        submit: Callable[
+            [Callable[[], object], Callable[[object], None], Callable[[Exception], None]],
+            bool,
+        ],
+    ) -> None:
+        super().__init__(parent)
+        self._entry_id = entry_id
+        self._analysis = analysis
+        self._submit = submit
+        self._closed = False
+        self._generation = 0
+        self._poll_after: str | None = None
+        self.title("Tempo des Playlist-Eintrags")
+        apply_responsive_dialog_geometry(
+            self, parent, preferred_size=(720, 650), minimum_size=(560, 460)
+        )
+        self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        bind_dialog_escape(self, self._close)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        content = ctk.CTkScrollableFrame(self)
+        content.grid(row=0, column=0, padx=12, pady=(12, 6), sticky="nsew")
+        content.grid_columnconfigure(0, weight=1)
+        self._status = ctk.CTkLabel(
+            content,
+            text="Playlist-Ausschnitt wird geladen …",
+            justify="left",
+            anchor="nw",
+            wraplength=640,
+        )
+        self._status.grid(row=0, column=0, padx=12, pady=12, sticky="ew")
+        self._manual = ctk.CTkEntry(content, placeholder_text="BPM nur für diesen Playlist-Eintrag")
+        self._manual.grid(row=1, column=0, padx=12, pady=5, sticky="ew")
+        ctk.CTkLabel(
+            content,
+            text=(
+                "Dieser Wert verändert nicht den Katalogtitel. Musikdatei und Tags "
+                "bleiben unverändert. Der Wert gilt ausschließlich für diesen Eintrag."
+            ),
+            justify="left",
+            wraplength=640,
+            text_color="#9fb3c8",
+        ).grid(row=2, column=0, padx=12, pady=5, sticky="ew")
+        actions = ctk.CTkFrame(content, fg_color="transparent")
+        actions.grid(row=3, column=0, padx=9, pady=8, sticky="ew")
+        actions.grid_columnconfigure((0, 1), weight=1)
+        self._analyze = ctk.CTkButton(
+            actions, text="Playlist-Ausschnitt analysieren", command=self._start_analysis
+        )
+        self._analyze.grid(row=0, column=0, padx=3, pady=3, sticky="ew")
+        self._cancel = ctk.CTkButton(
+            actions,
+            text="Analyse abbrechen",
+            fg_color="#7d3030",
+            state="disabled",
+            command=self._cancel_analysis,
+        )
+        self._cancel.grid(row=0, column=1, padx=3, pady=3, sticky="ew")
+        ctk.CTkButton(
+            actions, text="Manuellen Playlist-BPM festlegen", command=self._save_manual
+        ).grid(row=1, column=0, padx=3, pady=3, sticky="ew")
+        ctk.CTkButton(
+            actions,
+            text="Manuelle Playlist-BPM zurücksetzen",
+            fg_color="#6b5b2a",
+            command=self._reset_manual,
+        ).grid(row=1, column=1, padx=3, pady=3, sticky="ew")
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=1, column=0, padx=20, pady=(6, 14), sticky="e")
+        ctk.CTkButton(footer, text="Schließen", command=self._close).pack()
+        self.grab_set()
+        self._load()
+
+    def _load(self) -> None:
+        self._generation += 1
+        generation = self._generation
+        self._submit(
+            lambda: self._analysis.saved_queue_tempo_view(self._entry_id),
+            lambda value: self._loaded(value, generation),
+            self._failed,
+        )
+
+    def _loaded(self, value: object, generation: int) -> None:
+        if self._closed or generation != self._generation:
+            return
+        view = value
+        if not isinstance(view, SavedQueueTempoView):
+            self._failed(RuntimeError("Ungültige Tempoanzeige"))
+            return
+        analysis = view.analysis
+        planning = view.resolution.planning
+        manual = view.manual
+        warnings = tuple(planning.warnings) + tuple(analysis.warnings)
+        self._status.configure(
+            text=(
+                f"{view.title}\n\n"
+                f"Wirksame Cues: {view.cue_in:.2f}–{view.cue_out:.2f} s · "
+                f"Fade {view.fade_duration:.2f} s · "
+                f"{'geerbte Katalog-Cues' if view.inherited_cues else 'eigener Cue-Snapshot'}\n"
+                f"Katalog-BPM: {view.resolution.confirmed.bpm or 'Nicht festgelegt'}\n"
+                f"Playlist-Ausschnitt: {analysis.bpm or 'Nicht analysiert'}"
+                f"{f' · Alternative {analysis.alternative_bpm:g}' if analysis.alternative_bpm else ''}\n"
+                f"Konfidenz: {analysis.bpm_confidence if analysis.bpm_confidence is not None else '—'} · "
+                f"Aktualität: {'aktuell' if analysis.current else 'veraltet'}\n"
+                f"Planungswert: {planning.bpm or 'Kein Wert'} · Quelle: {planning.source.value}\n"
+                f"Manueller Playlist-BPM: {manual.bpm if manual else 'nicht gesetzt'}\n"
+                + ("\n" + "\n".join(f"⚠ {item}" for item in warnings) if warnings else "")
+            )
+        )
+        running = analysis.status in {"PENDING", "RUNNING"}
+        self._analyze.configure(
+            text=(
+                "Erneut analysieren"
+                if analysis.run_id and not running
+                else "Playlist-Ausschnitt analysieren"
+            ),
+            state="disabled" if running else "normal",
+        )
+        self._cancel.configure(state="normal" if running else "disabled")
+        if running:
+            self._poll_after = self.after(500, self._load)
+
+    def _start_analysis(self) -> None:
+        self._analyze.configure(state="disabled")
+        self._submit(
+            lambda: self._analysis.analyze_saved_queue_entry(self._entry_id),
+            lambda _value: self._load(),
+            self._failed,
+        )
+
+    def _save_manual(self) -> None:
+        raw = self._manual.get().strip().replace(",", ".")
+        if not raw:
+            self._failed(ValueError("Bitte BPM eingeben; Zurücksetzen besitzt eine eigene Aktion."))
+            return
+        try:
+            bpm = float(raw)
+        except ValueError:
+            self._failed(ValueError("BPM muss eine Zahl von 20 bis 300 sein."))
+            return
+        if not 20.0 <= bpm <= 300.0:
+            self._failed(ValueError("BPM muss eine Zahl von 20 bis 300 sein."))
+            return
+        self._submit(
+            lambda: self._analysis.save_manual_saved_queue_bpm(self._entry_id, bpm),
+            lambda _value: self._load(),
+            self._failed,
+        )
+
+    def _reset_manual(self) -> None:
+        self._submit(
+            lambda: self._analysis.reset_manual_saved_queue_bpm(self._entry_id),
+            lambda _value: self._load(),
+            self._failed,
+        )
+
+    def _cancel_analysis(self) -> None:
+        self._analysis.cancel_current()
+        self._load()
+
+    def _failed(self, error: Exception) -> None:
+        if not self._closed:
+            self._status.configure(text=f"Aktion nicht möglich: {error}")
+            self._analyze.configure(state="normal")
+
+    def _close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._generation += 1
+        if self._poll_after is not None:
+            try:
+                self.after_cancel(self._poll_after)
+            except (RuntimeError, TclError):
+                pass
+        release_dialog(self)
+        self.destroy()
 
 
 def show_silent_message(parent: Any, title: str, message: str, *, error: bool = False) -> None:

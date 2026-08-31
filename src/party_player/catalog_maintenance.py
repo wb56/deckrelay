@@ -168,6 +168,8 @@ class MaintenanceFilter:
     text: str = ""
     changed_from: str | None = None
     changed_to: str | None = None
+    minimum_bpm: float | None = None
+    maximum_bpm: float | None = None
 
     def canonical_json(self) -> str:
         values = {
@@ -510,7 +512,11 @@ class CatalogMaintenanceRepository:
         self.last_query_duration_ms = (monotonic() - started) * 1000.0
         self.last_result_count = total
         return MaintenancePage(
-            result, total, page, page_size, SelectionDescription.for_filter(filter_).query_snapshot
+            result,
+            total,
+            page,
+            page_size,
+            SelectionDescription.for_filter(filter_).query_snapshot,
         )
 
     @staticmethod
@@ -625,6 +631,12 @@ class CatalogMaintenanceRepository:
         if filter_.minimum_confidence is not None:
             clauses.append("COALESCE(p.confidence,s.confidence)>=?")
             values.append(filter_.minimum_confidence)
+        if filter_.minimum_bpm is not None:
+            clauses.append("t.bpm>=?")
+            values.append(filter_.minimum_bpm)
+        if filter_.maximum_bpm is not None:
+            clauses.append("t.bpm<=?")
+            values.append(filter_.maximum_bpm)
         if filter_.suggestion_status:
             clauses.append("p.status=?")
             values.append(filter_.suggestion_status)
@@ -651,7 +663,10 @@ class CatalogMaintenanceRepository:
             else:
                 expression = "COALESCE(s.review_status,'MISSING') NOT IN ('MISSING','CONFIRMED_WITHOUT_VALUE')"
             clauses.append(f"({expression})" if filter_.has_value else f"NOT ({expression})")
-        for operator, boundary in ((">=", filter_.changed_from), ("<=", filter_.changed_to)):
+        for operator, boundary in (
+            (">=", filter_.changed_from),
+            ("<=", filter_.changed_to),
+        ):
             if boundary:
                 clauses.append(f"COALESCE(s.updated_at,p.created_at,t.created_at) {operator} ?")
                 values.append(boundary)
@@ -870,13 +885,13 @@ class CatalogMaintenanceService:
                                             serialize_metadata_value(key, new.value),
                                             self._json(
                                                 (
-                                                    old.source.value if old.source else None,
+                                                    (old.source.value if old.source else None),
                                                     old.review_status.value,
                                                 )
                                             ),
                                             self._json(
                                                 (
-                                                    new.source.value if new.source else None,
+                                                    (new.source.value if new.source else None),
                                                     new.review_status.value,
                                                 )
                                             ),
@@ -1001,7 +1016,7 @@ class CatalogMaintenanceService:
             int(row["id"]): (
                 str(row["status"]),
                 str(row["decided_at"]) if row["decided_at"] is not None else None,
-                str(row["decision_reason"]) if row["decision_reason"] is not None else None,
+                (str(row["decision_reason"]) if row["decision_reason"] is not None else None),
                 int(row["id"]) not in action_ids,
             )
             for row in rows
@@ -1025,7 +1040,7 @@ class CatalogMaintenanceService:
             current = (
                 str(row["status"]),
                 str(row["decided_at"]) if row["decided_at"] is not None else None,
-                str(row["decision_reason"]) if row["decision_reason"] is not None else None,
+                (str(row["decision_reason"]) if row["decision_reason"] is not None else None),
             )
             if current == previous[:3]:
                 continue

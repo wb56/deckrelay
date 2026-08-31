@@ -30,6 +30,13 @@ from party_player.metadata_rules import (
     normalize_metadata_value,
 )
 from party_player.metadata_editor import FIELD_LABELS, SOURCE_LABELS, STATUS_LABELS
+from party_player.metadata_analysis_profiles import MetadataAnalysisProfile
+from party_player.metadata_analysis_contracts import TempoAnalysisScope
+from party_player.metadata_analysis_service import (
+    MetadataAnalysisService,
+    TempoBatchPreview,
+    TempoBatchProgress,
+)
 from party_player.ui.dialogs import ask_silent_yes_no, ask_silent_yes_no_cancel
 from party_player.ui.responsive_dialog import (
     apply_responsive_dialog_geometry,
@@ -233,6 +240,34 @@ def parse_batch_input(key: MetadataFieldKey, action: BatchAction, raw: str) -> o
         raise ValueError(f"Der Zielwert für {FIELD_LABELS[key]} ist ungültig.") from error
 
 
+def parse_bpm_filter(minimum: str, maximum: str) -> tuple[float | None, float | None]:
+    """Parse an optional inclusive BPM range for catalog filtering."""
+    try:
+        lower = float(minimum.strip().replace(",", ".")) if minimum.strip() else None
+        upper = float(maximum.strip().replace(",", ".")) if maximum.strip() else None
+    except ValueError as error:
+        raise ValueError("BPM von/bis muss eine Zahl sein.") from error
+    if any(value is not None and not 20.0 <= value <= 300.0 for value in (lower, upper)):
+        raise ValueError("BPM von/bis muss zwischen 20 und 300 liegen.")
+    if lower is not None and upper is not None and lower > upper:
+        raise ValueError("BPM von darf nicht größer als BPM bis sein.")
+    return lower, upper
+
+
+def _labeled_filter_entry(
+    parent: Any, label: str, *, placeholder: str = ""
+) -> tuple[ctk.CTkFrame, ctk.CTkEntry]:
+    """Build a filter input whose meaning never depends on its placeholder."""
+    frame = ctk.CTkFrame(parent, fg_color="transparent")
+    frame.grid_columnconfigure(0, weight=1)
+    ctk.CTkLabel(frame, text=label, anchor="w").grid(
+        row=0, column=0, padx=2, pady=(0, 1), sticky="ew"
+    )
+    entry = ctk.CTkEntry(frame, placeholder_text=placeholder)
+    entry.grid(row=1, column=0, sticky="ew")
+    return frame, entry
+
+
 class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
     """Keep catalog-wide reads and writes outside Tk callbacks."""
 
@@ -243,10 +278,12 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         submit: Submit,
         open_track: Callable[[int], None],
         analysis_actions: CatalogAnalysisActions | None = None,
+        metadata_analysis: MetadataAnalysisService | None = None,
     ) -> None:
         super().__init__(parent)
         self._service, self._submit, self._open_track = service, submit, open_track
         self._analysis_actions = analysis_actions
+        self._metadata_analysis = metadata_analysis
         self._closed = False
         self._page = 1
         self._filter = MaintenanceFilter()
@@ -258,6 +295,9 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._running = False
         self._progress_state = (0, 0)
         self._progress_after: str | None = None
+        self._tempo_run_ids: tuple[int, ...] = ()
+        self._tempo_poll_after: str | None = None
+        self._tempo_skipped = 0
         self.title("Katalogpflege")
         apply_responsive_dialog_geometry(
             self, parent, preferred_size=(1180, 760), minimum_size=(760, 560)
@@ -274,7 +314,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
     def _build(self) -> None:
         filters = ctk.CTkFrame(self)
         filters.grid(row=0, column=0, padx=12, pady=10, sticky="ew")
-        filters.grid_columnconfigure(2, weight=1)
+        filters.grid_columnconfigure(1, weight=1)
         self._queue = ctk.CTkOptionMenu(
             filters,
             values=["Alle Arbeitsvorräte", *WORK_QUEUE_LABELS.values()],
@@ -284,12 +324,15 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._search = ctk.CTkEntry(filters, placeholder_text="Titel oder Interpret")
         self._search.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         ctk.CTkButton(filters, text="Filtern", command=self._apply_filter).grid(
-            row=0, column=2, padx=5, sticky="e"
+            row=0, column=2, padx=5, sticky="ew"
+        )
+        ctk.CTkButton(filters, text="Filter zurücksetzen", command=self._reset_filters).grid(
+            row=0, column=3, padx=5, sticky="ew"
         )
         self._counts = ctk.CTkLabel(filters, text="Arbeitsvorräte werden gezählt …", anchor="w")
-        self._counts.grid(row=1, column=0, columnspan=3, padx=5, sticky="ew")
+        self._counts.grid(row=1, column=0, columnspan=4, padx=5, sticky="ew")
         advanced = ctk.CTkFrame(filters, fg_color="transparent")
-        advanced.grid(row=2, column=0, columnspan=3, sticky="ew")
+        advanced.grid(row=2, column=0, columnspan=4, sticky="ew")
         for column in range(4):
             advanced.grid_columnconfigure(column, weight=1)
         self._filter_field = ctk.CTkOptionMenu(
@@ -320,25 +363,35 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             advanced, values=["Vorschlag egal", *SUGGESTION_STATUS_LABELS.values()]
         )
         self._filter_suggestion.grid(row=1, column=2, padx=3, pady=2, sticky="ew")
-        self._filter_confidence = ctk.CTkEntry(advanced, placeholder_text="Min. Konfidenz 0–1")
-        self._filter_confidence.grid(row=1, column=3, padx=3, pady=2, sticky="ew")
-        self._filter_changed_from = ctk.CTkEntry(
-            advanced, placeholder_text="Geändert von (JJJJ-MM-TT)"
+        confidence_frame, self._filter_confidence = _labeled_filter_entry(
+            advanced, "Min. Konfidenz", placeholder="0–1"
         )
-        self._filter_changed_from.grid(row=2, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
-        self._filter_changed_to = ctk.CTkEntry(
-            advanced, placeholder_text="Geändert bis (JJJJ-MM-TT)"
+        confidence_frame.grid(row=1, column=3, padx=3, pady=2, sticky="ew")
+        changed_from_frame, self._filter_changed_from = _labeled_filter_entry(
+            advanced, "Geändert von", placeholder="JJJJ-MM-TT"
         )
-        self._filter_changed_to.grid(row=2, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
+        changed_from_frame.grid(row=2, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
+        changed_to_frame, self._filter_changed_to = _labeled_filter_entry(
+            advanced, "Geändert bis", placeholder="JJJJ-MM-TT"
+        )
+        changed_to_frame.grid(row=2, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
+        bpm_from_frame, self._filter_bpm_from = _labeled_filter_entry(
+            advanced, "BPM von", placeholder="20–300"
+        )
+        bpm_from_frame.grid(row=3, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
+        bpm_to_frame, self._filter_bpm_to = _labeled_filter_entry(
+            advanced, "BPM bis", placeholder="20–300"
+        )
+        bpm_to_frame.grid(row=3, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
         self._analysis_toggle = ctk.CTkButton(
             filters,
             text="Audioanalyse anzeigen ▾",
             command=self._toggle_analysis_panel,
             anchor="w",
         )
-        self._analysis_toggle.grid(row=3, column=0, columnspan=3, padx=3, pady=(5, 2), sticky="ew")
+        self._analysis_toggle.grid(row=3, column=0, columnspan=4, padx=3, pady=(5, 2), sticky="ew")
         self._analysis_panel = ctk.CTkFrame(filters)
-        self._analysis_panel.grid(row=4, column=0, columnspan=3, padx=3, pady=3, sticky="ew")
+        self._analysis_panel.grid(row=4, column=0, columnspan=4, padx=3, pady=3, sticky="ew")
         self._analysis_panel.grid_columnconfigure(1, weight=1)
         self._build_analysis_panel(self._analysis_panel)
         self._analysis_panel.grid_remove()
@@ -471,28 +524,79 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
                     state="normal" if command is not None else "disabled",
                     fg_color="#7d3030" if danger else None,
                 ).pack(side="left", padx=3)
-        ctk.CTkLabel(panel, text="BPM", width=75, anchor="w").grid(
+        ctk.CTkLabel(panel, text="Tempo", width=75, anchor="w").grid(
             row=2, column=0, padx=6, pady=3, sticky="w"
         )
         bpm = ctk.CTkFrame(panel, fg_color="transparent")
-        bpm.grid(row=2, column=1, padx=3, pady=3, sticky="w")
-        for text in (
-            "Fehlende/veraltete BPM ermitteln",
-            "Alle BPM neu ermitteln",
-            "BPM-Analyse abbrechen",
-        ):
-            ctk.CTkButton(bpm, text=text, state="disabled").pack(side="left", padx=3)
-        ctk.CTkLabel(
+        bpm.grid(row=2, column=1, padx=3, pady=3, sticky="ew")
+        self._tempo_profile = ctk.CTkOptionMenu(
+            bpm, values=("Tempo", "Tempo und experimentelle Energie"), width=230
+        )
+        self._tempo_profile.pack(side="left", padx=3)
+        self._tempo_scope = ctk.CTkOptionMenu(
+            bpm,
+            values=("Vollständige Aufnahme", "Wirksame Katalog-Cue-Bereiche"),
+            width=245,
+        )
+        self._tempo_scope.pack(side="left", padx=3)
+        self._tempo_skip_current = ctk.CTkSwitch(bpm, text="Aktuelle Ergebnisse überspringen")
+        self._tempo_skip_current.select()
+        self._tempo_skip_current.pack(side="left", padx=6)
+        self._tempo_start = ctk.CTkButton(
+            bpm,
+            text="Auswahl analysieren …",
+            command=self._prepare_tempo_batch,
+            state="normal" if self._metadata_analysis is not None else "disabled",
+        )
+        self._tempo_start.pack(side="left", padx=3)
+        tempo_controls = ctk.CTkFrame(panel, fg_color="transparent")
+        tempo_controls.grid(row=3, column=1, padx=3, pady=3, sticky="w")
+        self._tempo_pause = ctk.CTkButton(
+            tempo_controls,
+            text="Pause",
+            state="disabled",
+            command=self._pause_tempo_batch,
+        )
+        self._tempo_pause.pack(side="left", padx=3)
+        self._tempo_resume = ctk.CTkButton(
+            tempo_controls,
+            text="Fortsetzen",
+            state="disabled",
+            command=self._resume_tempo_batch,
+        )
+        self._tempo_resume.pack(side="left", padx=3)
+        self._tempo_abort = ctk.CTkButton(
+            tempo_controls,
+            text="Gesamten Auftrag abbrechen",
+            state="disabled",
+            fg_color="#7d3030",
+            command=self._abort_tempo_batch,
+        )
+        self._tempo_abort.pack(side="left", padx=3)
+        self._tempo_pending_resume = ctk.CTkButton(
+            tempo_controls,
+            text="Wartende Runs fortsetzen",
+            command=self._resume_persistent_tempo,
+            state="normal" if self._metadata_analysis is not None else "disabled",
+        )
+        self._tempo_pending_resume.pack(side="left", padx=3)
+        self._tempo_pending_discard = ctk.CTkButton(
+            tempo_controls,
+            text="Wartende Runs verwerfen",
+            fg_color="#6b5b2a",
+            command=self._discard_persistent_tempo,
+            state="normal" if self._metadata_analysis is not None else "disabled",
+        )
+        self._tempo_pending_discard.pack(side="left", padx=3)
+        self._tempo_progress = ctk.CTkLabel(
             panel,
-            text=(
-                "BPM-Audioanalyse ist vorbereitet, aber noch nicht implementiert. "
-                "Spätere Ergebnisse werden als prüfbare Vorschläge gespeichert."
-            ),
+            text="Tempoanalyse startet nur nach ausdrücklicher Bedienung. Ergebnisse bleiben Vorschläge.",
             text_color="#9fb3c8",
             anchor="w",
             justify="left",
             wraplength=760,
-        ).grid(row=3, column=0, columnspan=2, padx=6, pady=(2, 6), sticky="ew")
+        )
+        self._tempo_progress.grid(row=4, column=0, columnspan=2, padx=6, pady=(2, 6), sticky="ew")
 
     def _toggle_analysis_panel(self) -> None:
         if self._analysis_panel.winfo_ismapped():
@@ -507,6 +611,181 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             action()
         except Exception as error:
             self._failed(error)
+
+    def _prepare_tempo_batch(self) -> None:
+        if self._metadata_analysis is None:
+            return
+        self._tempo_start.configure(state="disabled")
+        self._tempo_progress.configure(text="Auswahl und Analysestand werden geprüft …")
+        self._task(
+            lambda: self._service.repository.resolve_selection(self._selection),
+            self._tempo_selection_resolved,
+        )
+
+    def _tempo_selection_resolved(self, value: object) -> None:
+        if not self._active() or self._metadata_analysis is None:
+            return
+        analysis = self._metadata_analysis
+        rows = cast(tuple[tuple[int, int], ...], value)
+        ids = tuple(track_id for track_id, _revision in rows)
+        if not ids:
+            self._tempo_start.configure(state="normal")
+            self._tempo_progress.configure(text="Bitte mindestens einen Titel auswählen.")
+            return
+        skip = bool(self._tempo_skip_current.get())
+        scope = self._selected_tempo_scope()
+        self._task(
+            lambda: analysis.preview_tracks(ids, skip_current=skip, scope=scope),
+            self._tempo_previewed,
+        )
+
+    def _selected_tempo_scope(self) -> TempoAnalysisScope:
+        return (
+            TempoAnalysisScope.TRACK_DEFAULT_CUES
+            if self._tempo_scope.get() == "Wirksame Katalog-Cue-Bereiche"
+            else TempoAnalysisScope.TRACK_FULL
+        )
+
+    def _tempo_previewed(self, value: object) -> None:
+        if not self._active() or self._metadata_analysis is None:
+            return
+        analysis = self._metadata_analysis
+        preview = cast(TempoBatchPreview, value)
+        estimate = (
+            f"ca. {preview.estimated_seconds / 60:.1f} Minuten"
+            if preview.estimated_seconds is not None
+            else "noch nicht belastbar"
+        )
+        text = (
+            f"Ausgewählt: {preview.selected}\n"
+            f"Bereits aktuell analysiert: {preview.current}\n"
+            f"Veraltete Ergebnisse: {preview.outdated}\n"
+            f"Tatsächlich geplante Runs: {preview.planned}\n"
+            f"Fehlende oder nicht erreichbare Dateien: {preview.missing_files}\n"
+            f"Fehlende oder ungültige Cue-Bereiche: {preview.invalid_cues}\n"
+            f"Vorhandene offene Vorschläge: {preview.open_suggestions}\n"
+            f"Erwartete Dauer: {estimate}\n\n"
+            "BPM und experimentelle Energie werden nur als Vorschläge gespeichert."
+        )
+        block_reason = analysis.block_reason(batch=True)
+        if block_reason:
+            text += f"\n\nStart derzeit gesperrt: {block_reason}"
+        self._tempo_progress.configure(text=text)
+        if (
+            preview.planned == 0
+            or bool(block_reason)
+            or not ask_silent_yes_no(self, "Tempoanalyse starten?", text)
+        ):
+            self._tempo_start.configure(state="normal")
+            return
+        profile = (
+            MetadataAnalysisProfile.TEMPO_AND_ENERGY_EXPERIMENTAL
+            if self._tempo_profile.get() == "Tempo und experimentelle Energie"
+            else MetadataAnalysisProfile.TEMPO
+        )
+        self._tempo_skipped = preview.selected - preview.planned
+        self._task(
+            lambda: analysis.analyze_selected(
+                preview.track_ids, profile, scope=self._selected_tempo_scope()
+            ),
+            self._tempo_batch_started,
+        )
+
+    def _tempo_batch_started(self, value: object) -> None:
+        if not self._active():
+            return
+        jobs = cast(tuple[Any, ...], value)
+        self._tempo_run_ids = tuple(int(job.run_id) for job in jobs)
+        self._tempo_pause.configure(state="normal")
+        self._tempo_abort.configure(state="normal")
+        self._tempo_progress.configure(text="Serielle Tempoanalyse wurde gestartet …")
+        self._schedule_tempo_progress()
+
+    def _schedule_tempo_progress(self) -> None:
+        if not self._active() or self._tempo_poll_after is not None:
+            return
+        self._tempo_poll_after = self.after(400, self._poll_tempo_progress)
+
+    def _poll_tempo_progress(self) -> None:
+        self._tempo_poll_after = None
+        if not self._active() or self._metadata_analysis is None or not self._tempo_run_ids:
+            return
+        analysis = self._metadata_analysis
+        self._task(
+            lambda: analysis.batch_progress(self._tempo_run_ids),
+            self._tempo_progressed,
+        )
+
+    def _tempo_progressed(self, value: object) -> None:
+        if not self._active():
+            return
+        progress = cast(TempoBatchProgress, value)
+        remaining = (
+            f" · Rest ca. {progress.estimated_remaining_seconds / 60:.1f} min"
+            if progress.estimated_remaining_seconds is not None
+            else ""
+        )
+        reason = f"\nPausen-/Sperrgrund: {progress.reason}" if progress.reason else ""
+        current = f"\nAktuell: {progress.current_title}" if progress.current_title else ""
+        self._tempo_progress.configure(
+            text=(
+                f"{progress.completed} / {progress.total} abgeschlossen · "
+                f"erfolgreich {progress.successful} · ohne BPM {progress.without_bpm} · "
+                f"Prüfung erforderlich {progress.review_required} · "
+                f"fehlgeschlagen {progress.failed} · übersprungen {self._tempo_skipped} · "
+                f"abgebrochen {progress.cancelled}{remaining}{current}{reason}"
+            )
+        )
+        if progress.completed < progress.total:
+            self._schedule_tempo_progress()
+            return
+        self._tempo_start.configure(state="normal")
+        self._tempo_pause.configure(state="disabled")
+        self._tempo_resume.configure(state="disabled")
+        self._tempo_abort.configure(state="disabled")
+        self._load_counts_and_page()
+
+    def _pause_tempo_batch(self) -> None:
+        if self._metadata_analysis is None:
+            return
+        self._metadata_analysis.pause()
+        self._tempo_pause.configure(state="disabled")
+        self._tempo_resume.configure(state="normal")
+        self._tempo_progress.configure(text="PAUSIERT – der laufende Titel darf noch enden.")
+
+    def _resume_tempo_batch(self) -> None:
+        if self._metadata_analysis is None:
+            return
+        self._metadata_analysis.resume()
+        self._tempo_pause.configure(state="normal")
+        self._tempo_resume.configure(state="disabled")
+        self._schedule_tempo_progress()
+
+    def _abort_tempo_batch(self) -> None:
+        if self._metadata_analysis is None:
+            return
+        self._metadata_analysis.cancel_all()
+        self._tempo_abort.configure(state="disabled")
+        self._tempo_progress.configure(text="Tempoanalyse wurde vollständig abgebrochen.")
+        self._schedule_tempo_progress()
+
+    def _resume_persistent_tempo(self) -> None:
+        if self._metadata_analysis is None:
+            return
+        count = self._metadata_analysis.resume_persistent_pending()
+        self._tempo_progress.configure(
+            text=f"{count} wartende Runs wurden eingereiht; Start erfolgt kontrolliert."
+        )
+
+    def _discard_persistent_tempo(self) -> None:
+        if self._metadata_analysis is None:
+            return
+        try:
+            count = self._metadata_analysis.discard_persistent_pending()
+        except RuntimeError as error:
+            self._tempo_progress.configure(text=str(error))
+            return
+        self._tempo_progress.configure(text=f"{count} wartende Runs wurden verworfen.")
 
     def _task(self, work: Callable[[], object], done: Callable[[object], None]) -> None:
         self._submit(work, done, self._failed)
@@ -570,9 +849,17 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
     def _apply_filter(self) -> None:
         queue_label = self._queue.get()
         queue = next(
-            (item for item, label in WORK_QUEUE_LABELS.items() if label == queue_label), None
+            (item for item, label in WORK_QUEUE_LABELS.items() if label == queue_label),
+            None,
         )
         confidence_text = self._filter_confidence.get().strip().replace(",", ".")
+        try:
+            minimum_bpm, maximum_bpm = parse_bpm_filter(
+                self._filter_bpm_from.get(), self._filter_bpm_to.get()
+            )
+        except ValueError as error:
+            self._result.configure(text=f"Fehler: {error}")
+            return
         new_filter = MaintenanceFilter(
             work_queue=queue,
             field=(
@@ -620,6 +907,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             text=self._search.get(),
             changed_from=self._filter_changed_from.get().strip() or None,
             changed_to=self._filter_changed_to.get().strip() or None,
+            minimum_bpm=minimum_bpm,
+            maximum_bpm=maximum_bpm,
         )
         has_selection = self._selection.all_matches or bool(self._selection.included_ids)
         if has_selection:
@@ -646,6 +935,36 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._selection = SelectionDescription.for_filter(new_filter)
         self._filter = new_filter
         self._page = 1
+        self._load_counts_and_page()
+
+    def _reset_filters(self) -> None:
+        defaults = (
+            (self._queue, "Alle Arbeitsvorräte"),
+            (self._filter_field, "Alle Felder"),
+            (self._filter_source, "Alle Quellen"),
+            (self._filter_status, "Alle Prüfstatus"),
+            (self._filter_value, "Wert egal"),
+            (self._filter_confirmed, "Bestätigung egal"),
+            (self._filter_conflict, "Konflikt egal"),
+            (self._filter_suggestion, "Vorschlag egal"),
+        )
+        for widget, value in defaults:
+            widget.set(value)
+        for entry in (
+            self._search,
+            self._filter_confidence,
+            self._filter_changed_from,
+            self._filter_changed_to,
+            self._filter_bpm_from,
+            self._filter_bpm_to,
+        ):
+            entry.delete(0, "end")
+        self._filter = MaintenanceFilter()
+        self._selection = SelectionDescription.for_filter(self._filter)
+        self._preview = None
+        self._page = 1
+        self._update_selection()
+        self._result.configure(text="Filter und Auswahl wurden zurückgesetzt.")
         self._load_counts_and_page()
 
     def _filter_restricted(self, filter_: MaintenanceFilter, value: object) -> None:
@@ -848,6 +1167,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._running = False
             self._execute_button.configure(state="normal")
             self._cancel_button.configure(state="disabled")
+            if hasattr(self, "_tempo_start"):
+                self._tempo_start.configure(state="normal")
             self._result.configure(text=f"Fehler: {error}")
 
     def _active(self) -> bool:
@@ -864,6 +1185,13 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             cancel_event.set()
         for _check, _label, tooltip in getattr(self, "_row_widgets", ()):
             tooltip.close()
+        tempo_after = getattr(self, "_tempo_poll_after", None)
+        if tempo_after is not None:
+            try:
+                self.after_cancel(tempo_after)
+            except Exception:
+                pass
+            self._tempo_poll_after = None
         self._closed = True
         release_dialog(self)
         self.destroy()

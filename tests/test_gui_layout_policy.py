@@ -322,7 +322,7 @@ def test_workspace_focus_moves_to_live_action_or_preparation_search() -> None:
 
 
 def test_compact_deck_projects_existing_deck_state_without_mutation() -> None:
-    track = Track(7, r"D:\Musik\long-title.mp3", "Long title", "Artist", "Album", 240.0)
+    track = Track(7, r"D:\Musik\long-title.mp3", "Long title", "Artist", "Album", 240.0, bpm=126.0)
     deck = Deck(
         "A",
         loaded_track=track,
@@ -341,6 +341,7 @@ def test_compact_deck_projects_existing_deck_state_without_mutation() -> None:
     assert model.state == "● ON AIR"
     assert model.progress == 45.0 / 240.0
     assert model.warning == "Cue prüfen"
+    assert model.bpm == 126.0
     assert deck.position == 45.0
 
 

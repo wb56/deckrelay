@@ -31,6 +31,7 @@ class CompactDeckPresentation:
     on_air: bool
     error: str
     warning: str
+    bpm: float | None
 
 
 def compact_deck_presentation(deck: Deck) -> CompactDeckPresentation:
@@ -55,4 +56,5 @@ def compact_deck_presentation(deck: Deck) -> CompactDeckPresentation:
         on_air=deck.is_on_air,
         error=deck.error_message,
         warning=deck.cue_warning,
+        bpm=track.bpm if track is not None else None,
     )

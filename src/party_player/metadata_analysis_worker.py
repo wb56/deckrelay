@@ -120,7 +120,7 @@ def analyze_in_child(
     backend: AnalysisBackend
     if job.backend is MetadataAnalysisBackendKind.FFMPEG_TEMPO:
         if cancellation is None:
-            raise ValueError("Prototypbackend benötigt ein Abbruchsignal")
+            raise ValueError("Tempoanalyse benötigt ein Abbruchsignal")
         from party_player.metadata_tempo_backend import FfmpegTempoAnalysisBackend
 
         return FfmpegTempoAnalysisBackend().analyze(job, cancellation)

@@ -82,6 +82,8 @@ from party_player.repository import PartyPlayerRepository
 from party_player.models import Track
 from party_player.services.library_service import LibraryService
 from party_player.saved_queue_service import SavedQueueService
+from party_player.tempo_context import TempoContextRepository
+from party_player.metadata_analysis_contracts import TempoAnalysisScope
 from party_player.session_service import PartySessionService
 from party_player.settings_service import SettingsService
 from party_player.dependency_locator import DependencyLocator
@@ -183,6 +185,21 @@ class PartyPlayerApplication:
         audio_output_device = settings.audio_output_device()
         session_service = PartySessionService(party_repository)
         session = session_service.restore_or_start(settings.restore_last_session())
+        tempo_context = TempoContextRepository(database)
+
+        def invalidate_cue_tempo(track_id: int) -> None:
+            tempo_context.mark_scope_stale(
+                track_id,
+                TempoAnalysisScope.TRACK_DEFAULT_CUES,
+                "Wirksame globale Titel-Cues wurden geändert",
+            )
+            tempo_context.mark_scope_stale(
+                track_id,
+                TempoAnalysisScope.SAVED_QUEUE_ENTRY,
+                "Geerbte globale Titel-Cues wurden geändert",
+                inherited_only=True,
+            )
+
         cue_points = CuePointService(
             CuePointRepository(database),
             settings.fade_duration(7.0),
@@ -190,6 +207,7 @@ class PartyPlayerApplication:
             settings.minimum_playable_duration(),
             short_track_threshold=30.0,
             short_track_policy=ShortTrackPolicy.USE_REDUCED_FADE,
+            on_global_cues_changed=invalidate_cue_tempo,
         )
         track_blocks = PersistentTrackBlockService(TrackPolicyRepository(database))
         artist_blocks = PersistentArtistBlockService(
@@ -682,16 +700,20 @@ class PartyPlayerApplication:
         window.bind_loudness_controller(loudness_controller)
 
         def metadata_analysis_progress(event: str, job_id: str, detail: str) -> None:
+            def deliver() -> None:
+                logger.debug(
+                    "Metadatenanalyse: event=%s job=%s detail=%s",
+                    event,
+                    job_id,
+                    detail,
+                )
+                window.show_metadata_analysis_progress(event, job_id, detail)
+
             gui_dispatcher.publish(
                 GuiEvent(
                     GuiEventType.CALLBACK,
                     "metadata_analysis_progress",
-                    lambda: logger.debug(
-                        "Metadatenanalyse: event=%s job=%s detail=%s",
-                        event,
-                        job_id,
-                        detail,
-                    ),
+                    deliver,
                     coalesce_key="metadata_analysis_progress",
                 )
             )
@@ -705,10 +727,13 @@ class PartyPlayerApplication:
                 production_mode=not settings.background_analysis_enabled(),
                 audio_recovery=controller.metadata_analysis_audio_recovery_active(),
                 automation_active=controller.metadata_analysis_automation_active(),
+                playback_active=controller.is_audio_active(),
             ),
             publish_progress=metadata_analysis_progress,
             worker_registry=worker_registry,
+            cue_points=cue_points,
         )
+        window.bind_metadata_analysis(metadata_analysis)
 
         required_restore_participants = [
             controller.restore_participant(),

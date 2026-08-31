@@ -268,7 +268,7 @@ def test_manual_backup_path_creates_and_validates_real_archive(
     assert completed_log.operation_result == "COMPLETED"
     assert completed_log.error_code == "none"
     assert completed_log.backup_target == str(tmp_path / "manual-backups")
-    assert completed_log.schema_version == 39
+    assert completed_log.schema_version == 41
     assert completed_log.started_at
     assert completed_log.finished_at
     controller.close()
@@ -346,7 +346,7 @@ def test_manual_maintenance_runs_on_shared_background_worker(
     completed_log = handler.records[1]
     assert completed_log.operation_type == "MAINTENANCE"
     assert completed_log.operation_detail == "QUICK_CHECK"
-    assert completed_log.schema_version == 39
+    assert completed_log.schema_version == 41
     assert completed_log.backup_target == "none"
     controller.close()
 

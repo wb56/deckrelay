@@ -6,7 +6,8 @@ from enum import StrEnum
 from party_player.metadata_analysis_contracts import MetadataAnalysisKind
 
 
-ALGORITHM_VERSION = "ffmpeg-onset-acf-v0.1"
+ALGORITHM_VERSION = "ffmpeg-onset-acf-v0.5"
+PROFILE_VERSION = "tempo-profile-v3"
 HIGH_CONFIDENCE = 0.80
 MINIMUM_SUGGESTION_CONFIDENCE = 0.55
 TEMPO_CHANGE_STABILITY = 0.65

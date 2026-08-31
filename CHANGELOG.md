@@ -6,6 +6,10 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Der Titeleditor zeigt schreibgeschützte technische Audiodaten aus dem tatsächlichen
+  FFprobe-Dateiinhalt einschließlich Codec, Container, belastbarem MP3-CBR-/VBR-Status,
+  Bitrate, Abtastrate, Bittiefe, Kanälen, Layout und technischer Dauer. Die asynchrone
+  Ermittlung verwendet einen snapshotgebundenen Cache und verwirft veraltete Ergebnisse.
 - Vollständige Vergleichsdiagnose für getrennte Gesamt- und Cue-Tempoanalysen mit
   tatsächlichen Analysefenstern, Rohwerten, Aggregationsbeiträgen und eindeutigen
   Zuständen für wartende, laufende, abgeschlossene, fehlgeschlagene und abgebrochene

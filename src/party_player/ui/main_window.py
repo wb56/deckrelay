@@ -27,15 +27,26 @@ from party_player.controllers.main_controller import (
     RecoveryReturnRequirement,
 )
 from party_player.controllers.cue_point_controller import CuePointController
-from party_player.controllers.loudness_controller import LoudnessController, LoudnessEditorState
+from party_player.controllers.loudness_controller import (
+    LoudnessController,
+    LoudnessEditorState,
+)
 from party_player.controllers.track_editor_controller import (
     TrackEditorController,
     TrackEditorViewModel,
 )
+from party_player.metadata_analysis_service import MetadataAnalysisService
 from party_player.enums import DeckState
 from party_player.emergency_actions import EmergencyActionProfile
 from party_player.emergency_playlist import EmergencyMediaType
-from party_player.models import Deck, PartySession, QueueEntry, QueueStats, SavedQueue, Track
+from party_player.models import (
+    Deck,
+    PartySession,
+    QueueEntry,
+    QueueStats,
+    SavedQueue,
+    Track,
+)
 from party_player.ui.tooltip import SharedTooltipManager, Tooltip
 from party_player.ui.queue_row import QueueEntryViewModel, QueueRowView
 from party_player.ui import theme
@@ -44,7 +55,11 @@ from party_player.queue_view_events import (
     QueueViewEventType,
     QueueViewRevision,
 )
-from party_player.ui.catalog_row import CatalogEntryViewModel, CatalogRowView
+from party_player.ui.catalog_row import (
+    CatalogEntryViewModel,
+    CatalogRowView,
+    track_version_text,
+)
 from party_player.ui.compact_deck_presentation import compact_deck_presentation
 from party_player.ui.overlay_panel import OverlayPanel
 from party_player.ui.overlay_management_dialog import OverlayManagementDialog
@@ -117,7 +132,9 @@ from party_player.ui.dialogs import (
     LoudnessDialog,
     NormalizationSettingsDialog,
     QueueCueDialog,
+    SavedQueueTempoDialog,
     show_silent_message,
+    show_tempo_analysis_help,
 )
 from party_player.ui.catalog_maintenance_dialog import (
     CatalogAnalysisActions,
@@ -552,7 +569,12 @@ class DeckPanel(ctk.CTkFrame):  # type: ignore[misc]
         )
         self._air_badge.grid(row=0, column=0, padx=14, pady=(16, 8), sticky="e")
         self._cover = ctk.CTkLabel(
-            self, text="Kein Cover", width=190, height=160, fg_color="#20242b", corner_radius=8
+            self,
+            text="Kein Cover",
+            width=190,
+            height=160,
+            fg_color="#20242b",
+            corner_radius=8,
         )
         self._cover.grid(row=1, column=0, padx=16, pady=8)
         self._file_button = ctk.CTkButton(
@@ -788,6 +810,8 @@ class DeckPanel(ctk.CTkFrame):  # type: ignore[misc]
                 details = f"{track.artist or 'Unbekannt'}\n{track.album or 'Unbekanntes Album'}"
                 if year:
                     details += f" · {year}"
+                if track.bpm is not None:
+                    details += f" · {track.bpm:g} BPM"
                 self._configure_if_changed("title", self._title, text=track.title)
                 self._configure_if_changed("metadata", self._metadata, text=details)
         with self._performance.measure(f"{self._render_operation}.cues", warning_threshold_ms=10.0):
@@ -830,7 +854,7 @@ class DeckPanel(ctk.CTkFrame):  # type: ignore[misc]
                 "loudness",
                 self._loudness,
                 text=_deck_loudness_text(deck),
-                text_color=theme.WARNING if deck.loudness_peak_limited else theme.TEXT_MUTED,
+                text_color=(theme.WARNING if deck.loudness_peak_limited else theme.TEXT_MUTED),
             )
             self._configure_if_changed(
                 "equalizer",
@@ -957,7 +981,11 @@ class DeckPanel(ctk.CTkFrame):  # type: ignore[misc]
     def _choose_file(self) -> None:
         file_path = filedialog.askopenfilename(
             title=f"Audiodatei für Deck {self.deck_id} wählen",
-            filetypes=(("MP3 und FLAC", "*.mp3 *.flac"), ("MP3", "*.mp3"), ("FLAC", "*.flac")),
+            filetypes=(
+                ("MP3 und FLAC", "*.mp3 *.flac"),
+                ("MP3", "*.mp3"),
+                ("FLAC", "*.flac"),
+            ),
         )
         if file_path and self._import_callback is not None:
             self._import_callback(file_path, self.deck_id)
@@ -999,7 +1027,10 @@ class CompactDeckPanel(ctk.CTkFrame):  # type: ignore[misc]
         )
         self._identity.grid(row=0, column=0, padx=(10, 6), pady=(6, 0), sticky="w")
         self._title = ctk.CTkLabel(
-            self, text="Kein Titel geladen", font=(theme.FONT_FAMILY, 14, "bold"), anchor="w"
+            self,
+            text="Kein Titel geladen",
+            font=(theme.FONT_FAMILY, 14, "bold"),
+            anchor="w",
         )
         self._title.grid(row=0, column=1, padx=4, pady=(6, 0), sticky="ew")
         self._state = ctk.CTkLabel(self, text="LEER", text_color=theme.TEXT_MUTED, anchor="e")
@@ -1058,7 +1089,8 @@ class CompactDeckPanel(ctk.CTkFrame):  # type: ignore[misc]
         self._updating_controls = True
         model = compact_deck_presentation(deck)
         with self._performance.measure(
-            f"status_render.compact_deck_{self.deck_id.lower()}", warning_threshold_ms=10.0
+            f"status_render.compact_deck_{self.deck_id.lower()}",
+            warning_threshold_ms=10.0,
         ):
             state_color = theme.TEXT_MUTED
             if model.on_air:
@@ -1066,7 +1098,10 @@ class CompactDeckPanel(ctk.CTkFrame):  # type: ignore[misc]
             elif model.error:
                 state_color = theme.ERROR
             self._configure_if_changed("title", self._title, text=model.title)
-            self._configure_if_changed("source", self._source, text=f"Quelle: {model.source}")
+            source = f"Quelle: {model.source}"
+            if model.bpm is not None:
+                source += f" · {model.bpm:g} BPM"
+            self._configure_if_changed("source", self._source, text=source)
             self._configure_if_changed(
                 "state", self._state, text=model.state, text_color=state_color
             )
@@ -1181,6 +1216,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._compact_playlist_expanded = False
         self._catalog_analysis_active = False
         self._loudness_analysis_active = False
+        self._metadata_analysis_active = False
         self._presentation_layout_signature: tuple[ResolvedPresentation, Workspace] | None = None
         self._controller: MainController | None = None
         self._system_diagnostic_report: SystemDiagnosticReport | None = None
@@ -1199,6 +1235,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._restart_requested = False
         self._cue_controller: CuePointController | None = None
         self._loudness_controller: LoudnessController | None = None
+        self._metadata_analysis: MetadataAnalysisService | None = None
         self._queue_tooltips: list[Tooltip] = []
         self._queue_rows: list[QueueRowView] = []
         self._queue_tooltip_manager = SharedTooltipManager()
@@ -1343,7 +1380,9 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
                 self._overlay_favorite_shortcut,
             )
         self._bind_gui(
-            "<Delete>", "delete_queue_selection", lambda _event: self._delete_selected_queue()
+            "<Delete>",
+            "delete_queue_selection",
+            lambda _event: self._delete_selected_queue(),
         )
         self._bind_gui(
             "<Control-Left>",
@@ -1605,7 +1644,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         catalog_maintenance_button.pack(side="left", padx=(4, 0))
         self._static_tooltips.extend(
             (
-                Tooltip(catalog_file_button, "Eine MP3-/FLAC-Datei nur in den Katalog aufnehmen"),
+                Tooltip(
+                    catalog_file_button,
+                    "Eine MP3-/FLAC-Datei nur in den Katalog aufnehmen",
+                ),
                 Tooltip(
                     catalog_directory_button,
                     "Alle MP3-/FLAC-Dateien rekursiv nur in den Katalog aufnehmen",
@@ -1613,13 +1655,19 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             )
         )
         self._catalog_previous_button = ctk.CTkButton(
-            search_frame, text="◀", width=34, command=lambda: self._change_catalog_page(-1)
+            search_frame,
+            text="◀",
+            width=34,
+            command=lambda: self._change_catalog_page(-1),
         )
         self._catalog_previous_button.grid(row=0, column=3, padx=(10, 3))
         self._catalog_page_label = ctk.CTkLabel(search_frame, text="Seite 1/1", width=75)
         self._catalog_page_label.grid(row=0, column=4)
         self._catalog_next_button = ctk.CTkButton(
-            search_frame, text="▶", width=34, command=lambda: self._change_catalog_page(1)
+            search_frame,
+            text="▶",
+            width=34,
+            command=lambda: self._change_catalog_page(1),
         )
         self._catalog_next_button.grid(row=0, column=5, padx=(3, 0))
         self._compact_preparation_tools = ctk.CTkFrame(center, fg_color="transparent")
@@ -1921,7 +1969,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._static_tooltips.extend(
             (
                 Tooltip(
-                    self._duplicate_switch, "Mehrfache aktive Einträge desselben Titels erlauben"
+                    self._duplicate_switch,
+                    "Mehrfache aktive Einträge desselben Titels erlauben",
                 ),
                 Tooltip(
                     self._effective_duration_switch,
@@ -1950,7 +1999,9 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._directory_progress = ctk.CTkProgressBar(self._directory_progress_frame)
         self._directory_progress.grid(row=0, column=0, padx=(0, 8), sticky="ew")
         self._directory_progress_label = ctk.CTkLabel(
-            self._directory_progress_frame, text="Verzeichnis wird eingelesen …", width=180
+            self._directory_progress_frame,
+            text="Verzeichnis wird eingelesen …",
+            width=180,
         )
         self._directory_progress_label.grid(row=0, column=1)
         self._directory_progress_frame.grid_remove()
@@ -2170,7 +2221,9 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             row=4, column=0, columnspan=2, padx=12, pady=(5, 10), sticky="w"
         )
         self._fullscreen_start_switch = ctk.CTkSwitch(
-            playback_group, text="Vollbild beim Start", command=self._fullscreen_start_changed
+            playback_group,
+            text="Vollbild beim Start",
+            command=self._fullscreen_start_changed,
         )
         self._fullscreen_start_switch.grid(
             row=4, column=2, columnspan=2, padx=(4, 12), pady=(5, 10), sticky="w"
@@ -2193,7 +2246,9 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             row=1, column=0, columnspan=3, padx=12, pady=5, sticky="w"
         )
         self._file_browser_switch = ctk.CTkSwitch(
-            options_group, text="Dateibrowser anzeigen", command=self._file_browser_changed
+            options_group,
+            text="Dateibrowser anzeigen",
+            command=self._file_browser_changed,
         )
         self._file_browser_switch.grid(row=2, column=0, columnspan=3, padx=12, pady=5, sticky="w")
         self._production_mode_switch = ctk.CTkSwitch(
@@ -2584,7 +2639,12 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
     @staticmethod
     def _snapshot_fingerprint(snapshot: DisplaySnapshot) -> tuple[object, ...]:
         return tuple(
-            (monitor.bounds, monitor.work_area, round(monitor.dpi_scale, 4), monitor.primary)
+            (
+                monitor.bounds,
+                monitor.work_area,
+                round(monitor.dpi_scale, 4),
+                monitor.primary,
+            )
             for monitor in snapshot.monitors
         ) + (snapshot.insets,)
 
@@ -2694,7 +2754,12 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             trigger,
             [
                 {
-                    "bounds": (m.bounds.left, m.bounds.top, m.bounds.right, m.bounds.bottom),
+                    "bounds": (
+                        m.bounds.left,
+                        m.bounds.top,
+                        m.bounds.right,
+                        m.bounds.bottom,
+                    ),
                     "work": (
                         m.work_area.left,
                         m.work_area.top,
@@ -2814,11 +2879,14 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             except (RuntimeError, TclError):
                 pass
         self._external_program_dialog = ExternalProgramsDialog(
-            self, *self._external_program_binding  # type: ignore[arg-type]
+            self,
+            *self._external_program_binding,  # type: ignore[arg-type]
         )
 
     def _show_help_menu(self, button: Any) -> None:
         menu = tk.Menu(self, tearoff=False)
+        menu.add_command(label="Tempoanalyse…", command=lambda: show_tempo_analysis_help(self))
+        menu.add_separator()
         menu.add_command(label="Systemdiagnose", command=self._show_system_diagnostics)
         menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
 
@@ -3074,7 +3142,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             return False
         selected = filedialog.askopenfilename(
             title="DeckRelay-Backup wiederherstellen",
-            filetypes=(("DeckRelay-Backup", "*.partyplayer-backup"), ("Alle Dateien", "*.*")),
+            filetypes=(
+                ("DeckRelay-Backup", "*.partyplayer-backup"),
+                ("Alle Dateien", "*.*"),
+            ),
         )
         if not selected:
             return False
@@ -3181,7 +3252,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         controller = self._controller
         if controller is None:
             return
-        self._equalizer_preset_keys = {"Vererben": "inherit", "Equalizer aus": "disabled"}
+        self._equalizer_preset_keys = {
+            "Vererben": "inherit",
+            "Equalizer aus": "disabled",
+        }
         for preset_key, name in controller.equalizer_presets():
             self._equalizer_preset_keys[name] = preset_key
         self._queue_equalizer_menu.configure(values=list(self._equalizer_preset_keys))
@@ -3193,7 +3267,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         preview = result.equalizer_preview
         if preview is None or not preview.valid or preview.preset is None:
             show_silent_message(
-                self, "Equalizer-Preset kann nicht geprüft werden", result.message, error=True
+                self,
+                "Equalizer-Preset kann nicht geprüft werden",
+                result.message,
+                error=True,
             )
             return
         preset = preview.preset
@@ -3233,7 +3310,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         preview = result.overlay_preview
         if preview is None or not preview.can_import:
             show_silent_message(
-                self, "Overlay-Konfiguration kann nicht geprüft werden", result.message, error=True
+                self,
+                "Overlay-Konfiguration kann nicht geprüft werden",
+                result.message,
+                error=True,
             )
             return
         favorites = sum(record.favorite_position is not None for record in preview.records)
@@ -3738,7 +3818,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         edit_button.pack(side="left")
         dialog_tooltips.extend(
             (
-                Tooltip(preview_button, "Ausgewähltes Preset vorübergehend auf dem Deck testen"),
+                Tooltip(
+                    preview_button,
+                    "Ausgewähltes Preset vorübergehend auf dem Deck testen",
+                ),
                 Tooltip(save_button, "Preset für das gewählte Wirkungsziel speichern"),
                 Tooltip(discard_button, "Vorschau verwerfen und Dialog schließen"),
             )
@@ -3800,6 +3883,42 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._outdated_loudness_button.configure(state="disabled")
             Tooltip(self._loudness_analysis_button, message)
             Tooltip(self._outdated_loudness_button, message)
+
+    def bind_metadata_analysis(self, service: MetadataAnalysisService) -> None:
+        self._metadata_analysis = service
+
+    def show_metadata_analysis_progress(self, event: str, job_id: str, detail: str) -> None:
+        """Show catalog tempo batches globally, even after their dialog closes."""
+        service = self._metadata_analysis
+        if service is None:
+            return
+        progress = service.global_batch_progress(job_id)
+        if progress is None:
+            return
+        self._metadata_analysis_active = progress.completed < progress.total
+        state = "BPM-Analyse"
+        if progress.state == "PAUSED":
+            state += " pausiert"
+        elif event == "BLOCKED":
+            state += " wartet"
+        elif not self._metadata_analysis_active:
+            state += " abgeschlossen"
+        text = (
+            f"{state}: {progress.completed}/{progress.total} · "
+            f"Erfolgreich: {progress.successful} · Ohne BPM: {progress.without_bpm} · "
+            f"Prüfung: {progress.review_required} · Fehler: {progress.failed} · "
+            f"Abgebrochen: {progress.cancelled}"
+        )
+        if progress.current_title:
+            text += f" · Aktuell: {progress.current_title}"
+        if progress.reason:
+            text += f" · {progress.reason}"
+        self._summary.configure(text=text)
+        if self._metadata_analysis_active:
+            self._show_compact_active_analysis(text)
+        else:
+            self._refresh_compact_analysis_toggle_state()
+            self._hide_compact_active_analysis_if_complete()
 
     def _run_equalizer_action(self, action: Callable[[], None]) -> None:
         try:
@@ -4294,16 +4413,20 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             "queue_dirty_rows": self._queue_dirty_scheduler.pending_count,
             "overlay.active": int(
                 self._overlay_runtime.status
-                not in {OverlayStatus.IDLE, OverlayStatus.FINISHED, OverlayStatus.FAILED}
+                not in {
+                    OverlayStatus.IDLE,
+                    OverlayStatus.FINISHED,
+                    OverlayStatus.FAILED,
+                }
             ),
             "overlay.generation": self._overlay_runtime.generation,
             "overlay.position_ms": self._overlay_runtime.position_ms or 0,
             "overlay.ducking_active": int(self._overlay_ducking_factor < 0.999),
-            "presentation.client_width": presentation.client_size.width if presentation else 0,
-            "presentation.client_height": presentation.client_size.height if presentation else 0,
-            "presentation.resize_events": presentation.resize_events if presentation else 0,
+            "presentation.client_width": (presentation.client_size.width if presentation else 0),
+            "presentation.client_height": (presentation.client_size.height if presentation else 0),
+            "presentation.resize_events": (presentation.resize_events if presentation else 0),
             "presentation.evaluations": presentation.evaluations if presentation else 0,
-            "presentation.applied_changes": presentation.applied_changes if presentation else 0,
+            "presentation.applied_changes": (presentation.applied_changes if presentation else 0),
             "presentation.resolved_compact": int(
                 presentation is not None
                 and presentation.state.resolved is ResolvedPresentation.COMPACT
@@ -4357,7 +4480,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         ready = state == "ready_for_confirmation"
         self._audio_device_recovery_label.configure(
             text=message,
-            text_color=("#B45309", "#FBBF24") if lost or ready else ("#166534", "#86EFAC"),
+            text_color=(("#B45309", "#FBBF24") if lost or ready else ("#166534", "#86EFAC")),
         )
         self._audio_device_retry_button.configure(state="normal" if lost else "disabled")
         self._audio_device_confirm_button.configure(state="normal" if ready else "disabled")
@@ -4385,7 +4508,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         all_fulfilled = all(requirement.fulfilled for requirement in requirements)
         self._recovery_return_requirements_label.configure(
             text="\n".join(lines),
-            text_color=("#166534", "#86EFAC") if all_fulfilled else ("#991B1B", "#FCA5A5"),
+            text_color=(("#166534", "#86EFAC") if all_fulfilled else ("#991B1B", "#FCA5A5")),
         )
         self._recovery_return_requirements_label.grid()
         self._recovery_resume_button.configure(state="normal" if all_fulfilled else "disabled")
@@ -5128,7 +5251,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             "overlay_id": definition.overlay_id if definition is not None else 0,
             "name": definition.name if definition is not None else "",
             "position_ms": self._overlay_runtime.position_ms or 0,
-            "volume_percent": definition.volume_percent if definition is not None else 0,
+            "volume_percent": (definition.volume_percent if definition is not None else 0),
             "fade_in_ms": playback.fade_in_ms if playback is not None else 0,
             "fade_out_ms": playback.fade_out_ms if playback is not None else 0,
             "ducking_target_db": (
@@ -5364,8 +5487,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         )
         widget.bind(
             "<FocusOut>",
-            lambda _event, item=widget, color=original_color, width=original_width: (
-                item.configure(border_color=color, border_width=width)
+            lambda _event, item=widget, color=original_color, width=original_width: item.configure(
+                border_color=color, border_width=width
             ),
             add="+",
         )
@@ -5979,7 +6102,9 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         with (
             self._callback_state.track("cover_apply"),
             self._performance.measure(
-                "gui.cover_apply.total", warning_threshold_ms=100.0, context={"deck": deck_id}
+                "gui.cover_apply.total",
+                warning_threshold_ms=100.0,
+                context={"deck": deck_id},
             ),
         ):
             self._show_deck_cover_impl(deck_id, image_data)
@@ -6196,7 +6321,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         )
         if name is not None:
             self._update_optionmenu(
-                "saved_queues", self._saved_queue_menu, list(self._saved_queue_ids) or [name], name
+                "saved_queues",
+                self._saved_queue_menu,
+                list(self._saved_queue_ids) or [name],
+                name,
             )
             self._sync_playlist_equalizer_menu()
 
@@ -6220,7 +6348,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             font=("Segoe UI", 18, "bold"),
         ).grid(row=0, column=0, padx=12, pady=12, sticky="w")
         playlist_search = ctk.CTkEntry(
-            dialog, placeholder_text="Playlist nach Titel, Interpret oder Album durchsuchen"
+            dialog,
+            placeholder_text="Playlist nach Titel, Interpret oder Album durchsuchen",
         )
         playlist_search.grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
         content = SmoothScrollableFrame(dialog)
@@ -6232,18 +6361,20 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
                 child.destroy()
             normalized = query.strip().casefold()
             visible = [
-                (position, track)
+                (position, track, playlist.entries[position - 1])
                 for position, track in enumerate(tracks, start=1)
                 if not normalized
                 or normalized
-                in " ".join((track.title, track.artist, track.album, track.genre)).casefold()
+                in " ".join(
+                    (track.title, track.artist, track.album, track.genre, track.file_path)
+                ).casefold()
             ]
             if not visible:
                 ctk.CTkLabel(content, text="Keine passenden Playlist-Titel gefunden").grid(
                     row=0, column=0, padx=8, pady=20
                 )
                 return
-            for display_row, (position, track) in enumerate(visible):
+            for display_row, (position, track, entry) in enumerate(visible):
                 row = ctk.CTkFrame(content)
                 row.grid(row=display_row, column=0, pady=2, sticky="ew")
                 row.grid_columnconfigure(0, weight=1)
@@ -6252,14 +6383,34 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
                     if track.artist
                     else f"{position:02d}. {track.title}"
                 )
-                ctk.CTkLabel(row, text=label, anchor="w").grid(
-                    row=0, column=0, padx=8, pady=5, sticky="ew"
+                identity = ctk.CTkLabel(
+                    row,
+                    text=f"{label}\n{track_version_text(track)}",
+                    anchor="w",
+                    justify="left",
                 )
+                identity.grid(row=0, column=0, padx=8, pady=5, sticky="ew")
+                Tooltip(identity, f"Playlist-Datei:\n{track.file_path}")
                 for column, (text, command) in enumerate(
                     (
-                        ("A", lambda item=track: self._load_playlist_track(item.id, "A")),
-                        ("B", lambda item=track: self._load_playlist_track(item.id, "B")),
-                        ("+ Queue", lambda item=track: self._add_playlist_track(item.id)),
+                        (
+                            "A",
+                            lambda item=track: self._load_playlist_track(item.id, "A"),
+                        ),
+                        (
+                            "B",
+                            lambda item=track: self._load_playlist_track(item.id, "B"),
+                        ),
+                        (
+                            "+ Queue",
+                            lambda item=track: self._add_playlist_track(item.id),
+                        ),
+                        (
+                            "Tempo…",
+                            lambda item=entry: self._edit_saved_queue_tempo(
+                                item.saved_queue_entry_id
+                            ),
+                        ),
                     ),
                     start=1,
                 ):
@@ -6271,6 +6422,26 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         playlist_search.bind("<KeyRelease>", lambda _event: render_playlist(playlist_search.get()))
         playlist_search.focus_set()
         render_playlist()
+
+    def _edit_saved_queue_tempo(self, entry_id: int | None) -> None:
+        if entry_id is None or self._metadata_analysis is None or self._controller is None:
+            show_silent_message(
+                self,
+                "Playlist-Tempo",
+                "Dieser Playlist-Eintrag besitzt noch keine stabile Eintrags-ID.",
+                error=True,
+            )
+            return
+        controller = self._controller
+
+        def submit(
+            task: Callable[[], object],
+            completed: Callable[[object], None],
+            failed: Callable[[Exception], None],
+        ) -> bool:
+            return controller.load_track_editor_view_model(task, completed, failed)
+
+        SavedQueueTempoDialog(self, entry_id, self._metadata_analysis, submit)
 
     def show_queue_shuffle_result(self, shuffled: int) -> None:
         message = (
@@ -6413,6 +6584,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self,
             "Titel aus Katalog entfernen?",
             f"{track.artist or 'Unbekannt'} — {track.title}\n\n"
+            f"Ausgewählte Version: {track_version_text(track)}\n"
+            f"Dateipfad: {track.file_path}\n\n"
             "Nur der Katalogeintrag wird ausgeblendet. Die Musikdatei bleibt unverändert.",
         ):
             self._controller.remove_catalog_track(track.id)
@@ -6461,6 +6634,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
                 self._analyze_loudness_catalog,
                 self._cancel_loudness_analysis,
             ),
+            self._metadata_analysis,
         )
 
     def _edit_cue_points(self, track: Track) -> None:
@@ -6483,6 +6657,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._performance,
             main_controller.metadata_editor_service,
             submit_editor_task,
+            self._metadata_analysis,
         )
 
         def refresh_changed_track(view_model: TrackEditorViewModel) -> None:
@@ -6816,10 +6991,12 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         )
         menu.add_separator()
         menu.add_command(
-            label="Playlist-Werkzeuge ein-/ausblenden", command=self._toggle_saved_toolbar
+            label="Playlist-Werkzeuge ein-/ausblenden",
+            command=self._toggle_saved_toolbar,
         )
         menu.add_command(
-            label="Aktuelle Queue als Playlist speichern…", command=self._save_current_queue
+            label="Aktuelle Queue als Playlist speichern…",
+            command=self._save_current_queue,
         )
         menu.add_separator()
         menu.add_command(label="Wartende Titel entfernen…", command=self._clear_waiting_queue)
@@ -6993,7 +7170,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
     def _show_catalog_analysis_progress(
         self, processed: int, total: int, succeeded: int, failed: int
     ) -> None:
-        text = f"Cue-Analyse: {processed}/{total} · " f"Erfolgreich: {succeeded} · Fehler: {failed}"
+        text = f"Cue-Analyse: {processed}/{total} · Erfolgreich: {succeeded} · Fehler: {failed}"
         self._summary.configure(text=text)
         self._show_compact_active_analysis(text)
 
@@ -7056,8 +7233,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self, processed: int, total: int, succeeded: int, failed: int
     ) -> None:
         text = (
-            f"Lautheitsanalyse: {processed}/{total} · "
-            f"Erfolgreich: {succeeded} · Fehler: {failed}"
+            f"Lautheitsanalyse: {processed}/{total} · Erfolgreich: {succeeded} · Fehler: {failed}"
         )
         self._summary.configure(text=text)
         self._show_compact_active_analysis(text)
@@ -7086,7 +7262,11 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._compact_analysis_active_cancel.grid()
 
     def _hide_compact_active_analysis_if_complete(self) -> None:
-        if self._catalog_analysis_active or self._loudness_analysis_active:
+        if (
+            self._catalog_analysis_active
+            or self._loudness_analysis_active
+            or self._metadata_analysis_active
+        ):
             return
         self._compact_analysis_active_label.grid_remove()
         self._compact_analysis_active_cancel.grid_remove()
@@ -7096,6 +7276,11 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._cancel_catalog_analysis()
         if self._loudness_analysis_active:
             self._cancel_loudness_analysis()
+        if self._metadata_analysis_active and self._metadata_analysis is not None:
+            self._metadata_analysis.cancel_all()
+            text = "BPM-Analyse: Abbruch angefordert …"
+            self._summary.configure(text=text)
+            self._show_compact_active_analysis(text)
 
     def _save_current_queue(self) -> None:
         if self._controller is None:

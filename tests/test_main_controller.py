@@ -2456,6 +2456,28 @@ def test_track_editor_view_model_is_loaded_before_gui_callback(
     controller.close()
 
 
+def test_track_editor_worker_accepts_tempo_and_technical_follow_up(
+    tmp_path: Path,
+) -> None:
+    controller, _view = build_controller(tmp_path)
+    release = Event()
+    first_started = Event()
+
+    def first() -> str:
+        first_started.set()
+        assert release.wait(timeout=2)
+        return "tempo"
+
+    assert controller.load_track_editor_view_model(first, lambda _value: None, pytest.fail)
+    assert first_started.wait(timeout=2)
+    assert controller.load_track_editor_view_model(
+        lambda: "technical", lambda _value: None, pytest.fail
+    )
+    release.set()
+    assert controller._track_editor_executor.drain(2.0)
+    controller.close()
+
+
 def test_unchanged_queue_stats_reuse_resolved_durations(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:

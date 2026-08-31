@@ -46,6 +46,26 @@ def test_repository_returns_bounded_track_page(tmp_path: Path) -> None:
     assert tracks[0].title == "Song"
 
 
+def test_catalog_keeps_same_title_versions_individually_selectable(tmp_path: Path) -> None:
+    database = Database(tmp_path / "versions.db")
+    migrate(database)
+    repository = TrackRepository(database)
+    repository.upsert_file("C:/Music/Song.flac", "Song", "Artist", "Album", 120)
+    repository.upsert_file("C:/Music/Song - VBR.mp3", "Song", "Artist", "Album", 120)
+    repository.upsert_file("C:/Music/Song - 320.mp3", "Song", "Artist", "Album", 120)
+
+    tracks = repository.search("Song")
+
+    assert repository.count() == 3
+    assert repository.search_count("Song") == 3
+    assert [Path(track.file_path).name for track in tracks] == [
+        "Song.flac",
+        "Song - VBR.mp3",
+        "Song - 320.mp3",
+    ]
+    assert [Path(track.file_path).name for track in repository.search("VBR")] == ["Song - VBR.mp3"]
+
+
 def test_catalog_search_includes_genre_and_release_years(tmp_path: Path) -> None:
     database = Database(tmp_path / "test.db")
     migrate(database)

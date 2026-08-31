@@ -4,7 +4,7 @@ import sqlite3
 
 from party_player.database.connection import Database
 
-LATEST_SCHEMA_VERSION = 39
+LATEST_SCHEMA_VERSION = 41
 
 
 def migrate(database: Database) -> None:
@@ -21,8 +21,7 @@ def migrate(database: Database) -> None:
         version = int(row["version"])
         if version > LATEST_SCHEMA_VERSION:
             raise RuntimeError(
-                f"Datenbankschema {version} ist neuer als die Anwendung "
-                f"({LATEST_SCHEMA_VERSION})"
+                f"Datenbankschema {version} ist neuer als die Anwendung ({LATEST_SCHEMA_VERSION})"
             )
 
         if version < 1:
@@ -180,6 +179,14 @@ def migrate(database: Database) -> None:
         if version < 39:
             _migrate_to_v39(connection)
             _set_version(connection, 39)
+            version = 39
+        if version < 40:
+            _migrate_to_v40(connection)
+            _set_version(connection, 40)
+            version = 40
+        if version < 41:
+            _migrate_to_v41(connection)
+            _set_version(connection, 41)
 
 
 def _migrate_to_v1(connection: sqlite3.Connection) -> None:
@@ -1299,8 +1306,7 @@ def _migrate_to_v35(connection: sqlite3.Connection) -> None:
         "is_remastered": "INTEGER NOT NULL DEFAULT 0 CHECK (is_remastered IN (0, 1))",
         "bpm": "REAL CHECK (bpm IS NULL OR (bpm >= 20 AND bpm <= 300))",
         "bpm_confidence": (
-            "REAL CHECK (bpm_confidence IS NULL OR "
-            "(bpm_confidence >= 0 AND bpm_confidence <= 1))"
+            "REAL CHECK (bpm_confidence IS NULL OR (bpm_confidence >= 0 AND bpm_confidence <= 1))"
         ),
         "alternative_bpm": (
             "REAL CHECK (alternative_bpm IS NULL OR "
@@ -1308,7 +1314,7 @@ def _migrate_to_v35(connection: sqlite3.Connection) -> None:
         ),
         "energy": "INTEGER CHECK (energy IS NULL OR (energy >= 0 AND energy <= 100))",
         "danceability": (
-            "INTEGER CHECK (danceability IS NULL OR " "(danceability >= 0 AND danceability <= 100))"
+            "INTEGER CHECK (danceability IS NULL OR (danceability >= 0 AND danceability <= 100))"
         ),
         "language": "TEXT",
         "rating": "INTEGER CHECK (rating IS NULL OR (rating >= 1 AND rating <= 5))",
@@ -1613,3 +1619,98 @@ def _migrate_to_v39(connection: sqlite3.Connection) -> None:
         );
         """
     )
+
+
+def _migrate_to_v40(connection: sqlite3.Connection) -> None:
+    """Persist cue-aware tempo results and saved-queue-local manual BPM values."""
+    has_analysis_runs = connection.execute(
+        """SELECT 1 FROM sqlite_master
+           WHERE type='table' AND name='metadata_analysis_runs'"""
+    ).fetchone()
+    run_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(metadata_analysis_runs)").fetchall()
+    }
+    additions = {
+        "scope_type": "TEXT NOT NULL DEFAULT 'TRACK_FULL'",
+        "context_id": "INTEGER",
+        "range_signature": "TEXT NOT NULL DEFAULT ''",
+        "cue_in_ms": "INTEGER",
+        "cue_out_ms": "INTEGER",
+        "fade_ms": "INTEGER",
+        "physical_duration_ms": "INTEGER",
+        "context_revision": "TEXT",
+        "inherited_track_cues": "INTEGER NOT NULL DEFAULT 0",
+        "range_resolved_at": "TEXT",
+    }
+    for name, definition in additions.items():
+        if has_analysis_runs is not None and name not in run_columns:
+            connection.execute(f"ALTER TABLE metadata_analysis_runs ADD COLUMN {name} {definition}")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS tempo_analysis_results (
+            id INTEGER PRIMARY KEY,
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            scope_type TEXT NOT NULL CHECK(scope_type IN (
+                'TRACK_FULL','TRACK_DEFAULT_CUES','SAVED_QUEUE_ENTRY','PARTY_QUEUE_SNAPSHOT'
+            )),
+            context_id INTEGER,
+            run_id INTEGER REFERENCES metadata_analysis_runs(id) ON DELETE SET NULL,
+            range_signature TEXT NOT NULL CHECK(length(range_signature)=64),
+            cue_in_ms INTEGER NOT NULL CHECK(cue_in_ms>=0),
+            cue_out_ms INTEGER NOT NULL CHECK(cue_out_ms>cue_in_ms),
+            fade_ms INTEGER NOT NULL CHECK(fade_ms>=0),
+            physical_duration_ms INTEGER NOT NULL CHECK(physical_duration_ms>=cue_out_ms),
+            context_revision TEXT NOT NULL,
+            inherited_track_cues INTEGER NOT NULL DEFAULT 0
+                CHECK(inherited_track_cues IN (0,1)),
+            primary_bpm REAL,
+            alternative_bpm REAL,
+            confidence REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1),
+            rhythm_stability REAL CHECK(
+                rhythm_stability IS NULL OR rhythm_stability BETWEEN 0 AND 1
+            ),
+            warnings_json TEXT NOT NULL DEFAULT '[]',
+            experimental_energy REAL,
+            backend TEXT NOT NULL,
+            algorithm_version TEXT NOT NULL,
+            analyzed_at TEXT NOT NULL,
+            is_current INTEGER NOT NULL DEFAULT 1 CHECK(is_current IN (0,1)),
+            stale_reason TEXT,
+            UNIQUE(scope_type, context_id, range_signature, run_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tempo_results_track_scope_current
+            ON tempo_analysis_results(track_id,scope_type,is_current,analyzed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_tempo_results_context
+            ON tempo_analysis_results(scope_type,context_id,is_current);
+
+        CREATE TABLE IF NOT EXISTS saved_queue_entry_tempo_overrides (
+            saved_queue_entry_id INTEGER PRIMARY KEY
+                REFERENCES saved_queue_entries(id) ON DELETE CASCADE,
+            bpm REAL NOT NULL CHECK(bpm BETWEEN 20 AND 400),
+            confirmed INTEGER NOT NULL DEFAULT 1 CHECK(confirmed IN (0,1)),
+            source TEXT NOT NULL CHECK(source='MANUAL_SAVED_QUEUE'),
+            changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            based_on_signature TEXT CHECK(
+                based_on_signature IS NULL OR length(based_on_signature)=64
+            )
+        );
+        """
+    )
+
+
+def _migrate_to_v41(connection: sqlite3.Connection) -> None:
+    """Persist bounded structured diagnostics for each tempo-analysis run."""
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata_analysis_runs'"
+    ).fetchone()
+    if table is None:
+        return
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(metadata_analysis_runs)").fetchall()
+    }
+    if "diagnostics_json" not in columns:
+        connection.execute(
+            "ALTER TABLE metadata_analysis_runs ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '{}'"
+        )

@@ -45,6 +45,7 @@ class AnalysisOperatingState:
     database_maintenance: bool = False
     restore_or_migration: bool = False
     automation_active: bool = False
+    playback_active: bool = False
 
 
 class AnalysisOperatingStatePort(Protocol):
@@ -68,6 +69,8 @@ class AnalysisStartPolicy:
             return "DATABASE_MAINTENANCE"
         if state.restore_or_migration:
             return "RESTORE_OR_MIGRATION"
+        if state.playback_active:
+            return "PLAYBACK_ACTIVE"
         if batch and state.automation_active:
             return "AUTOMATION_ACTIVE"
         return None
@@ -106,11 +109,18 @@ class MetadataAnalysisCoordinator:
     def current_job(self) -> MetadataAnalysisJob | None:
         return self._current
 
+    @property
+    def pending_jobs(self) -> tuple[MetadataAnalysisJob, ...]:
+        return tuple(job for job, _batch in self._pending)
+
     def enqueue(self, job: MetadataAnalysisJob, *, batch: bool = True) -> None:
         if self.state in {CoordinatorState.STOPPING, CoordinatorState.CLOSED}:
             raise RuntimeError("Koordinator nimmt keine neuen Analysejobs an")
         self._pending.append((job, batch))
         self._progress.publish("QUEUED", job.job_id)
+
+    def block_reason(self, *, batch: bool) -> str | None:
+        return AnalysisStartPolicy.block_reason(self._operating_state.snapshot(), batch=batch)
 
     def create_and_enqueue(
         self, request: MetadataAnalysisRequest, *, batch: bool = True
@@ -164,6 +174,22 @@ class MetadataAnalysisCoordinator:
         if result is not None:
             result = self._complete(result)
         return result
+
+    def cancel_pending(self) -> tuple[MetadataAnalysisResult, ...]:
+        cancelled = tuple(
+            self._local_result(
+                job,
+                MetadataAnalysisOutcome.CANCELLED,
+                error_code="BATCH_CANCELLED",
+                error_text="Wartender Analyseauftrag wurde abgebrochen.",
+            )
+            for job, _batch in self._pending
+        )
+        self._pending.clear()
+        for result in cancelled:
+            self._runs.finish(result)
+            self._progress.publish("FINISHED", result.job_id, result.outcome.value)
+        return cancelled
 
     def close(self) -> None:
         if self.state is CoordinatorState.CLOSED:
@@ -233,6 +259,9 @@ class MetadataAnalysisCoordinator:
             error_text=error_text,
             backend_name="coordinator",
             backend_version="1",
+            scope=job.scope,
+            analysis_range=job.analysis_range,
+            range_signature=job.range_signature,
         )
 
 

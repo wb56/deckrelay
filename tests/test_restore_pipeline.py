@@ -28,7 +28,7 @@ def test_materializer_produces_current_valid_database(
     connection = sqlite3.connect(destination)
     try:
         assert connection.execute("PRAGMA quick_check").fetchall() == [("ok",)]
-        assert connection.execute("SELECT MAX(version) FROM schema_version").fetchone() == (39,)
+        assert connection.execute("SELECT MAX(version) FROM schema_version").fetchone() == (41,)
     finally:
         connection.close()
 

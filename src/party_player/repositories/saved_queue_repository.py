@@ -66,6 +66,15 @@ class SavedQueueRepository:
                     for position, entry in enumerate(entries, start=1)
                 ],
             )
+        with self._database.connect() as connection:
+            persisted_ids = {
+                int(row["position"]): int(row["id"])
+                for row in connection.execute(
+                    """SELECT id,position FROM saved_queue_entries
+                       WHERE saved_queue_id=?""",
+                    (saved_queue_id,),
+                ).fetchall()
+            }
         normalized_entries = tuple(
             SavedQueueEntry(
                 entry.track_id,
@@ -74,6 +83,7 @@ class SavedQueueRepository:
                 entry.cue_out,
                 entry.fade_duration,
                 entry.cue_source,
+                persisted_ids.get(position),
             )
             for position, entry in enumerate(entries, start=1)
         )
@@ -89,7 +99,7 @@ class SavedQueueRepository:
             if queue_row is None:
                 return None
             entry_rows = connection.execute(
-                """SELECT track_id, position, cue_in, cue_out, fade_duration, cue_source
+                """SELECT id, track_id, position, cue_in, cue_out, fade_duration, cue_source
                    FROM saved_queue_entries
                    WHERE saved_queue_id = ? ORDER BY position, id""",
                 (saved_queue_id,),
@@ -105,6 +115,7 @@ class SavedQueueRepository:
                     row["cue_out"],
                     row["fade_duration"],
                     str(row["cue_source"]),
+                    int(row["id"]),
                 )
                 for row in entry_rows
             ),

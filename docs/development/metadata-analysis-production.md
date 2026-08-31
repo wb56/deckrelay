@@ -58,3 +58,39 @@ dokumentiert. Automatische Planungswerte werden ausschließlich nach den dort
 beschriebenen Sicherheitsregeln freigegeben. `energy_experimental` bleibt ein
 technischer, versionierter Messindikator, keine Stimmung und keine objektive
 musikalische Wahrheit.
+
+## Technische Audiodaten im Titeleditor
+
+Der schreibgeschützte Abschnitt **Technische Audiodaten** verwendet denselben
+`FfmpegAudioAnalysisBackend` und denselben beim Start validierten FFprobe-Pfad wie die
+vorhandenen Analysefunktionen. Codec, Container, durchschnittliche Bitrate,
+Abtastrate, gespeicherte Bittiefe, Kanäle, Kanallayout, technische Dauer, Profil und
+Encoder stammen aus dem Dateiinhalt. Dateiname und Endung werden nicht zur technischen
+Klassifikation verwendet.
+
+FFprobe liefert alle Audiostreams. Verwendet wird der als Standard gekennzeichnete
+Audiostream, andernfalls der erste Audiostream; mehrere Streams und der ausgewählte
+Streamindex werden angezeigt. Bei MP3 wird der Bitratenmodus anhand einer begrenzten
+Folge tatsächlicher Paketgrößen und -dauern bestimmt. Nachweisbare Streuung wird als
+VBR, hinreichend konstante Frames als CBR angezeigt. Bei zu wenigen verwertbaren
+Paketen bleibt der Modus ausdrücklich „Nicht zuverlässig bestimmbar“. Eine
+durchschnittliche Bitrate allein bestimmt den Modus nicht. FLAC wird nicht in die
+MP3-Kategorien CBR/VBR eingeordnet; seine Bitrate wird als Durchschnittswert gezeigt.
+
+Eine Bittiefe wird nur für verlustfreie beziehungsweise PCM-Codecs aus den gespeicherten
+Streamangaben übernommen. Verlustbehaftete Formate wie MP3 zeigen „Nicht anwendbar“;
+das FFmpeg-Decoderausgabeformat wird nicht als Dateibittiefe missverstanden.
+
+Die Ermittlung läuft über den begrenzten Track-Editor-Hintergrundarbeiter und gelangt
+über den vorhandenen GUI-Dispatcher zurück auf den Tk-Hauptthread. Ein prozessweiter,
+auf kanonischen Pfad, Dateigröße und Änderungszeit gebundener LRU-Cache vermeidet
+wiederholte Probes. Identische gleichzeitige Anfragen teilen einen Lauf. Ändert sich
+der Snapshot, wird neu ermittelt; Änderungen während FFprobe verwerfen das Ergebnis.
+Späte Ergebnisse werden nur auf einen noch geöffneten Editor mit derselben
+Anfragegeneration angewendet.
+
+Fehlendes oder nicht ausführbares FFprobe, Timeout, nicht erreichbare oder während der
+Ermittlung geänderte Dateien, beschädigte Dateien und Dateien ohne Audiostream werden
+als kontrollierter Status im Editor dargestellt. Nicht gelieferte Einzelwerte bleiben
+„Nicht verfügbar“, „Nicht anwendbar“ oder „Nicht zuverlässig bestimmbar“. Der Cache ist
+bewusst nur prozesslokal; es wurde keine Datenbank- oder Schemaänderung eingeführt.

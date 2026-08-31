@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from party_player.metadata_analysis_contracts import (
     MetadataAnalysisSource,
     MetadataFieldSuggestion,
     TechnicalAudioMetric,
+    TempoSegmentDiagnostic,
 )
 from party_player.metadata_analysis_coordinator import AnalysisOperatingState
 from party_player.metadata_analysis_persistence import (
@@ -141,6 +143,134 @@ def test_result_persistence_is_atomic_and_does_not_change_effective_revision(
     )
 
 
+def test_raw_tempo_diagnostics_remain_attached_to_the_analysis_run(
+    temporary_database: Database, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    track_id, path = prepare_track(temporary_database, tmp_path)
+    job = create_job(temporary_database, track_id, path)
+    runs = SqliteAnalysisRunPersistencePort(temporary_database)
+    runs.mark_running(job)
+    result = replace(
+        successful_result(job),
+        probed_duration_seconds=180.001,
+        segment_diagnostics=(TempoSegmentDiagnostic(0, 12.0, 36.0, 120.0, 240.0, 0.88, 0.71),),
+        decision_reasons=("HIGH_CONFIDENCE",),
+        effective_parameters=(("profile_version", "tempo-profile-v3"),),
+        aggregated_bpm=120.0,
+        aggregated_alternative_bpm=240.0,
+        aggregated_confidence=0.88,
+        confidence_components=(
+            ("family_consensus", 1.0),
+            ("robust_window_confidence", 0.36),
+            ("usable_window_count", 5),
+        ),
+    )
+
+    SqliteAnalysisResultPersistencePort(temporary_database).persist_valid_result(result)
+
+    with temporary_database.connect() as connection:
+        raw = connection.execute(
+            "SELECT diagnostics_json FROM metadata_analysis_runs WHERE id=?", (job.run_id,)
+        ).fetchone()[0]
+    diagnostic = json.loads(str(raw))
+    assert diagnostic["run_id"] == job.run_id
+    assert diagnostic["decoded_segments"][0]["raw_bpm"] == 120.0
+    assert diagnostic["aggregated"]["confidence"] == 0.88
+    assert diagnostic["confidence_components"]["family_consensus"] == 1.0
+    assert diagnostic["confidence_components"]["usable_window_count"] == 5
+    assert diagnostic["decision_reasons"] == ["HIGH_CONFIDENCE"]
+
+
+def test_pending_run_is_named_explicitly_in_diagnostic_text(
+    temporary_database: Database, tmp_path: Path
+) -> None:
+    track_id, path = prepare_track(temporary_database, tmp_path)
+    job = create_job(temporary_database, track_id, path)
+    service = MetadataAnalysisService(
+        temporary_database,
+        TrackRepository(temporary_database),
+        ffmpeg=None,
+        ffprobe=None,
+        operating_state=lambda: AnalysisOperatingState(),
+    )
+    try:
+        text = service.tempo_diagnostics_text(track_id)
+    finally:
+        service.close()
+
+    assert f"Run-ID: {job.run_id}" in text
+    assert "Analyse wartet" in text
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("RUNNING", "Analyse läuft"),
+        ("FAILED", "Analyse fehlgeschlagen"),
+        ("CANCELLED", "Analyse abgebrochen"),
+    ],
+)
+def test_non_completed_run_states_are_explicit_in_diagnostic_text(
+    temporary_database: Database,
+    tmp_path: Path,
+    status: str,
+    expected: str,
+) -> None:
+    track_id, path = prepare_track(temporary_database, tmp_path)
+    job = create_job(temporary_database, track_id, path)
+    service = MetadataAnalysisService(
+        temporary_database,
+        TrackRepository(temporary_database),
+        ffmpeg=None,
+        ffprobe=None,
+        operating_state=lambda: AnalysisOperatingState(),
+    )
+    try:
+        with temporary_database.connect() as connection:
+            connection.execute(
+                """UPDATE metadata_analysis_runs
+                   SET status=?,error_code='TEST_STATE',error_text='Gezielter Testzustand'
+                   WHERE id=?""",
+                (status, job.run_id),
+            )
+        text = service.tempo_diagnostics_text(track_id)
+    finally:
+        service.close()
+
+    assert expected in text
+    assert f"Run-ID: {job.run_id}" in text
+
+
+def test_v03_correlation_score_is_read_with_clarified_legacy_semantics(
+    temporary_database: Database, tmp_path: Path
+) -> None:
+    track_id, path = prepare_track(temporary_database, tmp_path)
+    job = create_job(temporary_database, track_id, path)
+    legacy = json.dumps({"decoded_segments": [{"range_index": 0, "correlation_score": 1.05128}]})
+    with temporary_database.connect() as connection:
+        connection.execute(
+            """UPDATE metadata_analysis_runs
+               SET status='COMPLETED',diagnostics_json=? WHERE id=?""",
+            (legacy, job.run_id),
+        )
+    service = MetadataAnalysisService(
+        temporary_database,
+        TrackRepository(temporary_database),
+        ffmpeg=None,
+        ffprobe=None,
+        operating_state=lambda: AnalysisOperatingState(),
+    )
+    try:
+        text = service.tempo_diagnostics_text(track_id)
+    finally:
+        service.close()
+
+    assert '"harmonic_quality_score": 1.05128' in text
+    assert "unbeschränkter harmonic_quality_score" in text
+
+
 def test_identical_open_suggestions_are_not_duplicated_and_new_value_supersedes(
     temporary_database: Database, tmp_path: Path
 ) -> None:
@@ -254,5 +384,91 @@ def test_pending_runs_resume_only_after_explicit_request(
         assert service.support_snapshot()["waiting_runs"] == 1
         assert service.resume_persistent_pending() == 1
         assert service.tick() is None
+    finally:
+        service.close()
+
+
+def test_ui_view_exposes_persisted_proposals_without_applying_values(
+    temporary_database: Database, tmp_path: Path
+) -> None:
+    track_id, path = prepare_track(temporary_database, tmp_path)
+    job = create_job(temporary_database, track_id, path)
+    runs = SqliteAnalysisRunPersistencePort(temporary_database)
+    runs.mark_running(job)
+    SqliteAnalysisResultPersistencePort(temporary_database).persist_valid_result(
+        successful_result(job)
+    )
+    service = MetadataAnalysisService(
+        temporary_database,
+        TrackRepository(temporary_database),
+        ffmpeg=None,
+        ffprobe=None,
+        operating_state=lambda: AnalysisOperatingState(),
+    )
+    try:
+        view = service.latest_for_track(track_id)
+        assert view.status == "COMPLETED"
+        assert view.bpm == 120.0
+        assert view.alternative_bpm == 240.0
+        assert view.experimental_energy == 55
+        assert "Halb-/Doppeltempo-Alternative vorhanden." in view.warnings
+        with temporary_database.connect() as connection:
+            effective = connection.execute(
+                "SELECT bpm,energy,metadata_revision FROM tracks WHERE id=?", (track_id,)
+            ).fetchone()
+        assert tuple(effective) == (None, None, 0)
+    finally:
+        service.close()
+
+
+def test_batch_preview_skips_current_and_reports_missing_and_open_proposals(
+    temporary_database: Database, tmp_path: Path
+) -> None:
+    current_id, current_path = prepare_track(temporary_database, tmp_path)
+    current_job = create_job(temporary_database, current_id, current_path)
+    runs = SqliteAnalysisRunPersistencePort(temporary_database)
+    runs.mark_running(current_job)
+    SqliteAnalysisResultPersistencePort(temporary_database).persist_valid_result(
+        successful_result(current_job)
+    )
+    missing_id = add_track(temporary_database, "missing")
+    with temporary_database.connect() as connection:
+        connection.execute(
+            "UPDATE tracks SET file_path=? WHERE id=?",
+            (str(tmp_path / "missing.mp3"), missing_id),
+        )
+    service = MetadataAnalysisService(
+        temporary_database,
+        TrackRepository(temporary_database),
+        ffmpeg=None,
+        ffprobe=None,
+        operating_state=lambda: AnalysisOperatingState(),
+    )
+    try:
+        preview = service.preview_tracks((current_id, missing_id), skip_current=True)
+        assert preview.selected == 2
+        assert preview.current == 1
+        assert preview.planned == 0
+        assert preview.missing_files == 1
+        assert preview.open_suggestions == 3
+    finally:
+        service.close()
+
+
+def test_user_can_discard_only_restart_pending_runs(
+    temporary_database: Database, tmp_path: Path
+) -> None:
+    track_id, path = prepare_track(temporary_database, tmp_path)
+    create_job(temporary_database, track_id, path)
+    service = MetadataAnalysisService(
+        temporary_database,
+        TrackRepository(temporary_database),
+        ffmpeg=None,
+        ffprobe=None,
+        operating_state=lambda: AnalysisOperatingState(),
+    )
+    try:
+        assert service.discard_persistent_pending() == 1
+        assert service.support_snapshot()["waiting_runs"] == 0
     finally:
         service.close()

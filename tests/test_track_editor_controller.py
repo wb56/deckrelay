@@ -13,6 +13,7 @@ from party_player.controllers.track_editor_controller import (
 from party_player.cue_points import ResolvedTrackBoundaries
 from party_player.models import Track
 from party_player.performance_monitor import PerformanceMonitor
+from party_player.analysis import AudioFileInfo
 
 
 def _state() -> CuePointEditorState:
@@ -60,8 +61,18 @@ class _CueController:
 
 
 class _LoudnessController:
+    def __init__(self) -> None:
+        self.error: str | None = None
+
     def state(self, track_id: int) -> object:
         return {"track_id": track_id, "integrated_lufs": None}
+
+    def analysis_availability(self) -> tuple[bool, str]:
+        return True, "FFmpeg ist verfügbar."
+
+    def analyze_track(self, track_id: int, completed: Any) -> object:
+        completed(None, self.error)
+        return object()
 
 
 def _controller() -> tuple[TrackEditorController, _CueController]:
@@ -87,6 +98,33 @@ def test_view_model_preserves_real_metadata_and_missing_values() -> None:
     assert model.equalizer_preset_name is None
 
 
+def test_track_editor_runs_single_loudness_analysis_and_refreshes_state() -> None:
+    loudness = _LoudnessController()
+    controller = TrackEditorController(cast(Any, _CueController()), cast(Any, loudness))
+    completed: list[object] = []
+    failed: list[Exception] = []
+
+    assert controller.loudness_analysis_availability() == (True, "FFmpeg ist verfügbar.")
+    controller.analyze_loudness(7, completed.append, failed.append)
+
+    assert completed == [{"track_id": 7, "integrated_lufs": None}]
+    assert failed == []
+
+
+def test_track_editor_reports_single_loudness_analysis_failure() -> None:
+    loudness = _LoudnessController()
+    loudness.error = "FFmpeg-Analyse fehlgeschlagen"
+    controller = TrackEditorController(cast(Any, _CueController()), cast(Any, loudness))
+    completed: list[object] = []
+    failed: list[Exception] = []
+
+    controller.analyze_loudness(7, completed.append, failed.append)
+
+    assert completed == []
+    assert len(failed) == 1
+    assert str(failed[0]) == "FFmpeg-Analyse fehlgeschlagen"
+
+
 def test_view_model_composes_existing_loudness_and_equalizer_sources() -> None:
     cue = _CueController()
     controller = TrackEditorController(
@@ -101,6 +139,30 @@ def test_view_model_composes_existing_loudness_and_equalizer_sources() -> None:
     assert model.equalizer_preset_key == "party"
     assert model.equalizer_preset_name == "Party"
     assert model.equalizer_source == "TITLE"
+
+
+def test_technical_audio_info_uses_existing_async_analysis_service() -> None:
+    cue = _CueController()
+    expected = AudioFileInfo(180.0, 44_100, 2, "flac", bits_per_sample=16)
+
+    class Analysis:
+        def technical_audio_info(self, track_id: int) -> AudioFileInfo:
+            assert track_id == 7
+            return expected
+
+    def submit(task: Any, completed: Any, _failed: Any) -> bool:
+        completed(task())
+        return True
+
+    controller = TrackEditorController(
+        cast(Any, cue),
+        background_submit=submit,
+        metadata_analysis=cast(Any, Analysis()),
+    )
+    loaded: list[AudioFileInfo] = []
+
+    assert controller.load_technical_audio_info_async(7, loaded.append, pytest.fail)
+    assert loaded == [expected]
 
 
 def test_editor_records_path_free_build_save_and_lifecycle_operations() -> None:

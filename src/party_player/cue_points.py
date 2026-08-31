@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 from typing import TYPE_CHECKING
@@ -249,6 +250,7 @@ class CuePointService:
         minimum_playable_duration: float = 5.0,
         short_track_threshold: float = 30.0,
         short_track_policy: ShortTrackPolicy = ShortTrackPolicy.ALLOW,
+        on_global_cues_changed: Callable[[int], None] | None = None,
     ) -> None:
         self.repository = repository
         self.global_fade_duration = global_fade_duration
@@ -256,6 +258,7 @@ class CuePointService:
         self.minimum_playable_duration = minimum_playable_duration
         self.short_track_threshold = max(minimum_playable_duration, short_track_threshold)
         self.short_track_policy = short_track_policy
+        self._on_global_cues_changed = on_global_cues_changed
         self._logger = logging.getLogger(__name__)
 
     def get(self, track_id: int) -> TrackCuePoints:
@@ -273,6 +276,7 @@ class CuePointService:
     ) -> None:
         self.validate_values(track, cue_in, cue_out, fade_duration)
         self.repository.save_manual(track.id, cue_in, cue_out, fade_duration)
+        self._notify_global_cues_changed(track.id)
 
     def save_automatic(self, track: Track, result: CueAnalysisResult) -> None:
         self.validate_values(
@@ -282,9 +286,11 @@ class CuePointService:
             result.suggested_fade_duration,
         )
         self.repository.save_automatic(track.id, result)
+        self._notify_global_cues_changed(track.id)
 
     def clear_automatic(self, track_id: int) -> None:
         self.repository.clear_automatic(track_id)
+        self._notify_global_cues_changed(track_id)
 
     def save_editor(
         self,
@@ -305,6 +311,11 @@ class CuePointService:
             discard_automatic=discard_automatic,
             changed_fields=changed_fields,
         )
+        self._notify_global_cues_changed(track.id)
+
+    def _notify_global_cues_changed(self, track_id: int) -> None:
+        if self._on_global_cues_changed is not None:
+            self._on_global_cues_changed(track_id)
 
     def validate_values(
         self,

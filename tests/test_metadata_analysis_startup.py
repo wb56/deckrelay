@@ -25,3 +25,33 @@ def test_application_entry_calls_freeze_support_before_composition(monkeypatch) 
     application_entry.main()
 
     assert calls == ["freeze", "compose", "run"]
+
+
+def test_packaged_metadata_probe_does_not_compose_main_window(monkeypatch, tmp_path) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(
+        application_entry.multiprocessing, "freeze_support", lambda: calls.append("freeze")
+    )
+    monkeypatch.setattr(
+        application_entry,
+        "_run_internal_metadata_analysis_probe",
+        lambda *args: calls.append(args),
+    )
+    monkeypatch.setattr(
+        application_entry.sys,
+        "argv",
+        [
+            "DeckRelay.exe",
+            "--internal-metadata-analysis-probe",
+            str(tmp_path / "input.mp3"),
+            str(tmp_path / "result.json"),
+            "ffmpeg.exe",
+            "ffprobe.exe",
+            "30",
+        ],
+    )
+
+    application_entry.main()
+
+    assert calls[0] == "freeze"
+    assert len(calls) == 2

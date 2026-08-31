@@ -238,6 +238,9 @@ class MetadataAnalysisProcessSupervisor:
             error_text=text[:500],
             backend_name="process-supervisor",
             backend_version="1",
+            scope=job.scope,
+            analysis_range=job.analysis_range,
+            range_signature=job.range_signature,
         )
 
     def _release_process(self, *, ready: bool = True, worker_state: str = "completed") -> None:

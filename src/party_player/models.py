@@ -18,6 +18,7 @@ class Track:
     genre: str = ""
     year: int | None = None
     original_release_year: int | None = None
+    bpm: float | None = None
 
 
 @dataclass(slots=True)
@@ -129,6 +130,7 @@ class SavedQueueEntry:
     cue_out: float | None = None
     fade_duration: float | None = None
     cue_source: str = "inherited"
+    saved_queue_entry_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

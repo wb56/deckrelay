@@ -14,11 +14,13 @@ from party_player.catalog_maintenance import (
     SelectionDescription,
 )
 from party_player.metadata_rules import MetadataFieldKey
+from party_player.metadata_analysis_service import TempoBatchProgress
 from party_player.ui.catalog_maintenance_dialog import (
     CatalogAnalysisActions,
     CatalogMaintenanceDialog,
     ask_filter_selection_strategy,
     high_risk_confirmation_text,
+    parse_bpm_filter,
     parse_batch_input,
 )
 
@@ -126,6 +128,20 @@ def test_batch_input_validates_ranges_and_accepts_decimal_comma() -> None:
     assert parse_batch_input(MetadataFieldKey.BPM, BatchAction.SET, "123,5") == 123.5
 
 
+def test_bpm_filter_accepts_open_bounds_and_decimal_comma() -> None:
+    assert parse_bpm_filter("", "128,5") == (None, 128.5)
+    assert parse_bpm_filter("95", "") == (95.0, None)
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum", "message"),
+    [("schnell", "", "Zahl"), ("19", "", "20 und 300"), ("130", "120", "größer")],
+)
+def test_bpm_filter_rejects_invalid_ranges(minimum: str, maximum: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        parse_bpm_filter(minimum, maximum)
+
+
 def test_stale_page_result_is_ignored() -> None:
     class Dialog:
         _load_generation = 4
@@ -192,6 +208,60 @@ class _Widget:
 
     def configure(self, **options: object) -> None:
         self.options.update(options)
+
+
+class _FilterWidget(_Widget):
+    def __init__(self, value: str = "dirty") -> None:
+        super().__init__()
+        self.value = value
+
+    def set(self, value: str) -> None:
+        self.value = value
+
+    def delete(self, _first: object, _last: object) -> None:
+        self.value = ""
+
+
+def test_reset_filters_clears_inputs_selection_and_reloads() -> None:
+    class Dialog:
+        _queue = _FilterWidget()
+        _filter_field = _FilterWidget()
+        _filter_source = _FilterWidget()
+        _filter_status = _FilterWidget()
+        _filter_value = _FilterWidget()
+        _filter_confirmed = _FilterWidget()
+        _filter_conflict = _FilterWidget()
+        _filter_suggestion = _FilterWidget()
+        _search = _FilterWidget("Dance")
+        _filter_confidence = _FilterWidget("0.8")
+        _filter_changed_from = _FilterWidget("2026-01-01")
+        _filter_changed_to = _FilterWidget("2026-12-31")
+        _filter_bpm_from = _FilterWidget("100")
+        _filter_bpm_to = _FilterWidget("130")
+        _selection_label = _Widget()
+        _result = _Widget()
+        _filter = MaintenanceFilter(text="Dance", minimum_bpm=100.0)
+        _selection = SelectionDescription.for_filter(_filter).select_all_matches()
+        _preview = object()
+        _page = 4
+        reloads = 0
+
+        def _load_counts_and_page(self) -> None:
+            self.reloads += 1
+
+        def _update_selection(self) -> None:
+            CatalogMaintenanceDialog._update_selection(cast(Any, self))
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._reset_filters(cast(Any, dialog))
+
+    assert dialog._filter == MaintenanceFilter()
+    assert not dialog._selection.all_matches
+    assert not dialog._selection.included_ids
+    assert dialog._preview is None
+    assert dialog._page == 1
+    assert dialog._filter_bpm_from.value == dialog._filter_bpm_to.value == ""
+    assert dialog.reloads == 1
 
 
 def test_preview_success_updates_state_and_summary() -> None:
@@ -341,3 +411,45 @@ def test_audio_analysis_callback_error_uses_dialog_error_path() -> None:
     )
 
     assert errors == [failure]
+
+
+def test_tempo_batch_progress_renders_aggregates_without_rebuilding_rows() -> None:
+    class Dialog:
+        _tempo_skipped = 4
+        _tempo_progress = _Widget()
+        _tempo_start = _Widget()
+        _tempo_pause = _Widget()
+        _tempo_resume = _Widget()
+        _tempo_abort = _Widget()
+        loaded = 0
+
+        def _active(self) -> bool:
+            return True
+
+        def _load_counts_and_page(self) -> None:
+            self.loaded += 1
+
+    dialog = Dialog()
+    progress = TempoBatchProgress(
+        12,
+        12,
+        8,
+        1,
+        3,
+        2,
+        0,
+        1,
+        None,
+        "",
+        "IDLE",
+        "",
+        None,
+    )
+
+    CatalogMaintenanceDialog._tempo_progressed(cast(Any, dialog), progress)
+
+    text = str(dialog._tempo_progress.options["text"])
+    assert "12 / 12 abgeschlossen" in text
+    assert "Prüfung erforderlich 3" in text
+    assert "übersprungen 4" in text
+    assert dialog.loaded == 1

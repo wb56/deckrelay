@@ -1,6 +1,8 @@
 """Main-process run persistence adapter for metadata analysis package 6A."""
 
 from datetime import datetime, timezone
+from dataclasses import asdict
+import json
 from pathlib import Path
 import sqlite3
 from uuid import uuid4
@@ -14,7 +16,10 @@ from party_player.metadata_analysis_contracts import (
     MetadataAnalysisRequest,
     MetadataAnalysisResult,
     MetadataFieldSuggestion,
+    TempoAnalysisRangeSnapshot,
+    TempoAnalysisScope,
 )
+from party_player.tempo_context import cue_milliseconds
 from party_player.metadata_analysis_profiles import (
     ALGORITHM_VERSION,
     HIGH_CONFIDENCE,
@@ -49,6 +54,41 @@ class SqliteAnalysisRunPersistencePort:
             priority=request.priority,
             fingerprint=snapshot.fingerprint,
         )
+        analysis_range = request.analysis_range
+        context_id = (
+            analysis_range.saved_queue_entry_id
+            if analysis_range is not None and request.scope is TempoAnalysisScope.SAVED_QUEUE_ENTRY
+            else (
+                analysis_range.party_queue_id
+                if analysis_range is not None
+                and request.scope is TempoAnalysisScope.PARTY_QUEUE_SNAPSHOT
+                else None
+            )
+        )
+        with self._database.connect() as connection:
+            connection.execute(
+                """UPDATE metadata_analysis_runs SET
+                       scope_type=?,context_id=?,range_signature=?,cue_in_ms=?,cue_out_ms=?,
+                       fade_ms=?,physical_duration_ms=?,context_revision=?,
+                       inherited_track_cues=?,range_resolved_at=? WHERE id=?""",
+                (
+                    request.scope.value,
+                    context_id,
+                    request.range_signature,
+                    cue_milliseconds(analysis_range.cue_in) if analysis_range else None,
+                    cue_milliseconds(analysis_range.cue_out) if analysis_range else None,
+                    cue_milliseconds(analysis_range.fade_duration) if analysis_range else None,
+                    (
+                        cue_milliseconds(analysis_range.physical_duration)
+                        if analysis_range
+                        else None
+                    ),
+                    analysis_range.context_revision if analysis_range else None,
+                    int(analysis_range.inherited_track_cues) if analysis_range else 0,
+                    analysis_range.resolved_at if analysis_range else None,
+                    run.run_id,
+                ),
+            )
         return MetadataAnalysisJob(
             str(uuid4()),
             run.run_id,
@@ -62,6 +102,9 @@ class SqliteAnalysisRunPersistencePort:
             datetime.now(timezone.utc).isoformat(),
             request.backend,
             request.technical_options,
+            request.scope,
+            request.analysis_range,
+            request.range_signature,
         )
 
     def recover_interrupted_runs(self) -> int:
@@ -104,7 +147,10 @@ class SqliteAnalysisRunPersistencePort:
         with self._database.connect() as connection:
             rows = connection.execute(
                 """SELECT id,track_id,analysis_profile,analysis_version,priority,
-                          file_path_snapshot,file_size,file_modified_ns,fingerprint,attempt_count
+                          file_path_snapshot,file_size,file_modified_ns,fingerprint,attempt_count,
+                          scope_type,context_id,range_signature,cue_in_ms,cue_out_ms,fade_ms,
+                          physical_duration_ms,context_revision,inherited_track_cues,
+                          range_resolved_at
                    FROM metadata_analysis_runs WHERE status='PENDING'
                    ORDER BY priority DESC,created_at,id LIMIT ?""",
                 (max(1, min(limit, 10_000)),),
@@ -116,6 +162,32 @@ class SqliteAnalysisRunPersistencePort:
             except ValueError:
                 continue
             configuration = PROFILE_CONFIGURATIONS[profile]
+            scope = TempoAnalysisScope(str(row["scope_type"]))
+            analysis_range = (
+                TempoAnalysisRangeSnapshot(
+                    int(row["cue_in_ms"]) / 1000.0,
+                    int(row["cue_out_ms"]) / 1000.0,
+                    int(row["fade_ms"]) / 1000.0,
+                    int(row["physical_duration_ms"]) / 1000.0,
+                    str(row["range_resolved_at"]),
+                    str(row["context_revision"]),
+                    (
+                        int(row["context_id"])
+                        if scope is TempoAnalysisScope.SAVED_QUEUE_ENTRY
+                        and row["context_id"] is not None
+                        else None
+                    ),
+                    (
+                        int(row["context_id"])
+                        if scope is TempoAnalysisScope.PARTY_QUEUE_SNAPSHOT
+                        and row["context_id"] is not None
+                        else None
+                    ),
+                    bool(row["inherited_track_cues"]),
+                )
+                if row["cue_in_ms"] is not None
+                else None
+            )
             jobs.append(
                 MetadataAnalysisJob(
                     f"resume-{int(row['id'])}-{int(row['attempt_count'])}",
@@ -139,6 +211,9 @@ class SqliteAnalysisRunPersistencePort:
                         ("ffprobe", str(ffprobe)),
                         ("segment_strategy", configuration.segment_strategy),
                     ),
+                    scope,
+                    analysis_range,
+                    str(row["range_signature"]),
                 )
             )
         return tuple(jobs)
@@ -181,7 +256,8 @@ class SqliteAnalysisResultPersistencePort:
         with self._database.transaction() as connection:
             run = connection.execute(
                 """SELECT track_id,analysis_profile,analysis_version,status,
-                          file_path_snapshot,file_size,file_modified_ns,fingerprint
+                          file_path_snapshot,file_size,file_modified_ns,fingerprint,
+                          scope_type,range_signature
                    FROM metadata_analysis_runs WHERE id=?""",
                 (result.run_id,),
             ).fetchone()
@@ -197,18 +273,132 @@ class SqliteAnalysisResultPersistencePort:
                 or int(run["file_modified_ns"]) != snapshot.modified_ns
                 or (str(run["fingerprint"]) if run["fingerprint"] is not None else None)
                 != snapshot.fingerprint
+                or str(run["scope_type"]) != result.scope.value
+                or str(run["range_signature"]) != result.range_signature
             ):
                 raise ValueError("Ergebnis gehört nicht zum aktiven Dateisnapshot")
             self._persist_ranges(connection, result)
             self._persist_metrics(connection, result)
-            for suggestion in result.suggestions:
-                self._persist_suggestion(connection, result, suggestion)
+            self._persist_diagnostics(connection, result)
+            self._persist_context_result(connection, result)
+            if result.scope in {
+                TempoAnalysisScope.TRACK_FULL,
+                TempoAnalysisScope.TRACK_DEFAULT_CUES,
+            }:
+                for suggestion in result.suggestions:
+                    self._persist_suggestion(connection, result, suggestion)
             connection.execute(
                 """UPDATE metadata_analysis_runs
                    SET status='COMPLETED', finished_at=CURRENT_TIMESTAMP,
                        error_code=NULL,error_text=NULL WHERE id=? AND status='RUNNING'""",
                 (result.run_id,),
             )
+
+    @staticmethod
+    def _persist_diagnostics(
+        connection: sqlite3.Connection, result: MetadataAnalysisResult
+    ) -> None:
+        area = result.analysis_range
+        payload = {
+            "job_id": result.job_id,
+            "run_id": result.run_id,
+            "scope": result.scope.value,
+            "profile": result.analysis_profile,
+            "algorithm_version": result.analysis_version,
+            "backend": result.backend_name,
+            "snapshot": {
+                "path": result.input_snapshot.normalized_path,
+                "size": result.input_snapshot.size,
+                "modified_ns": result.input_snapshot.modified_ns,
+                "fingerprint": result.input_snapshot.fingerprint,
+            },
+            "probed_duration_seconds": result.probed_duration_seconds,
+            "catalog_duration_seconds": area.physical_duration if area is not None else None,
+            "canonical_range": (
+                {
+                    "cue_in": area.cue_in,
+                    "cue_out": area.cue_out,
+                    "fade_duration": area.fade_duration,
+                }
+                if area is not None
+                else None
+            ),
+            "decoded_segments": [asdict(item) for item in result.segment_diagnostics],
+            "aggregated": {
+                "bpm": result.aggregated_bpm,
+                "alternative_bpm": result.aggregated_alternative_bpm,
+                "confidence": result.aggregated_confidence,
+                "rhythm_stability": result.rhythm_stability,
+            },
+            "thresholds_and_parameters": dict(result.effective_parameters),
+            "confidence_components": dict(result.confidence_components),
+            "decision_reasons": result.decision_reasons,
+            "warnings": result.warnings,
+        }
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if len(serialized) > 50_000:
+            raise ValueError("Tempo-Diagnose überschreitet die Speichergrenze")
+        connection.execute(
+            "UPDATE metadata_analysis_runs SET diagnostics_json=? WHERE id=?",
+            (serialized, result.run_id),
+        )
+
+    def _persist_context_result(
+        self, connection: sqlite3.Connection, result: MetadataAnalysisResult
+    ) -> None:
+        analysis_range = result.analysis_range
+        if analysis_range is None or len(result.range_signature) != 64:
+            return
+        suggestions = {item.field_key: item for item in result.suggestions}
+        metrics = {item.name: item.value for item in result.technical_metrics}
+        bpm_item = suggestions.get("bpm")
+        alternative_item = suggestions.get("alternative_bpm")
+        context_id = (
+            analysis_range.saved_queue_entry_id
+            if result.scope is TempoAnalysisScope.SAVED_QUEUE_ENTRY
+            else (
+                analysis_range.party_queue_id
+                if result.scope is TempoAnalysisScope.PARTY_QUEUE_SNAPSHOT
+                else None
+            )
+        )
+        connection.execute(
+            """UPDATE tempo_analysis_results
+               SET is_current=0,stale_reason='Durch neuere Bereichsanalyse abgelöst'
+               WHERE track_id=? AND scope_type=? AND context_id IS ? AND is_current=1""",
+            (result.track_id, result.scope.value, context_id),
+        )
+        connection.execute(
+            """INSERT INTO tempo_analysis_results
+                   (track_id,scope_type,context_id,run_id,range_signature,cue_in_ms,
+                    cue_out_ms,fade_ms,physical_duration_ms,context_revision,
+                    inherited_track_cues,primary_bpm,alternative_bpm,confidence,
+                    rhythm_stability,warnings_json,experimental_energy,backend,
+                    algorithm_version,analyzed_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                result.track_id,
+                result.scope.value,
+                context_id,
+                result.run_id,
+                result.range_signature,
+                cue_milliseconds(analysis_range.cue_in),
+                cue_milliseconds(analysis_range.cue_out),
+                cue_milliseconds(analysis_range.fade_duration),
+                cue_milliseconds(analysis_range.physical_duration),
+                analysis_range.context_revision,
+                int(analysis_range.inherited_track_cues),
+                self._number(bpm_item) if bpm_item is not None else metrics.get("bpm"),
+                self._number(alternative_item) if alternative_item is not None else None,
+                bpm_item.confidence if bpm_item is not None else None,
+                result.rhythm_stability,
+                json.dumps(result.warnings, ensure_ascii=False),
+                metrics.get("energy_experimental"),
+                result.backend_name,
+                result.backend_version,
+                result.finished_at,
+            ),
+        )
 
     def _persist_ranges(
         self, connection: sqlite3.Connection, result: MetadataAnalysisResult
@@ -264,11 +454,16 @@ class SqliteAnalysisResultPersistencePort:
         if field_key is None:
             raise ValueError("Unbekannter Analysevorschlag")
         serialized = serialize_metadata_value(field_key, suggestion.canonical_value)
+        scope_detail = (
+            "catalog_cue_range"
+            if result.scope is TempoAnalysisScope.TRACK_DEFAULT_CUES
+            else "full_recording"
+        )
         identical = connection.execute(
             """SELECT id FROM track_metadata_suggestions
                WHERE track_id=? AND field_key=? AND source_type='AUDIO_ANALYSIS'
-                 AND serialized_value=? AND status='PENDING' LIMIT 1""",
-            (result.track_id, field_key.value, serialized),
+                 AND source_detail LIKE ? AND serialized_value=? AND status='PENDING' LIMIT 1""",
+            (result.track_id, field_key.value, f"{scope_detail};%", serialized),
         ).fetchone()
         if identical is not None:
             return
@@ -277,8 +472,8 @@ class SqliteAnalysisResultPersistencePort:
                SET status='SUPERSEDED',decided_at=CURRENT_TIMESTAMP,
                    decision_reason='Durch neuere Audioanalyse abgelöst'
                WHERE track_id=? AND field_key=? AND source_type='AUDIO_ANALYSIS'
-                 AND status='PENDING'""",
-            (result.track_id, field_key.value),
+                 AND source_detail LIKE ? AND status='PENDING'""",
+            (result.track_id, field_key.value, f"{scope_detail};%"),
         )
         confidence = suggestion.confidence
         review = (
@@ -287,8 +482,10 @@ class SqliteAnalysisResultPersistencePort:
             else MetadataReviewStatus.REVIEW_REQUIRED
         )
         detail = (
-            "energy_experimental; " if field_name == "energy_experimental" else ""
-        ) + result.backend_name
+            f"{scope_detail}; "
+            + ("energy_experimental; " if field_name == "energy_experimental" else "")
+            + result.backend_name
+        )
         connection.execute(
             """INSERT INTO track_metadata_suggestions
                    (track_id,analysis_run_id,field_key,serialized_value,source_type,

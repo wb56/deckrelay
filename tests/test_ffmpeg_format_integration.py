@@ -11,8 +11,17 @@ import pytest
 from party_player.analysis import AnalysisSegment, FfmpegAudioAnalysisBackend
 
 
-FFMPEG = shutil.which("ffmpeg")
-FFPROBE = shutil.which("ffprobe")
+_BUNDLED_BIN = Path(".tools/ffmpeg/ffmpeg-8.1.2-essentials_build/bin")
+FFMPEG = (
+    str(_BUNDLED_BIN / "ffmpeg.exe")
+    if (_BUNDLED_BIN / "ffmpeg.exe").is_file()
+    else shutil.which("ffmpeg")
+)
+FFPROBE = (
+    str(_BUNDLED_BIN / "ffprobe.exe")
+    if (_BUNDLED_BIN / "ffprobe.exe").is_file()
+    else shutil.which("ffprobe")
+)
 pytestmark = pytest.mark.skipif(
     FFMPEG is None or FFPROBE is None,
     reason="FFmpeg/FFprobe ist für echte Formattests nicht installiert",
@@ -20,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def write_test_wave(path: Path) -> None:
-    sample_rate = 8_000
+    sample_rate = 44_100
     samples = (
         [0] * sample_rate
         + [round(10_000 * ((index % 40) / 20 - 1)) for index in range(sample_rate * 2)]
@@ -38,7 +47,7 @@ def write_test_wave(path: Path) -> None:
 @pytest.mark.parametrize(
     ("suffix", "codec_options"),
     [
-        (".mp3", ["-codec:a", "libmp3lame", "-b:a", "128k"]),
+        (".mp3", ["-codec:a", "libmp3lame", "-b:a", "320k"]),
         (".flac", ["-codec:a", "flac"]),
         (".vbr.mp3", ["-codec:a", "libmp3lame", "-q:a", "4"]),
     ],
@@ -72,3 +81,14 @@ def test_real_ffmpeg_probe_and_bounded_decode(
     assert info.duration_seconds == pytest.approx(4.0, abs=0.2)
     assert info.sample_rate_hz > 0
     assert sum(chunk.frame_count for chunk in chunks) > 0
+    if suffix == ".flac":
+        assert info.codec_name == "flac"
+        assert info.bits_per_sample == 16
+        misleading = tmp_path / "claims-to-be-mp3.mp3"
+        shutil.copyfile(target, misleading)
+        assert backend.probe(misleading).codec_name == "flac"
+    else:
+        assert info.codec_name == "mp3"
+        assert info.bitrate_mode == ("VBR" if suffix == ".vbr.mp3" else "CBR")
+        if suffix == ".mp3":
+            assert info.bitrate_bps == pytest.approx(320_000, rel=0.02)

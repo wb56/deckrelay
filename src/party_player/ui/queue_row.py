@@ -14,6 +14,7 @@ from party_player.gui_callback import measured_gui_callback
 from party_player.gui_heartbeat_watchdog import GuiCallbackState
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.ui import theme
+from party_player.ui.catalog_row import track_version_text
 from party_player.ui.tooltip import SharedTooltipManager, SharedTooltipTarget, Tooltip
 
 
@@ -185,6 +186,8 @@ class QueueRowView:
         entry = view_model.entry
         track = view_model.track
         name = f"{track.artist} — {track.title}" if track else f"Titel #{entry.track_id}"
+        if track is not None:
+            name = f"{name} · {track_version_text(track)}"
         duration_text = _format_duration(track.duration_seconds if track else None)
         request_suffix = (
             f" · {view_model.request_count} Wünsche" if view_model.request_count > 0 else ""

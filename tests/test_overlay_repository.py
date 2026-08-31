@@ -34,7 +34,7 @@ def test_schema_32_creates_overlay_tables_and_constraints(tmp_path: Path) -> Non
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
 
-    assert version is not None and version["version"] == LATEST_SCHEMA_VERSION == 39
+    assert version is not None and version["version"] == LATEST_SCHEMA_VERSION == 41
     assert {"audio_overlays", "overlay_play_history"} <= tables
 
 

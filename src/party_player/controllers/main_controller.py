@@ -521,7 +521,7 @@ class MainController:
         )
         self._track_editor_executor = BoundedThreadPoolExecutor(
             max_workers=1,
-            maximum_pending=1,
+            maximum_pending=4,
             thread_name_prefix="track-editor-load",
         )
         self._persistence_executor = persistence_executor or BoundedThreadPoolExecutor(

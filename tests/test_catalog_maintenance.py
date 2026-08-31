@@ -15,7 +15,10 @@ from party_player.catalog_maintenance import (
     shorten_display_value,
 )
 from party_player.metadata_editor import MetadataEditorService, TrackMetadataChanges
-from party_player.metadata_persistence import AnalysisRunRepository, MetadataSuggestionRepository
+from party_player.metadata_persistence import (
+    AnalysisRunRepository,
+    MetadataSuggestionRepository,
+)
 from party_player.metadata_rules import (
     MetadataFieldKey,
     MetadataReviewStatus,
@@ -49,7 +52,7 @@ def test_schema_39_contains_bounded_batch_suggestion_and_analysis_history(
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-    assert version == LATEST_SCHEMA_VERSION == 39
+    assert version == LATEST_SCHEMA_VERSION == 41
     assert {
         "metadata_batch_actions",
         "metadata_batch_changes",
@@ -72,7 +75,7 @@ def test_schema_37_database_is_upgraded_without_reinterpreting_old_tables(
             """SELECT name FROM sqlite_master
                WHERE type='table' AND name='metadata_batch_suggestion_changes'"""
         ).fetchone()
-    assert version == 39
+    assert version == 41
     assert table is not None
 
 
@@ -126,6 +129,20 @@ def test_field_and_has_value_filters_are_applied_in_sql(
 
     assert page.total == 1
     assert page.rows[0].track_id == present
+
+
+def test_bpm_range_filter_is_inclusive(temporary_database: Database) -> None:
+    below = _track(temporary_database, "Below", bpm=99.9)
+    lower = _track(temporary_database, "Lower", bpm=100.0)
+    upper = _track(temporary_database, "Upper", bpm=110.0)
+    above = _track(temporary_database, "Above", bpm=110.1)
+
+    page = CatalogMaintenanceRepository(temporary_database).page(
+        MaintenanceFilter(minimum_bpm=100.0, maximum_bpm=110.0), 1
+    )
+
+    assert {row.track_id for row in page.rows} == {lower, upper}
+    assert {below, above}.isdisjoint(row.track_id for row in page.rows)
 
 
 def test_work_queue_row_displays_its_field_instead_of_unrelated_state(
@@ -257,7 +274,8 @@ def test_preview_execute_records_reversible_changes_and_rejects_reuse(
             "SELECT rating, metadata_revision FROM tracks ORDER BY id"
         ).fetchall()
         changes = connection.execute(
-            "SELECT COUNT(*) FROM metadata_batch_changes WHERE batch_id=?", (result.batch_id,)
+            "SELECT COUNT(*) FROM metadata_batch_changes WHERE batch_id=?",
+            (result.batch_id,),
         ).fetchone()[0]
     assert [tuple(row) for row in tracks] == [(4, 1), (4, 1)]
     assert changes == 2
@@ -379,7 +397,10 @@ def test_multivalue_batch_and_undo_preserve_other_metadata(
     )
     result = service.execute(preview.request)
     assert result.status == "COMPLETED"
-    assert editor.load(track_id).field(MetadataFieldKey.TAGS).value == ("Party", "Sommer")
+    assert editor.load(track_id).field(MetadataFieldKey.TAGS).value == (
+        "Party",
+        "Sommer",
+    )
     undo_preview = service.preview_undo()
     assert undo_preview is not None
     service.undo(undo_preview)
@@ -579,7 +600,9 @@ def test_accept_undo_restores_competing_superseded_suggestion(
     assert repository.get(competitor.suggestion_id).status.value == "PENDING"
 
 
-def test_undo_skips_suggestion_changed_after_batch(temporary_database: Database) -> None:
+def test_undo_skips_suggestion_changed_after_batch(
+    temporary_database: Database,
+) -> None:
     track_id = _track(temporary_database, "Later decision")
     run = AnalysisRunRepository(temporary_database).create(
         track_id, "genre", "v1", "Later.mp3", 1, 1

@@ -5,6 +5,7 @@ from collections.abc import Iterable, Sequence
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -64,16 +65,25 @@ class FfmpegAudioAnalysisBackend:
         return self._EXTENSIONS
 
     def probe(self, file_path: Path) -> AudioFileInfo:
-        self._validate_file(file_path)
+        self._validate_file(file_path, require_supported_extension=False)
         ffprobe = self._required_command(self._ffprobe_command)
         command = [
             ffprobe,
             "-v",
             "error",
             "-select_streams",
-            "a:0",
+            "a",
             "-show_entries",
-            "stream=codec_name,sample_rate,channels,duration:format=duration",
+            (
+                "stream=index,codec_name,codec_long_name,profile,sample_rate,channels,"
+                "channel_layout,duration,bit_rate,bits_per_sample,bits_per_raw_sample,"
+                "sample_fmt:stream_disposition=default:stream_tags=encoder:"
+                "format=duration,format_name,"
+                "format_long_name,bit_rate:format_tags=encoder:packet=size,duration_time"
+            ),
+            "-show_packets",
+            "-read_intervals",
+            "0%+#64",
             "-of",
             "json",
             str(file_path),
@@ -95,16 +105,106 @@ class FfmpegAudioAnalysisBackend:
             raise AudioDecodeError(message or "FFprobe konnte die Audiodatei nicht lesen")
         try:
             payload = json.loads(completed.stdout)
-            stream = payload["streams"][0]
+            streams = payload["streams"]
+            stream = next(
+                (
+                    candidate
+                    for candidate in streams
+                    if int((candidate.get("disposition") or {}).get("default") or 0) == 1
+                ),
+                streams[0],
+            )
+            selected_stream_index = int(stream.get("index") or 0)
             duration = float(stream.get("duration") or payload["format"]["duration"])
             sample_rate = int(stream["sample_rate"])
             channels = int(stream["channels"])
             codec_name = str(stream.get("codec_name") or "")
+            codec_long_name = str(stream.get("codec_long_name") or "")
+            format_data = payload.get("format") or {}
+            format_name = str(format_data.get("format_name") or "")
+            format_long_name = str(format_data.get("format_long_name") or "")
+            bitrate = self._positive_int(stream.get("bit_rate") or format_data.get("bit_rate"))
+            bits_per_sample = self._bit_depth(codec_name, stream)
+            channel_layout = str(stream.get("channel_layout") or "")
+            codec_profile = str(stream.get("profile") or "")
+            encoder = str(
+                (stream.get("tags") or {}).get("encoder")
+                or (format_data.get("tags") or {}).get("encoder")
+                or ""
+            )
+            packets = tuple(
+                packet
+                for packet in payload.get("packets") or ()
+                if "stream_index" not in packet
+                or int(packet.get("stream_index") or 0) == selected_stream_index
+            )
+            bitrate_mode = self._bitrate_mode(codec_name, packets)
         except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise AudioDecodeError("FFprobe lieferte unvollständige Audiodaten") from exc
         if not math.isfinite(duration) or duration <= 0 or sample_rate <= 0 or channels <= 0:
             raise AudioDecodeError("FFprobe lieferte ungültige Audiodaten")
-        return AudioFileInfo(duration, sample_rate, channels, codec_name)
+        return AudioFileInfo(
+            duration_seconds=duration,
+            sample_rate_hz=sample_rate,
+            channels=channels,
+            codec_name=codec_name,
+            format_name=format_name,
+            bitrate_bps=bitrate,
+            bitrate_mode=bitrate_mode,
+            bits_per_sample=bits_per_sample,
+            channel_layout=channel_layout,
+            codec_profile=codec_profile,
+            encoder=encoder,
+            codec_long_name=codec_long_name,
+            format_long_name=format_long_name,
+            audio_stream_count=len(streams),
+            selected_stream_index=selected_stream_index,
+        )
+
+    @staticmethod
+    def _positive_int(value: object) -> int | None:
+        if not isinstance(value, (str, bytes, bytearray, int, float)):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @classmethod
+    def _bit_depth(cls, codec_name: str, stream: dict[str, Any]) -> int | None:
+        codec = codec_name.casefold()
+        if codec not in {"flac", "alac"} and not codec.startswith("pcm_"):
+            return None
+        explicit = cls._positive_int(
+            stream.get("bits_per_raw_sample") or stream.get("bits_per_sample")
+        )
+        if explicit is not None:
+            return explicit
+        match = re.fullmatch(
+            r"[su](8|16|24|32|64)(?:p|le|be)?", str(stream.get("sample_fmt") or "")
+        )
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _bitrate_mode(codec_name: str, packets: Sequence[dict[str, Any]]) -> str | None:
+        if codec_name.casefold() not in {"mp3", "mp2"}:
+            return None
+        rates: list[float] = []
+        for packet in packets:
+            try:
+                size = float(packet["size"])
+                duration = float(packet["duration_time"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if size > 0 and duration > 0 and math.isfinite(size) and math.isfinite(duration):
+                rates.append(size * 8.0 / duration)
+        if len(rates) < 8:
+            return None
+        median = sorted(rates)[len(rates) // 2]
+        if median <= 0:
+            return None
+        return "VBR" if (max(rates) - min(rates)) / median > 0.08 else "CBR"
 
     def decode_segments(
         self,
@@ -112,6 +212,7 @@ class FfmpegAudioAnalysisBackend:
         segments: Sequence[AnalysisSegment],
         cancellation: CancellationToken,
     ) -> Iterable[PcmChunk]:
+        self._validate_file(file_path, require_supported_extension=True)
         info = self.probe(file_path)
         ffmpeg = self._required_command(self._ffmpeg_command)
         for segment in segments:
@@ -201,8 +302,8 @@ class FfmpegAudioAnalysisBackend:
             if process.stderr is not None:
                 process.stderr.close()
 
-    def _validate_file(self, file_path: Path) -> None:
-        if file_path.suffix.lower() not in self._EXTENSIONS:
+    def _validate_file(self, file_path: Path, *, require_supported_extension: bool) -> None:
+        if require_supported_extension and file_path.suffix.lower() not in self._EXTENSIONS:
             raise UnsupportedAudioFormatError(
                 f"Nicht unterstütztes Audioformat: {file_path.suffix or '(ohne Endung)'}"
             )

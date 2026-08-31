@@ -61,7 +61,7 @@ def test_new_install_creates_current_metadata_structures(tmp_path: Path) -> None
             ).fetchall()
         }
         columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(tracks)")}
-    assert version == LATEST_SCHEMA_VERSION == 39
+    assert version == LATEST_SCHEMA_VERSION == 41
     assert {
         "metadata_terms",
         "track_metadata_terms",

@@ -26,7 +26,11 @@ from party_player.metadata_rules import (
     RecordingTrait,
     normalize_metadata_value,
 )
+from party_player.metadata_analysis_profiles import MetadataAnalysisProfile
+from party_player.metadata_analysis_service import MetadataAnalysisService, TempoAnalysisView
+from party_player.metadata_analysis_contracts import TempoAnalysisScope
 from party_player.performance_monitor import PerformanceMonitor
+from party_player.analysis import AudioFileInfo
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +50,7 @@ class TrackEditorViewModel:
     equalizer_preset_name: str | None = None
     equalizer_source: str | None = None
     metadata: TrackMetadataEditorViewModel | None = None
+    catalog_bpm: float | None = None
 
     @property
     def heading(self) -> str:
@@ -103,6 +108,7 @@ class TrackEditorController:
             ]
             | None
         ) = None,
+        metadata_analysis: MetadataAnalysisService | None = None,
     ) -> None:
         self._cue = cue_controller
         self._loudness = loudness_controller
@@ -110,6 +116,136 @@ class TrackEditorController:
         self._performance = performance_monitor or PerformanceMonitor()
         self._metadata = metadata_service
         self._background_submit = background_submit
+        self._metadata_analysis = metadata_analysis
+
+    def load_tempo_analysis_async(
+        self,
+        track_id: int,
+        completed: Callable[[TempoAnalysisView], None],
+        failed: Callable[[Exception], None],
+    ) -> bool:
+        if self._metadata_analysis is None or self._background_submit is None:
+            failed(RuntimeError("Tempoanalyse ist nicht verfügbar"))
+            return False
+        analysis = self._metadata_analysis
+
+        def publish(value: object) -> None:
+            completed(cast(TempoAnalysisView, value))
+
+        return self._background_submit(lambda: analysis.latest_for_track(track_id), publish, failed)
+
+    def load_technical_audio_info_async(
+        self,
+        track_id: int,
+        completed: Callable[[AudioFileInfo], None],
+        failed: Callable[[Exception], None],
+    ) -> bool:
+        if self._metadata_analysis is None or self._background_submit is None:
+            failed(RuntimeError("Technische Audiodaten sind nicht verfügbar"))
+            return False
+        analysis = self._metadata_analysis
+
+        def publish(value: object) -> None:
+            completed(cast(AudioFileInfo, value))
+
+        return self._background_submit(
+            lambda: analysis.technical_audio_info(track_id), publish, failed
+        )
+
+    def load_tempo_scope_async(
+        self,
+        track_id: int,
+        completed: Callable[[tuple[TempoAnalysisView, TempoAnalysisView]], None],
+        failed: Callable[[Exception], None],
+    ) -> bool:
+        if self._metadata_analysis is None or self._background_submit is None:
+            failed(RuntimeError("Tempoanalyse ist nicht verfügbar"))
+            return False
+        analysis = self._metadata_analysis
+
+        def publish(value: object) -> None:
+            completed(cast(tuple[TempoAnalysisView, TempoAnalysisView], value))
+
+        return self._background_submit(
+            lambda: (
+                analysis.latest_for_track(track_id, TempoAnalysisScope.TRACK_DEFAULT_CUES),
+                analysis.latest_for_track(track_id, TempoAnalysisScope.TRACK_FULL),
+            ),
+            publish,
+            failed,
+        )
+
+    def load_tempo_diagnostics_async(
+        self,
+        track_id: int,
+        completed: Callable[[str], None],
+        failed: Callable[[Exception], None],
+    ) -> bool:
+        if self._metadata_analysis is None or self._background_submit is None:
+            failed(RuntimeError("Tempoanalyse ist nicht verfügbar"))
+            return False
+        analysis = self._metadata_analysis
+        return self._background_submit(
+            lambda: analysis.tempo_diagnostics_text(track_id),
+            lambda value: completed(str(value)),
+            failed,
+        )
+
+    def start_tempo_analysis_async(
+        self,
+        track_id: int,
+        profile: MetadataAnalysisProfile,
+        completed: Callable[[object], None],
+        failed: Callable[[Exception], None],
+        *,
+        scope: TempoAnalysisScope = TempoAnalysisScope.TRACK_FULL,
+    ) -> bool:
+        if self._metadata_analysis is None or self._background_submit is None:
+            failed(RuntimeError("Tempoanalyse ist nicht verfügbar"))
+            return False
+        analysis = self._metadata_analysis
+        if analysis.active_job_count:
+            failed(RuntimeError("Es läuft bereits eine Tempoanalyse."))
+            return False
+        reason = analysis.block_reason(batch=False)
+        if reason:
+            failed(RuntimeError(reason))
+            return False
+        return self._background_submit(
+            lambda: analysis.analyze_track(track_id, profile, batch=False, scope=scope),
+            completed,
+            failed,
+        )
+
+    def cancel_tempo_analysis(self) -> None:
+        if self._metadata_analysis is not None:
+            self._metadata_analysis.cancel_current()
+
+    def loudness_analysis_availability(self) -> tuple[bool, str]:
+        """Describe whether this editor can analyze the current title."""
+        if self._loudness is None:
+            return False, "Lautheitsanalyse ist für diese Sitzung nicht verfügbar."
+        return self._loudness.analysis_availability()
+
+    def analyze_loudness(
+        self,
+        track_id: int,
+        completed: Callable[[LoudnessEditorState], None],
+        failed: Callable[[Exception], None],
+    ) -> None:
+        """Analyze one title and return refreshed editor state on the GUI thread."""
+        if self._loudness is None:
+            failed(RuntimeError("Lautheitsanalyse ist für diese Sitzung nicht verfügbar."))
+            return
+        loudness = self._loudness
+
+        def analysis_completed(_result: object | None, error: str | None) -> None:
+            if error is not None:
+                failed(RuntimeError(error))
+                return
+            completed(loudness.state(track_id))
+
+        loudness.analyze_track(track_id, analysis_completed)
 
     def build_view_model(self, track: Track) -> TrackEditorViewModel:
         with self._performance.measure(
@@ -143,6 +279,7 @@ class TrackEditorController:
             equalizer_preset_key=equalizer_key,
             equalizer_preset_name=equalizer_name,
             equalizer_source=equalizer_source,
+            catalog_bpm=track.bpm,
         )
 
     def load_metadata_async(
