@@ -18,14 +18,7 @@ sys.path.insert(0, str(project_dir / "src"))
 
 from party_player.release_artifact import is_forbidden_dependency_path
 from party_player import __version__
-
-
-def windows_version(value: str) -> tuple[int, int, int, int]:
-    """Map a semantic beta version to the four-part Windows file version."""
-    release, _, prerelease = value.partition("-")
-    major, minor, patch = (int(part) for part in release.split("."))
-    beta = int(prerelease.removeprefix("beta.")) if prerelease.startswith("beta.") else 0
-    return major, minor, patch, beta
+from party_player.release_version import windows_version
 
 
 numeric_version = windows_version(__version__)
