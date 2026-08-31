@@ -81,18 +81,16 @@ class ThreadDumpWriter:
             f"{getattr(callback_snapshot, 'last_completed_gui_callback', None)}",
             "  milliseconds_since_last_callback_completion: "
             f"{self._milliseconds_since_completion(now, callback_snapshot)}",
-            "  active_catalog_render: "
-            f"{getattr(callback_snapshot, 'active_catalog_render', None)}",
+            f"  active_catalog_render: {getattr(callback_snapshot, 'active_catalog_render', None)}",
             f"  active_queue_render: {getattr(callback_snapshot, 'active_queue_render', None)}",
             "  pending_layout_refreshes: "
             f"{getattr(callback_snapshot, 'pending_layout_refreshes', 0)}",
             "  pending_focus_request: "
             f"{getattr(callback_snapshot, 'pending_focus_request', False)}",
-            "  pending_catalog_chunks: "
-            f"{getattr(callback_snapshot, 'pending_catalog_chunks', 0)}",
-            "  pending_queue_chunks: " f"{getattr(callback_snapshot, 'pending_queue_chunks', 0)}",
-            "  catalog_rows_created: " f"{getattr(callback_snapshot, 'catalog_rows_created', 0)}",
-            "  queue_rows_created: " f"{getattr(callback_snapshot, 'queue_rows_created', 0)}",
+            f"  pending_catalog_chunks: {getattr(callback_snapshot, 'pending_catalog_chunks', 0)}",
+            f"  pending_queue_chunks: {getattr(callback_snapshot, 'pending_queue_chunks', 0)}",
+            f"  catalog_rows_created: {getattr(callback_snapshot, 'catalog_rows_created', 0)}",
+            f"  queue_rows_created: {getattr(callback_snapshot, 'queue_rows_created', 0)}",
             "",
         ]
         for thread in enumerate_threads():

@@ -4436,27 +4436,31 @@ def test_background_preload_survives_two_selected_automatic_restart_cycles(
 
     controller.start_automatic_queue()
     drain_until(
-        lambda: controller.deck_a.model.state == DeckState.PLAYING
-        and controller.deck_b.model.loaded_track is not None
-        and controller.deck_b.model.loaded_track.id == 2
-        and controller._deck_queue_ids["B"] == entries[1].queue_id
-        and not controller._preload_in_progress
-        and (
-            (stored := controller._queue_service.entry(entries[1].queue_id)) is not None
-            and stored.status == QueueStatus.READY
+        lambda: (
+            controller.deck_a.model.state == DeckState.PLAYING
+            and controller.deck_b.model.loaded_track is not None
+            and controller.deck_b.model.loaded_track.id == 2
+            and controller._deck_queue_ids["B"] == entries[1].queue_id
+            and not controller._preload_in_progress
+            and (
+                (stored := controller._queue_service.entry(entries[1].queue_id)) is not None
+                and stored.status == QueueStatus.READY
+            )
         )
     )
     controller.select_queue_entry(entries[2].queue_id)
     controller.stop_automatic_queue()
     controller.start_automatic_queue(from_selected=True)
     drain_until(
-        lambda: controller.deck_b.model.loaded_track is not None
-        and controller.deck_b.model.loaded_track.id == 3
-        and controller._deck_queue_ids["B"] == entries[2].queue_id
-        and not controller._preload_in_progress
-        and (
-            (stored := controller._queue_service.entry(entries[2].queue_id)) is not None
-            and stored.status == QueueStatus.READY
+        lambda: (
+            controller.deck_b.model.loaded_track is not None
+            and controller.deck_b.model.loaded_track.id == 3
+            and controller._deck_queue_ids["B"] == entries[2].queue_id
+            and not controller._preload_in_progress
+            and (
+                (stored := controller._queue_service.entry(entries[2].queue_id)) is not None
+                and stored.status == QueueStatus.READY
+            )
         )
     )
 
@@ -4471,13 +4475,15 @@ def test_background_preload_survives_two_selected_automatic_restart_cycles(
         outgoing_queue_id,
     )
     drain_until(
-        lambda: controller.deck_a.model.loaded_track is not None
-        and controller.deck_a.model.loaded_track.id == 4
-        and controller._deck_queue_ids["A"] == entries[3].queue_id
-        and not controller._preload_in_progress
-        and (
-            (stored := controller._queue_service.entry(entries[3].queue_id)) is not None
-            and stored.status == QueueStatus.READY
+        lambda: (
+            controller.deck_a.model.loaded_track is not None
+            and controller.deck_a.model.loaded_track.id == 4
+            and controller._deck_queue_ids["A"] == entries[3].queue_id
+            and not controller._preload_in_progress
+            and (
+                (stored := controller._queue_service.entry(entries[3].queue_id)) is not None
+                and stored.status == QueueStatus.READY
+            )
         )
     )
 
@@ -4485,13 +4491,15 @@ def test_background_preload_survives_two_selected_automatic_restart_cycles(
     controller.stop_automatic_queue()
     controller.start_automatic_queue(from_selected=True)
     drain_until(
-        lambda: controller.deck_a.model.loaded_track is not None
-        and controller.deck_a.model.loaded_track.id == 5
-        and controller._deck_queue_ids["A"] == entries[4].queue_id
-        and not controller._preload_in_progress
-        and (
-            (stored := controller._queue_service.entry(entries[4].queue_id)) is not None
-            and stored.status == QueueStatus.READY
+        lambda: (
+            controller.deck_a.model.loaded_track is not None
+            and controller.deck_a.model.loaded_track.id == 5
+            and controller._deck_queue_ids["A"] == entries[4].queue_id
+            and not controller._preload_in_progress
+            and (
+                (stored := controller._queue_service.entry(entries[4].queue_id)) is not None
+                and stored.status == QueueStatus.READY
+            )
         )
     )
     assert controller._deck_queue_ids["B"] == entries[2].queue_id
@@ -4506,13 +4514,15 @@ def test_background_preload_survives_two_selected_automatic_restart_cycles(
         outgoing_queue_id,
     )
     drain_until(
-        lambda: controller.deck_b.model.loaded_track is not None
-        and controller.deck_b.model.loaded_track.id == 6
-        and controller._deck_queue_ids["B"] == entries[5].queue_id
-        and not controller._preload_in_progress
-        and (
-            (stored := controller._queue_service.entry(entries[5].queue_id)) is not None
-            and stored.status == QueueStatus.READY
+        lambda: (
+            controller.deck_b.model.loaded_track is not None
+            and controller.deck_b.model.loaded_track.id == 6
+            and controller._deck_queue_ids["B"] == entries[5].queue_id
+            and not controller._preload_in_progress
+            and (
+                (stored := controller._queue_service.entry(entries[5].queue_id)) is not None
+                and stored.status == QueueStatus.READY
+            )
         )
     )
 

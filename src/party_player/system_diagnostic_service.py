@@ -209,8 +209,7 @@ class SystemDiagnosticService:
             ""
             if probe.default_device_id is not None
             else (
-                "Standardgerät ist über die read-only Endpunktabfrage nicht "
-                "zuverlässig bestimmbar"
+                "Standardgerät ist über die read-only Endpunktabfrage nicht zuverlässig bestimmbar"
                 if probe.devices
                 else "Es wurde kein Audiogerät gefunden"
             )

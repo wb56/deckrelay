@@ -811,8 +811,7 @@ class MainController:
                 self._emergency_action_active = False
                 self._current_emergency_action = "Keine"
                 self._last_emergency_action_result = (
-                    f"{result.state} · "
-                    f"{'OK' if result.success else result.error_code or 'FEHLER'}"
+                    f"{result.state} · {'OK' if result.success else result.error_code or 'FEHLER'}"
                 )
                 if result.success:
                     self._view.show_queue_warning("Notfalltitel wurde bestätigt gestartet.")
@@ -3328,7 +3327,7 @@ class MainController:
             try:
                 validated_track, availability = self._queue_service.revalidate_candidate(
                     entry.queue_id,
-                    cancelled=lambda: (generation != self._preload_generation or self._closed),
+                    cancelled=lambda: generation != self._preload_generation or self._closed,
                 )
                 if not availability.accepted:
 
@@ -3933,8 +3932,7 @@ class MainController:
         if deck.model.equalizer_error and deck.model.equalizer_error != previous_error:
             self._performance.record("equalizer_apply_failed_total", 1.0, 100.0)
             self._view.show_queue_warning(
-                f"Deck {deck.model.deck_id}: Equalizer deaktiviert – "
-                f"{deck.model.equalizer_error}"
+                f"Deck {deck.model.deck_id}: Equalizer deaktiviert – {deck.model.equalizer_error}"
             )
         elif changed:
             operation = "equalizer_apply_total" if resolved.enabled else "equalizer_disable_total"
@@ -5683,17 +5681,15 @@ class MainController:
             f"{memory.process_rss_bytes if memory is not None and memory.process_rss_bytes is not None else 'unavailable'}",
             f"  process_rss_status: {memory.process_rss_status if memory is not None else 'unavailable'}",
             f"  tracemalloc_enabled: {str(tracemalloc.is_tracing()).lower()}",
-            "  python_traced_bytes: " f"{memory.python_traced_bytes if memory is not None else 0}",
+            f"  python_traced_bytes: {memory.python_traced_bytes if memory is not None else 0}",
             f"  python_peak_bytes: {memory.python_peak_bytes if memory is not None else 0}",
-            "  active_thread_count: " f"{memory.active_thread_count if memory is not None else 0}",
-            "  gui_event_queue_size: "
-            f"{memory.gui_event_queue_size if memory is not None else 0}",
-            "  active_worker_count: " f"{memory.active_worker_count if memory is not None else 0}",
+            f"  active_thread_count: {memory.active_thread_count if memory is not None else 0}",
+            f"  gui_event_queue_size: {memory.gui_event_queue_size if memory is not None else 0}",
+            f"  active_worker_count: {memory.active_worker_count if memory is not None else 0}",
             f"  cover_cache_size: {memory.cover_cache_size if memory is not None else 0}",
             "  registered_widget_count: "
             f"{memory.registered_widget_count if memory is not None else 0}",
-            "  active_preview_count: "
-            f"{memory.active_preview_count if memory is not None else 0}",
+            f"  active_preview_count: {memory.active_preview_count if memory is not None else 0}",
             "  active_vlc_player_count: "
             f"{memory.active_vlc_player_count if memory is not None else 0}",
             f"  retained_sample_count: {self._memory_monitor.sample_count()}",
@@ -5728,8 +5724,7 @@ class MainController:
             f"  coalesced_count: {dispatcher.coalesced}",
             f"  discarded_count: {dispatcher.discarded}",
             f"  critical_overflow_count: {dispatcher.critical_overflow}",
-            "  maximum_items_processed_per_cycle: "
-            f"{dispatcher.maximum_items_processed_per_cycle}",
+            f"  maximum_items_processed_per_cycle: {dispatcher.maximum_items_processed_per_cycle}",
             f"  maximum_dispatch_duration_ms: {dispatcher.maximum_dispatch_duration_ms:.1f}",
             f"  average_dispatch_duration_ms: {dispatcher.average_dispatch_duration_ms:.1f}",
             "Threads:",
@@ -5755,10 +5750,10 @@ class MainController:
                 for worker in worker_history
             ),
             "Queue instrumentation:",
-            "  complete: " f"{str(not missing_queue_instrumentation).lower()}",
+            f"  complete: {str(not missing_queue_instrumentation).lower()}",
             "  missing: "
             f"{', '.join(missing_queue_instrumentation) if missing_queue_instrumentation else 'none'}",
-            "  counters_plausible: " f"{str(not implausible_queue_counters).lower()}",
+            f"  counters_plausible: {str(not implausible_queue_counters).lower()}",
             "  implausible_counters: "
             f"{', '.join(implausible_queue_counters) if implausible_queue_counters else 'none'}",
             "Timings:",

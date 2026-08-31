@@ -87,10 +87,12 @@ class DiagnosticScenario:
         """Wait off the GUI thread until all scenario persistence jobs finish."""
         with self._condition:
             return self._condition.wait_for(
-                lambda: self._snapshot is None
-                or self._snapshot.persistence_jobs_completed
-                + self._snapshot.persistence_jobs_failed
-                >= self._snapshot.persistence_jobs_submitted,
+                lambda: (
+                    self._snapshot is None
+                    or self._snapshot.persistence_jobs_completed
+                    + self._snapshot.persistence_jobs_failed
+                    >= self._snapshot.persistence_jobs_submitted
+                ),
                 timeout,
             )
 
