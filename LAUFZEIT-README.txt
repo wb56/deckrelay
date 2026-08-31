@@ -30,6 +30,18 @@ Programmdaten:
 Beim Aktualisieren der Anwendung sollte der Ordner data vorher gesichert und
 anschliessend in die neue Version uebernommen werden.
 
+Upgrade auf DeckRelay 2.0.0-beta.1:
+  Vor dem ersten Start muss das vollstaendige Verzeichnis data gesichert werden.
+  Die Datenbank wird automatisch von Schema 34 auf Schema 41 migriert. DeckRelay
+  1.0.0 kann die migrierte Datenbank nicht oeffnen. Eine Rueckkehr zu 1.0.0 ist
+  nur mit der zuvor angelegten Schema-34-Sicherung moeglich.
+
+Analyse im Titeleditor:
+  Cue-Werte und ihre Vorschau, Lautheitsanalyse, Metadatenvorschlaege und technische
+  Audiodaten werden im Titeleditor getrennt angezeigt. FFmpeg und FFprobe werden
+  fuer neue Cue-, Lautheits-, BPM- und technische Audioanalysen benoetigt. DeckRelay
+  veraendert dabei weder Musikdateien noch eingebettete Tags.
+
 Automatikmodus und CD-Queues:
   Die ausfuehrliche Anleitung steht in docs\automatic_playback.md.
   Fuer eine vollstaendige CD wird "Queue ersetzen" und danach

@@ -2,10 +2,20 @@
 
 Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
-## [Unveröffentlicht]
+## [2.0.0-beta.1] - Unveröffentlicht
 
 ### Added
 
+- Eine responsive Oberfläche bietet große und kompakte Darstellungen sowie getrennte
+  kompakte Arbeitsbereiche für Livebetrieb und Vorbereitung. Decks, Queue, Automatik,
+  Katalog und wichtige Aktionen bleiben auch bei kleineren Arbeitsflächen erreichbar.
+- Dialoge für Titeleditor, Backup, Systemdiagnose und externe Programme berücksichtigen
+  den verfügbaren Windows-Arbeitsbereich und halten ihre Hauptaktionen sichtbar.
+- Der erweiterte Titeleditor verbindet Cue-Bearbeitung und Vorhören, Lautheitsanalyse
+  sowie typisierte Metadatenpflege. Speichern übernimmt Änderungen, ohne den Dialog
+  automatisch zu schließen.
+- Die Katalogpflege unterstützt Filter, Vorschauen, reversible Stapeländerungen und
+  nachvollziehbare Entscheidungen über Analysevorschläge.
 - Der Titeleditor zeigt schreibgeschützte technische Audiodaten aus dem tatsächlichen
   FFprobe-Dateiinhalt einschließlich Codec, Container, belastbarem MP3-CBR-/VBR-Status,
   Bitrate, Abtastrate, Bittiefe, Kanälen, Layout und technischer Dauer. Die asynchrone
@@ -14,16 +24,40 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
   tatsächlichen Analysefenstern, Rohwerten, Aggregationsbeiträgen und eindeutigen
   Zuständen für wartende, laufende, abgeschlossene, fehlgeschlagene und abgebrochene
   Läufe.
+- Titelvarianten werden anhand ihres konkreten Formats und Dateinamens unterscheidbar.
+  Beim Entfernen aus dem Katalog und bei der Übernahme in Queue oder Playlist bleibt
+  die ausgewählte Version eindeutig.
+- Lautheitswerte können direkt im Titeleditor analysiert und anschließend als eigener
+  gespeicherter Analysestand angezeigt werden.
 
 ### Changed
 
+- Der Titeleditor speichert Cue- und Metadatenänderungen ausdrücklich, bleibt danach
+  aber für weitere Bearbeitung geöffnet. Lange Titel und Cue-Aktionen passen sich an
+  die verfügbare Dialogbreite an.
 - Die produktive Tempoanalyse verwendet den real abgenommenen Stand
   `ffmpeg-onset-acf-v0.5` mit `tempo-profile-v3`. Aggregatkonfidenz und
   Rhythmusstabilität werden getrennt bewertet; nur hinreichend sichere und stabile
   Ergebnisse werden automatisch für die Planung verwendet.
+- Vollaufnahme, wirksamer Cue-Bereich und playlistbezogene Ausschnitte sind getrennte
+  Analyse- und Planungskontexte. Ein unsicherer Cue-Wert verdrängt keinen verlässlichen
+  Vollspurwert.
+- Queue-, Playlist- und Katalogdarstellung unterscheiden konkrete Dateivarianten und
+  machen die jeweils betroffene Fassung vor einer Aktion sichtbar.
+- Hintergrundanalysen laufen in begrenzten Workern beziehungsweise einem isolierten
+  Analyseprozess. Abbruch und Programmende schließen Worker und Audioressourcen
+  kontrolliert.
+- Das Datenbankschema wird beim ersten Start dieser Beta automatisch von Schema 34 auf
+  Schema 41 erweitert.
 
 ### Fixed
 
+- Responsive Layouts und Dialoge verhindern abgeschnittene Titel, Aktionsleisten und
+  Cue-Schaltflächen in den abgenommenen Windows-Auflösungen und Skalierungen.
+- Laufende oder noch wartende Analysen werden diagnostisch eindeutig dargestellt und
+  beim Herunterfahren kontrolliert beendet beziehungsweise erhalten.
+- Katalog-, Metadaten- und Persistenzabläufe verwerfen veraltete Hintergrundergebnisse
+  und verändern weder Musikdateien noch deren Tags.
 - Stabile elektronische Titel und Titel mit natürlichem Schlagzeug bleiben
   automatisch planbar, während Shuffle-/Half-Time-Grenzfälle und Titel mit echten
   Tempowechseln sicher blockiert werden. Die reale Abnahme umfasst 36 Voll-/Cue-Läufe
@@ -34,6 +68,27 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
   Abschluss wurden weder Musikdateien noch Analysegrenzwerte verändert.
 - Formatintegrationstests finden neben PATH auch die gebündelte FFmpeg-Toolchain und
   werden dadurch für FLAC, CBR-MP3 und VBR-MP3 nicht mehr übersprungen.
+
+### Upgrade-Hinweise
+
+- Vor dem ersten Start mit DeckRelay 2.0.0-beta.1 muss das vollständige Verzeichnis
+  `data` der bisherigen Installation gesichert werden.
+- Die vorhandene Datenbank wird beim Start automatisch von Schema 34 auf Schema 41
+  migriert. Musikdateien und eingebettete Tags bleiben unverändert.
+- DeckRelay 1.0.0 kann eine auf Schema 41 migrierte Datenbank nicht öffnen. Eine
+  Rückkehr zu 1.0.0 ist nur mit der zuvor angelegten Schema-34-Sicherung möglich.
+
+### Bekannte Grenzen
+
+- Shuffle- und Half-Time-Material wird nicht immer automatisch freigegeben. Schwache
+  oder widersprüchliche Ergebnisse bleiben zur manuellen Prüfung gesperrt.
+- Titel mit echten Tempowechseln können bewusst ohne automatischen BPM-Planungswert
+  bleiben.
+- Die automatische Cue-Erkennung bewertet Signalpegel und nicht die musikalische oder
+  dramaturgische Bedeutung eines Intros oder Outros. Cue In, Cue Out und Fade können
+  im Titeleditor über den separaten Vorschauplayer vorgehört werden.
+- Der Notfallbetrieb befindet sich weiterhin im Ausbau.
+- DeckRelay führt kein Beatmatching und kein tonhöhenerhaltendes Time-Stretching aus.
 
 ## [1.0.0] - 2026-08-16
 

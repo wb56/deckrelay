@@ -1,6 +1,6 @@
 # DeckRelay – Feature-Liste
 
-Stand: 6. August 2026
+Stand: Vorbereitung DeckRelay 2.0.0-beta.1
 
 DeckRelay ist eine eigenständige Windows-Anwendung für Musiksuche,
 Veranstaltungsqueues, Zwei-Deck-Wiedergabe, automatische Übergänge sowie Jingles,
@@ -120,17 +120,33 @@ Anwendungsdaten liegen in einer SQLite-Datenbank.
 ## Titel-Editor
 
 - Zentraler Dialog „Titel bearbeiten“
-- Register für Cue, Lautheit, Equalizer, Jingles und Metadaten
+- Register für Cue, Lautheit und Metadaten
 - Vollständig implementierter Cue-Bereich
+- Separater Vorschauplayer für Cue In, Cue Out und Fade ohne Einfluss auf Queue,
+  History oder On-Air-Decks
+- Direkte Lautheitsanalyse mit Status und gespeichertem Ergebnis
+- Bearbeitung typisierter Metadaten und bewusste Entscheidungen über Vorschläge
+- Schreibgeschützte technische Audiodaten zu Codec, Container, Bitrate, CBR/VBR,
+  Abtastrate, Bittiefe, Kanälen, Dauer, Profil und Encoder
 - Anzeige von Titel, Interpret, Album, Jahr und Dateipfad
 - Lokales Änderungsmodell: Speicherung erst nach ausdrücklichem Speichern
 - Asynchrone Persistenz ohne Datenbankarbeit im GUI-Thread
 - Schutz gegen Doppelklick und verspätete Worker-Ergebnisse
 - Inkrementelle Aktualisierung nur betroffener Katalog- und Queuezeilen
+- Speichern hält den Dialog für weitere Bearbeitung geöffnet
 
-Die Bereiche Lautheit, Equalizer, Jingles und Metadaten werden im Titel-Editor
-schrittweise weiter ausgebaut; die zugrunde liegenden Funktionen existieren bereits
-teilweise an anderen Stellen der Anwendung.
+Equalizer- und Jingle-Verwaltung bleiben eigenständige Bedienbereiche und werden nicht
+als fertige Titeleditor-Register dargestellt.
+
+## Kontextbezogene Tempoanalyse
+
+- Produktiver Stand `ffmpeg-onset-acf-v0.5` mit `tempo-profile-v3`
+- Getrennte Ergebnisse für Vollaufnahme, wirksamen Cue-Bereich und Playlistkontext
+- Halb-/Doppeltempo als gemeinsame Tempofamilie, ohne unzulässige Drittelpulsumrechnung
+- Getrennte Aggregatkonfidenz und Rhythmusstabilität
+- Diagnose der tatsächlichen Analysefenster, Rohkandidaten und Aggregationsbeiträge
+- Automatische Planung nur bei hinreichend sicherem und stabilem Ergebnis
+- Reale Abnahme mit CBR-MP3, VBR-MP3 und FLAC in sechs musikalischen Kategorien
 
 ## Session, Einstellungen und Datenhaltung
 
@@ -206,7 +222,9 @@ als letzte Eskalationsstufe.
 
 - Automatisierte Tests für Services, Controller, Datenbank, Audio-Doubles und UI-nahe
   Abläufe
-- Aktueller Stand: 774 Tests bestanden, 3 übersprungen
-- Ruff und MyPy für die zuletzt geänderten Robustheitsmodule ohne Befund
-- Reale Hör-, Geräteverlust-, NAS-, Langzeit- und Performance-Abnahmen bleiben Teil
-  der Version-1-Abnahme
+- Das aktuelle Main-Quality-Gate umfasst Ruff, Black, MyPy, reale FFmpeg-Formattests
+  und die vollständige Pytest-Suite.
+- Responsive Windows-Darstellungen wurden bei 1920 x 1080 mit 100 und 125 Prozent
+  sowie bei 1366 x 768 mit 125 Prozent praktisch geprüft.
+- Release-Build, Upgradeprobe einer realen 1.0.0-Datenbank und Portable-ZIP-Prüfung
+  bleiben eigene Freigabeschritte für 2.0.0-beta.1.
