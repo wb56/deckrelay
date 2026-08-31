@@ -34,7 +34,7 @@ class OverlayService:
     """Apply domain validation and produce complete overlay catalog events."""
 
     FULL_VOLUME_WITHOUT_DUCKING_WARNING = (
-        "100 % Overlay-Lautstärke ohne Musikabsenkung kann den Summenpegel " "übersteuern."
+        "100 % Overlay-Lautstärke ohne Musikabsenkung kann den Summenpegel übersteuern."
     )
 
     def __init__(self, repository: OverlayRepository) -> None:

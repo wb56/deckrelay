@@ -12,6 +12,9 @@ from party_player.repositories.track_repository import TrackRepository
 from party_player.loudness import LoudnessRepository
 from party_player.loudness import LoudnessService
 from party_player.services.library_service import LibraryService
+from party_player.metadata_import import MetadataImportOutcome
+from party_player.metadata_persistence import MetadataFieldStateRepository
+from party_player.metadata_rules import MetadataFieldKey, MetadataSource
 
 
 def _synchsafe(size: int) -> bytes:
@@ -73,6 +76,55 @@ def test_import_reads_metadata_and_upserts_catalog(
     assert first.year == 1999
     assert first.original_release_year == 1978
     assert TrackRepository(database).count() == 1
+
+
+def test_import_invalid_year_and_missing_title_are_handled_without_writing_file(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    audio_file = tmp_path / "fallback-name.mp3"
+    original = b"audio"
+    audio_file.write_bytes(original)
+    metadata = SimpleNamespace(
+        title=" ", artist=None, album=None, duration=10, genre=" ", year="invalid", other={}
+    )
+    monkeypatch.setattr("party_player.services.library_service.TinyTag.get", lambda _path: metadata)
+    database = Database(tmp_path / "partial.db")
+    migrate(database)
+    service = LibraryService(TrackRepository(database))
+
+    result = service.import_file_with_result(audio_file)
+
+    assert result.outcome is MetadataImportOutcome.NEW_TRACK
+    assert result.partial_tags
+    assert result.track is not None and result.track.title == "fallback-name"
+    title_state = MetadataFieldStateRepository(database).get(
+        result.track.id, MetadataFieldKey.TITLE
+    )
+    assert title_state is not None and title_state.source is (
+        MetadataSource.FILE_OR_FOLDER_DERIVATION
+    )
+    assert result.track.year is None
+    assert audio_file.read_bytes() == original
+
+
+def test_structured_import_reports_failure_without_changing_legacy_signature(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "failure.db")
+    migrate(database)
+    service = LibraryService(TrackRepository(database))
+    missing = tmp_path / "missing.mp3"
+
+    result = service.import_file_with_result(missing)
+
+    assert result.outcome is MetadataImportOutcome.FAILED
+    assert result.track is None
+    try:
+        service.import_file(missing)
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("Bestehende Importsignatur muss weiterhin Fehler auslösen")
 
 
 def test_catalog_path_upsert_is_case_insensitive_for_windows_paths(tmp_path: Path) -> None:

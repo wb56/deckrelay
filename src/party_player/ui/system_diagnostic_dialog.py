@@ -8,6 +8,7 @@ import customtkinter as ctk  # type: ignore[import-untyped]
 
 from party_player.system_diagnostic_service import SystemDiagnosticReport
 from party_player.diagnostic_export import DiagnosticExportMode
+from party_player.ui.responsive_dialog import apply_responsive_dialog_geometry, bind_dialog_escape
 
 
 def format_system_report(report: SystemDiagnosticReport) -> str:
@@ -58,8 +59,9 @@ class SystemDiagnosticDialog(ctk.CTkToplevel):  # type: ignore[misc]
     ) -> None:
         super().__init__(parent)
         self.title("DeckRelay – Systemdiagnose")
-        self.geometry("820x700")
-        self.minsize(680, 540)
+        apply_responsive_dialog_geometry(
+            self, parent, preferred_size=(820, 700), minimum_size=(600, 420)
+        )
         self.transient(parent)
         self.protocol("WM_DELETE_WINDOW", self._close)
         self._check = check
@@ -97,6 +99,7 @@ class SystemDiagnosticDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._export_status.pack(side="left", padx=10)
         ctk.CTkButton(actions, text="Schließen", command=self._close).pack(side="right")
         self._render(initial_report)
+        bind_dialog_escape(self, self._close)
         self.focus_force()
 
     def _render(self, report: SystemDiagnosticReport) -> None:

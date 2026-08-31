@@ -6,6 +6,12 @@ import json
 from dataclasses import dataclass
 
 from party_player.enums import PlayerMode
+from party_player.presentation import (
+    PresentationPreference,
+    Workspace,
+    presentation_preference,
+    workspace,
+)
 from party_player.repository import PartyPlayerRepository
 from party_player.system_dependencies import DependencySelectionMode
 
@@ -188,6 +194,26 @@ class SettingsService:
     def set_workspace_catalog_ratio(self, ratio: float) -> None:
         normalized = min(0.8, max(0.2, float(ratio)))
         self._repository.set_setting("workspace_catalog_ratio", f"{normalized:.4f}")
+
+    def main_window_geometry(self) -> str | None:
+        """Return the raw geometry record; the display model validates its contents."""
+        return self._optional_text_setting("main_window_geometry")
+
+    def set_main_window_geometry(self, geometry: str) -> None:
+        self._repository.set_setting("main_window_geometry", geometry.strip())
+
+    def presentation_preference(self) -> PresentationPreference:
+        """Return the global preference, never a temporarily resolved mode."""
+        return presentation_preference(self._repository.get_setting("presentation_preference"))
+
+    def set_presentation_preference(self, preference: PresentationPreference) -> None:
+        self._repository.set_setting("presentation_preference", preference.value)
+
+    def presentation_workspace(self) -> Workspace:
+        return workspace(self._repository.get_setting("presentation_workspace"))
+
+    def set_presentation_workspace(self, selected: Workspace) -> None:
+        self._repository.set_setting("presentation_workspace", selected.value)
 
     def queue_artist_repetition_enabled(self, default: bool = True) -> bool:
         return self._bool_setting("queue_artist_repetition_enabled", default)

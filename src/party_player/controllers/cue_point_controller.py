@@ -10,7 +10,11 @@ from time import monotonic
 from uuid import uuid4
 
 from party_player.audio.base import AudioBackend
-from party_player.analysis import CueAnalysisResult, CueAnalysisService, CueAnalysisServiceJob
+from party_player.analysis import (
+    CueAnalysisResult,
+    CueAnalysisService,
+    CueAnalysisServiceJob,
+)
 from party_player.bounded_executor import BoundedThreadPoolExecutor
 from party_player.persistence_participant import single_worker_participant
 from party_player.restore_lifecycle import PersistenceParticipant
@@ -426,16 +430,16 @@ class CuePointController:
         if self._batch_analysis_job is not None and not self._batch_analysis_job.future.done():
             self._batch_analysis_job.cancel()
 
-    def close(self) -> None:
+    def close(self, *, wait: bool = True) -> None:
         self.stop_preview()
         self.cancel_analysis()
         self.cancel_batch_analysis()
-        self._preview_executor.shutdown(wait=True, cancel_futures=True)
+        self._preview_executor.shutdown(wait=wait, cancel_futures=True)
         if self._owns_persistence_executor:
             self._persistence_executor.shutdown(wait=False, cancel_futures=False)
         self._preview_future = None
         if self._analysis_service is not None:
-            self._analysis_service.close()
+            self._analysis_service.close(wait=wait)
 
     @property
     def active_preview_count(self) -> int:

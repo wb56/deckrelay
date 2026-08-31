@@ -1,11 +1,13 @@
 # Copilot Instructions — DeckRelay
 
-Diese Datei basiert auf den verbindlichen Vorgaben des MP3-Manager-Projekts.
+`AGENTS.md` und die dort verlinkten GUI- und Lizenzrichtlinien sind für die
+DeckRelay-2.0-Entwicklung verbindlich.
 
-- Technologie: Python 3.12+, CustomTkinter, tkinter/ttk, SQLite, pygame, TinyTag, Pillow.
+- Technologie: Python 3.11+, CustomTkinter, tkinter/ttk, SQLite und die vorhandenen
+  Audioabstraktionen. Kein eigenständiger Frameworkwechsel.
 - Architektur strikt einhalten: UI → Controller → Service → Repository → SQLite.
-- UI enthält weder SQL noch Geschäftslogik oder Dateimanipulationen.
-- Wiedergabe ausschließlich über eine `MusicPlayer`-Abstraktion; UI greift nie direkt auf pygame zu.
+- UI enthält weder SQL noch Geschäftslogik oder Dateimanipulationen und greift nicht
+  direkt auf ein konkretes Audio-Backend zu.
 - Musikdateien sind schreibgeschützt zu behandeln: nicht automatisch umbenennen, verschieben, löschen oder Metadaten überschreiben.
 - Datenbankänderungen erfolgen über Migrationen, SQL ist parametrisiert und `SELECT *` ist verboten.
 - Auf mindestens 100.000 Titel auslegen: Pagination, Indizes, Lazy Loading und Hintergrundarbeit verwenden.

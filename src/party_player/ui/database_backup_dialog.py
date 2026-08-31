@@ -6,6 +6,8 @@ from typing import Any
 
 import customtkinter as ctk  # type: ignore[import-untyped]
 
+from party_player.ui.responsive_dialog import apply_responsive_dialog_geometry, bind_dialog_escape
+
 from party_player.backup_restore_controller import BackupRestoreUiResult
 from party_player.equalizer_transfer import (
     EqualizerConflictStrategy,
@@ -194,7 +196,9 @@ class DatabaseBackupDialog(ctk.CTkToplevel):  # type: ignore[misc]
     ) -> None:
         super().__init__(parent)
         self.title("Datenbank und Sicherung")
-        self.geometry("680x960")
+        apply_responsive_dialog_geometry(
+            self, parent, preferred_size=(680, 900), minimum_size=(560, 480)
+        )
         self.transient(parent)
         self._on_close = on_close
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -203,6 +207,10 @@ class DatabaseBackupDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._danger_buttons: list[Any] = []
         self._safety = safety
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self._content = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._content.grid(row=0, column=0, padx=4, pady=(4, 0), sticky="nsew")
+        self._content.grid_columnconfigure(0, weight=1)
 
         backup = self._group("KOMPLETTE VERANSTALTUNG SICHERN / WIEDERHERSTELLEN", 0)
         ctk.CTkLabel(
@@ -277,15 +285,19 @@ class DatabaseBackupDialog(ctk.CTkToplevel):  # type: ignore[misc]
             command=self.refresh_safety,
         ).grid(row=4, column=0, padx=12, pady=(0, 10), sticky="ew")
 
-        self._status = ctk.CTkLabel(self, text="Bereit", anchor="w", justify="left")
-        self._status.grid(row=4, column=0, padx=18, pady=(8, 4), sticky="ew")
-        self._last_backup = ctk.CTkLabel(self, text="", anchor="w", justify="left")
-        self._last_backup.grid(row=5, column=0, padx=18, pady=4, sticky="ew")
+        footer = ctk.CTkFrame(self)
+        footer.grid(row=1, column=0, padx=18, pady=(8, 18), sticky="ew")
+        footer.grid_columnconfigure(0, weight=1)
+        self._status = ctk.CTkLabel(footer, text="Bereit", anchor="w", justify="left")
+        self._status.grid(row=0, column=0, padx=8, pady=(6, 2), sticky="ew")
+        self._last_backup = ctk.CTkLabel(footer, text="", anchor="w", justify="left")
+        self._last_backup.grid(row=1, column=0, padx=8, pady=(2, 6), sticky="ew")
         self._show_last_backup(last_manual_backup)
         self.refresh_safety()
-        ctk.CTkButton(self, text="Schließen", command=self._close).grid(
-            row=6, column=0, padx=18, pady=(8, 18), sticky="e"
+        ctk.CTkButton(footer, text="Schließen", command=self._close).grid(
+            row=0, column=1, rowspan=2, padx=8, pady=6, sticky="e"
         )
+        bind_dialog_escape(self, self._close)
         self.focus_force()
 
     def _close(self) -> None:
@@ -294,7 +306,7 @@ class DatabaseBackupDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self.destroy()
 
     def _group(self, title: str, row: int) -> Any:
-        frame = ctk.CTkFrame(self)
+        frame = ctk.CTkFrame(self._content)
         frame.grid(row=row, column=0, padx=18, pady=(18 if row == 0 else 8, 0), sticky="ew")
         frame.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(frame, text=title, font=("Segoe UI", 13, "bold")).grid(

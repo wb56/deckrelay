@@ -85,7 +85,7 @@ def test_backup_manifest_contains_size_checksum_and_schema(
     assert manifest["format_version"] == 1
     assert manifest["product_name"] == "DeckRelay"
     assert manifest["product_slug"] == "deckrelay"
-    assert manifest["database_schema_version"] == 34
+    assert manifest["database_schema_version"] == 41
     assert manifest["included_sections"] == ["database"]
     assert BACKUP_MANIFEST_JSON_SCHEMA["additionalProperties"] is False
     assert manifest["files"] == [
@@ -425,10 +425,10 @@ def test_atomic_publish_failure_leaves_no_backup_or_temp_file(
 @pytest.mark.parametrize(
     ("updates", "current_schema", "expected"),
     [
-        ({"created_at": "2026-08-09T14:30:45"}, 34, BackupErrorCode.MANIFEST_INVALID),
-        ({"database_schema_version": -1}, 34, BackupErrorCode.MANIFEST_INVALID),
-        ({"included_sections": ["database", "database"]}, 34, BackupErrorCode.MANIFEST_INVALID),
-        ({"database_schema_version": 35}, 34, BackupErrorCode.SCHEMA_VERSION_TOO_NEW),
+        ({"created_at": "2026-08-09T14:30:45"}, 39, BackupErrorCode.MANIFEST_INVALID),
+        ({"database_schema_version": -1}, 39, BackupErrorCode.MANIFEST_INVALID),
+        ({"included_sections": ["database", "database"]}, 39, BackupErrorCode.MANIFEST_INVALID),
+        ({"database_schema_version": 40}, 39, BackupErrorCode.SCHEMA_VERSION_TOO_NEW),
     ],
 )
 def test_manifest_field_contract_is_enforced(
@@ -481,7 +481,7 @@ def test_restore_validator_accepts_valid_backup_without_changing_active_database
     assert validation.state is BackupOperationState.COMPLETED
     assert validation.compatibility is BackupCompatibility.EXACT
     assert not validation.migration_performed
-    assert validation.prepared_schema_version == 34
+    assert validation.prepared_schema_version == 41
     assert temporary_database.path.read_bytes() == active_before
 
 
@@ -541,7 +541,7 @@ def test_restore_validator_migrates_only_a_second_temporary_copy(
     assert validation.success
     assert validation.compatibility is BackupCompatibility.MIGRATION_REQUIRED
     assert validation.migration_performed
-    assert validation.prepared_schema_version == 34
+    assert validation.prepared_schema_version == 41
     assert older.read_bytes() == archive_before
     assert temporary_database.path.read_bytes() == active_before
     assert performance.statistics()["restore.migration"].count == 1

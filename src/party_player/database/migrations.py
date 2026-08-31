@@ -4,7 +4,7 @@ import sqlite3
 
 from party_player.database.connection import Database
 
-LATEST_SCHEMA_VERSION = 34
+LATEST_SCHEMA_VERSION = 41
 
 
 def migrate(database: Database) -> None:
@@ -21,8 +21,7 @@ def migrate(database: Database) -> None:
         version = int(row["version"])
         if version > LATEST_SCHEMA_VERSION:
             raise RuntimeError(
-                f"Datenbankschema {version} ist neuer als die Anwendung "
-                f"({LATEST_SCHEMA_VERSION})"
+                f"Datenbankschema {version} ist neuer als die Anwendung ({LATEST_SCHEMA_VERSION})"
             )
 
         if version < 1:
@@ -160,6 +159,34 @@ def migrate(database: Database) -> None:
         if version < 34:
             _migrate_to_v34(connection)
             _set_version(connection, 34)
+            version = 34
+        if version < 35:
+            _migrate_to_v35(connection)
+            _set_version(connection, 35)
+            version = 35
+        if version < 36:
+            _migrate_to_v36(connection)
+            _set_version(connection, 36)
+            version = 36
+        if version < 37:
+            _migrate_to_v37(connection)
+            _set_version(connection, 37)
+            version = 37
+        if version < 38:
+            _migrate_to_v38(connection)
+            _set_version(connection, 38)
+            version = 38
+        if version < 39:
+            _migrate_to_v39(connection)
+            _set_version(connection, 39)
+            version = 39
+        if version < 40:
+            _migrate_to_v40(connection)
+            _set_version(connection, 40)
+            version = 40
+        if version < 41:
+            _migrate_to_v41(connection)
+            _set_version(connection, 41)
 
 
 def _migrate_to_v1(connection: sqlite3.Connection) -> None:
@@ -1259,3 +1286,431 @@ def _migrate_to_v34(connection: sqlite3.Connection) -> None:
             ON emergency_play_history(session_id, started_at DESC, id DESC);
         """
     )
+
+
+def _migrate_to_v35(connection: sqlite3.Connection) -> None:
+    """Add typed catalog metadata, provenance, and validated analysis proposals."""
+    tracks_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tracks'"
+    ).fetchone()
+    if tracks_exists is None:
+        return
+    track_columns = {
+        str(row["name"]) for row in connection.execute("PRAGMA table_info(tracks)").fetchall()
+    }
+    additions = {
+        "recording_type": (
+            "TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (recording_type IN "
+            "('ORIGINAL', 'RE_RECORDING', 'LIVE', 'REMIX', 'RADIO_EDIT', 'UNKNOWN'))"
+        ),
+        "is_remastered": "INTEGER NOT NULL DEFAULT 0 CHECK (is_remastered IN (0, 1))",
+        "bpm": "REAL CHECK (bpm IS NULL OR (bpm >= 20 AND bpm <= 300))",
+        "bpm_confidence": (
+            "REAL CHECK (bpm_confidence IS NULL OR (bpm_confidence >= 0 AND bpm_confidence <= 1))"
+        ),
+        "alternative_bpm": (
+            "REAL CHECK (alternative_bpm IS NULL OR "
+            "(alternative_bpm >= 20 AND alternative_bpm <= 300))"
+        ),
+        "energy": "INTEGER CHECK (energy IS NULL OR (energy >= 0 AND energy <= 100))",
+        "danceability": (
+            "INTEGER CHECK (danceability IS NULL OR (danceability >= 0 AND danceability <= 100))"
+        ),
+        "language": "TEXT",
+        "rating": "INTEGER CHECK (rating IS NULL OR (rating >= 1 AND rating <= 5))",
+        "comment": "TEXT",
+        "metadata_revision": "INTEGER NOT NULL DEFAULT 0 CHECK (metadata_revision >= 0)",
+    }
+    for name, definition in additions.items():
+        if name not in track_columns:
+            connection.execute(f"ALTER TABLE tracks ADD COLUMN {name} {definition}")
+
+    field_keys = (
+        "'year', 'original_release_year', 'recording_classification', 'bpm', "
+        "'bpm_confidence', 'alternative_bpm', 'main_genre', 'energy', "
+        "'danceability', 'language', 'rating', 'comment', 'musical_decades', "
+        "'additional_genres', 'moods', 'tags'"
+    )
+    source_types = (
+        "'FILE_TAG', 'AUDIO_ANALYSIS', 'EXTERNAL_MUSIC_DATABASE', "
+        "'FILE_OR_FOLDER_DERIVATION', 'MANUAL_INPUT', 'MANUAL_CONFIRMATION'"
+    )
+    review_statuses = (
+        "'MISSING', 'IMPORTED', 'ANALYSED', 'SUGGESTED', 'REVIEW_REQUIRED', "
+        "'CONFIRMED_WITH_VALUE', 'CONFIRMED_WITHOUT_VALUE', 'CONFLICTING', "
+        "'FAILED', 'OUTDATED'"
+    )
+    connection.executescript(
+        f"""
+        CREATE TABLE IF NOT EXISTS metadata_terms (
+            id INTEGER PRIMARY KEY,
+            term_type TEXT NOT NULL CHECK (
+                term_type IN ('MUSICAL_DECADE', 'ADDITIONAL_GENRE', 'MOOD', 'FREE_TAG')
+            ),
+            normalized_key TEXT NOT NULL CHECK (length(normalized_key) > 0),
+            display_name TEXT NOT NULL CHECK (length(display_name) > 0),
+            numeric_value INTEGER,
+            CHECK (
+                (term_type = 'MUSICAL_DECADE' AND numeric_value IS NOT NULL
+                 AND numeric_value >= 1870 AND numeric_value <= 2100
+                 AND numeric_value % 10 = 0)
+                OR (term_type <> 'MUSICAL_DECADE' AND numeric_value IS NULL)
+            ),
+            UNIQUE (term_type, normalized_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS track_metadata_terms (
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            term_id INTEGER NOT NULL REFERENCES metadata_terms(id) ON DELETE RESTRICT,
+            PRIMARY KEY (track_id, term_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_track_metadata_terms_term
+            ON track_metadata_terms(term_id, track_id);
+
+        CREATE TABLE IF NOT EXISTS track_metadata_field_state (
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            field_key TEXT NOT NULL CHECK (field_key IN ({field_keys})),
+            source_type TEXT NOT NULL CHECK (source_type IN ({source_types})),
+            source_detail TEXT NOT NULL DEFAULT '',
+            confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+            review_status TEXT NOT NULL CHECK (review_status IN ({review_statuses})),
+            analysis_version TEXT,
+            confirmed_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (track_id, field_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_track_metadata_field_state_review
+            ON track_metadata_field_state(review_status, field_key);
+
+        CREATE TABLE IF NOT EXISTS metadata_analysis_runs (
+            id INTEGER PRIMARY KEY,
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            analysis_profile TEXT NOT NULL CHECK (length(analysis_profile) > 0),
+            analysis_version TEXT NOT NULL CHECK (length(analysis_version) > 0),
+            status TEXT NOT NULL DEFAULT 'PENDING' CHECK (
+                status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED')
+            ),
+            priority INTEGER NOT NULL DEFAULT 0,
+            file_path_snapshot TEXT NOT NULL,
+            file_size INTEGER NOT NULL CHECK (file_size >= 0),
+            file_modified_ns INTEGER NOT NULL CHECK (file_modified_ns >= 0),
+            fingerprint TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at TEXT,
+            finished_at TEXT,
+            error_code TEXT,
+            error_text TEXT CHECK (error_text IS NULL OR length(error_text) <= 500)
+        );
+        CREATE INDEX IF NOT EXISTS idx_metadata_analysis_runs_pending
+            ON metadata_analysis_runs(status, priority DESC, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_metadata_analysis_runs_track
+            ON metadata_analysis_runs(track_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS track_metadata_suggestions (
+            id INTEGER PRIMARY KEY,
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            analysis_run_id INTEGER NOT NULL
+                REFERENCES metadata_analysis_runs(id) ON DELETE CASCADE,
+            field_key TEXT NOT NULL CHECK (field_key IN ({field_keys})),
+            serialized_value TEXT NOT NULL,
+            source_type TEXT NOT NULL CHECK (source_type IN ({source_types})),
+            confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+            review_status TEXT NOT NULL DEFAULT 'SUGGESTED'
+                CHECK (review_status IN ({review_statuses})),
+            status TEXT NOT NULL DEFAULT 'PENDING'
+                CHECK (status IN ('PENDING', 'ACCEPTED', 'REJECTED', 'SUPERSEDED')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            decided_at TEXT,
+            decision_reason TEXT CHECK (
+                decision_reason IS NULL OR length(decision_reason) <= 500
+            )
+        );
+        CREATE INDEX IF NOT EXISTS idx_track_metadata_suggestions_open
+            ON track_metadata_suggestions(track_id, field_key, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_track_metadata_suggestions_run
+            ON track_metadata_suggestions(analysis_run_id);
+        """
+    )
+
+
+def _migrate_to_v36(connection: sqlite3.Connection) -> None:
+    """Allow core tag fields and retain bounded source detail on suggestions."""
+    tables = {
+        str(row["name"])
+        for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "track_metadata_field_state" not in tables:
+        return
+    field_keys = (
+        "'title', 'artist', 'album', 'year', 'original_release_year', "
+        "'recording_classification', 'bpm', 'bpm_confidence', 'alternative_bpm', "
+        "'main_genre', 'energy', 'danceability', 'language', 'rating', 'comment', "
+        "'musical_decades', 'additional_genres', 'moods', 'tags'"
+    )
+    source_types = (
+        "'FILE_TAG', 'AUDIO_ANALYSIS', 'EXTERNAL_MUSIC_DATABASE', "
+        "'FILE_OR_FOLDER_DERIVATION', 'MANUAL_INPUT', 'MANUAL_CONFIRMATION'"
+    )
+    review_statuses = (
+        "'MISSING', 'IMPORTED', 'ANALYSED', 'SUGGESTED', 'REVIEW_REQUIRED', "
+        "'CONFIRMED_WITH_VALUE', 'CONFIRMED_WITHOUT_VALUE', 'CONFLICTING', "
+        "'FAILED', 'OUTDATED'"
+    )
+    connection.executescript(
+        f"""
+        DROP INDEX IF EXISTS idx_track_metadata_field_state_review;
+        ALTER TABLE track_metadata_field_state RENAME TO track_metadata_field_state_v35;
+        CREATE TABLE track_metadata_field_state (
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            field_key TEXT NOT NULL CHECK (field_key IN ({field_keys})),
+            source_type TEXT NOT NULL CHECK (source_type IN ({source_types})),
+            source_detail TEXT NOT NULL DEFAULT '',
+            confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+            review_status TEXT NOT NULL CHECK (review_status IN ({review_statuses})),
+            analysis_version TEXT,
+            confirmed_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (track_id, field_key)
+        );
+        INSERT INTO track_metadata_field_state
+            (track_id, field_key, source_type, source_detail, confidence, review_status,
+             analysis_version, confirmed_at, updated_at)
+        SELECT track_id, field_key, source_type, source_detail, confidence, review_status,
+               analysis_version, confirmed_at, updated_at
+        FROM track_metadata_field_state_v35;
+        DROP TABLE track_metadata_field_state_v35;
+        CREATE INDEX idx_track_metadata_field_state_review
+            ON track_metadata_field_state(review_status, field_key);
+
+        DROP INDEX IF EXISTS idx_track_metadata_suggestions_open;
+        DROP INDEX IF EXISTS idx_track_metadata_suggestions_run;
+        ALTER TABLE track_metadata_suggestions RENAME TO track_metadata_suggestions_v35;
+        CREATE TABLE track_metadata_suggestions (
+            id INTEGER PRIMARY KEY,
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            analysis_run_id INTEGER NOT NULL
+                REFERENCES metadata_analysis_runs(id) ON DELETE CASCADE,
+            field_key TEXT NOT NULL CHECK (field_key IN ({field_keys})),
+            serialized_value TEXT NOT NULL,
+            source_type TEXT NOT NULL CHECK (source_type IN ({source_types})),
+            source_detail TEXT NOT NULL DEFAULT '' CHECK (length(source_detail) <= 200),
+            confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+            review_status TEXT NOT NULL DEFAULT 'SUGGESTED'
+                CHECK (review_status IN ({review_statuses})),
+            status TEXT NOT NULL DEFAULT 'PENDING'
+                CHECK (status IN ('PENDING', 'ACCEPTED', 'REJECTED', 'SUPERSEDED')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            decided_at TEXT,
+            decision_reason TEXT CHECK (
+                decision_reason IS NULL OR length(decision_reason) <= 500
+            )
+        );
+        INSERT INTO track_metadata_suggestions
+            (id, track_id, analysis_run_id, field_key, serialized_value, source_type,
+             confidence, review_status, status, created_at, decided_at, decision_reason)
+        SELECT id, track_id, analysis_run_id, field_key, serialized_value, source_type,
+               confidence, review_status, status, created_at, decided_at, decision_reason
+        FROM track_metadata_suggestions_v35;
+        DROP TABLE track_metadata_suggestions_v35;
+        CREATE INDEX idx_track_metadata_suggestions_open
+            ON track_metadata_suggestions(track_id, field_key, status, created_at);
+        CREATE INDEX idx_track_metadata_suggestions_run
+            ON track_metadata_suggestions(analysis_run_id);
+        """
+    )
+
+
+def _migrate_to_v37(connection: sqlite3.Connection) -> None:
+    """Persist bounded catalog-maintenance batches and reversible field changes."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS metadata_batch_actions (
+            id INTEGER PRIMARY KEY,
+            action_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            selection_json TEXT NOT NULL CHECK(length(selection_json) <= 20000),
+            field_mask_json TEXT NOT NULL CHECK(length(field_mask_json) <= 4000),
+            preview_token TEXT NOT NULL UNIQUE,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT,
+            planned_count INTEGER NOT NULL DEFAULT 0,
+            changed_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            cancelled INTEGER NOT NULL DEFAULT 0,
+            summary_json TEXT NOT NULL DEFAULT '{}' CHECK(length(summary_json) <= 20000),
+            undone_by_batch_id INTEGER REFERENCES metadata_batch_actions(id)
+        );
+        CREATE TABLE IF NOT EXISTS metadata_batch_changes (
+            id INTEGER PRIMARY KEY,
+            batch_id INTEGER NOT NULL REFERENCES metadata_batch_actions(id) ON DELETE CASCADE,
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            field_key TEXT NOT NULL,
+            previous_value_json TEXT,
+            new_value_json TEXT,
+            previous_state_json TEXT,
+            new_state_json TEXT,
+            revision_before INTEGER NOT NULL,
+            revision_after INTEGER NOT NULL,
+            result_status TEXT NOT NULL,
+            UNIQUE(batch_id, track_id, field_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_metadata_batch_changes_batch
+            ON metadata_batch_changes(batch_id, track_id);
+        CREATE INDEX IF NOT EXISTS idx_metadata_batch_actions_finished
+            ON metadata_batch_actions(status, finished_at DESC);
+        """
+    )
+
+
+def _migrate_to_v38(connection: sqlite3.Connection) -> None:
+    """Persist reversible proposal decisions made by catalog batches."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS metadata_batch_suggestion_changes (
+            id INTEGER PRIMARY KEY,
+            batch_id INTEGER NOT NULL REFERENCES metadata_batch_actions(id) ON DELETE CASCADE,
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            suggestion_id INTEGER NOT NULL
+                REFERENCES track_metadata_suggestions(id) ON DELETE RESTRICT,
+            field_key TEXT NOT NULL,
+            previous_status TEXT NOT NULL,
+            new_status TEXT NOT NULL,
+            previous_decided_at TEXT,
+            new_decided_at TEXT,
+            previous_decision_reason TEXT,
+            new_decision_reason TEXT,
+            superseded_by_acceptance INTEGER NOT NULL DEFAULT 0
+                CHECK(superseded_by_acceptance IN (0, 1)),
+            UNIQUE(batch_id, suggestion_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_metadata_batch_suggestion_changes_batch
+            ON metadata_batch_suggestion_changes(batch_id, track_id, suggestion_id);
+        """
+    )
+
+
+def _migrate_to_v39(connection: sqlite3.Connection) -> None:
+    """Persist bounded, typed technical metrics and analyzed ranges per run."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS metadata_analysis_run_metrics (
+            run_id INTEGER NOT NULL
+                REFERENCES metadata_analysis_runs(id) ON DELETE CASCADE,
+            metric_key TEXT NOT NULL CHECK(metric_key IN (
+                'rms_mean', 'rms_variability', 'peak', 'crest_factor',
+                'transient_density', 'rhythm_stability', 'bpm',
+                'energy_experimental'
+            )),
+            metric_value REAL NOT NULL,
+            unit TEXT NOT NULL DEFAULT '' CHECK(length(unit) <= 24),
+            algorithm_version TEXT NOT NULL CHECK(length(algorithm_version) BETWEEN 1 AND 80),
+            experimental INTEGER NOT NULL DEFAULT 0 CHECK(experimental IN (0, 1)),
+            PRIMARY KEY(run_id, metric_key)
+        );
+        CREATE TABLE IF NOT EXISTS metadata_analysis_run_ranges (
+            run_id INTEGER NOT NULL
+                REFERENCES metadata_analysis_runs(id) ON DELETE CASCADE,
+            range_index INTEGER NOT NULL CHECK(range_index BETWEEN 0 AND 7),
+            start_seconds REAL NOT NULL CHECK(start_seconds >= 0),
+            duration_seconds REAL NOT NULL CHECK(duration_seconds > 0 AND duration_seconds <= 90),
+            PRIMARY KEY(run_id, range_index)
+        );
+        """
+    )
+
+
+def _migrate_to_v40(connection: sqlite3.Connection) -> None:
+    """Persist cue-aware tempo results and saved-queue-local manual BPM values."""
+    has_analysis_runs = connection.execute(
+        """SELECT 1 FROM sqlite_master
+           WHERE type='table' AND name='metadata_analysis_runs'"""
+    ).fetchone()
+    run_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(metadata_analysis_runs)").fetchall()
+    }
+    additions = {
+        "scope_type": "TEXT NOT NULL DEFAULT 'TRACK_FULL'",
+        "context_id": "INTEGER",
+        "range_signature": "TEXT NOT NULL DEFAULT ''",
+        "cue_in_ms": "INTEGER",
+        "cue_out_ms": "INTEGER",
+        "fade_ms": "INTEGER",
+        "physical_duration_ms": "INTEGER",
+        "context_revision": "TEXT",
+        "inherited_track_cues": "INTEGER NOT NULL DEFAULT 0",
+        "range_resolved_at": "TEXT",
+    }
+    for name, definition in additions.items():
+        if has_analysis_runs is not None and name not in run_columns:
+            connection.execute(f"ALTER TABLE metadata_analysis_runs ADD COLUMN {name} {definition}")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS tempo_analysis_results (
+            id INTEGER PRIMARY KEY,
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            scope_type TEXT NOT NULL CHECK(scope_type IN (
+                'TRACK_FULL','TRACK_DEFAULT_CUES','SAVED_QUEUE_ENTRY','PARTY_QUEUE_SNAPSHOT'
+            )),
+            context_id INTEGER,
+            run_id INTEGER REFERENCES metadata_analysis_runs(id) ON DELETE SET NULL,
+            range_signature TEXT NOT NULL CHECK(length(range_signature)=64),
+            cue_in_ms INTEGER NOT NULL CHECK(cue_in_ms>=0),
+            cue_out_ms INTEGER NOT NULL CHECK(cue_out_ms>cue_in_ms),
+            fade_ms INTEGER NOT NULL CHECK(fade_ms>=0),
+            physical_duration_ms INTEGER NOT NULL CHECK(physical_duration_ms>=cue_out_ms),
+            context_revision TEXT NOT NULL,
+            inherited_track_cues INTEGER NOT NULL DEFAULT 0
+                CHECK(inherited_track_cues IN (0,1)),
+            primary_bpm REAL,
+            alternative_bpm REAL,
+            confidence REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1),
+            rhythm_stability REAL CHECK(
+                rhythm_stability IS NULL OR rhythm_stability BETWEEN 0 AND 1
+            ),
+            warnings_json TEXT NOT NULL DEFAULT '[]',
+            experimental_energy REAL,
+            backend TEXT NOT NULL,
+            algorithm_version TEXT NOT NULL,
+            analyzed_at TEXT NOT NULL,
+            is_current INTEGER NOT NULL DEFAULT 1 CHECK(is_current IN (0,1)),
+            stale_reason TEXT,
+            UNIQUE(scope_type, context_id, range_signature, run_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tempo_results_track_scope_current
+            ON tempo_analysis_results(track_id,scope_type,is_current,analyzed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_tempo_results_context
+            ON tempo_analysis_results(scope_type,context_id,is_current);
+
+        CREATE TABLE IF NOT EXISTS saved_queue_entry_tempo_overrides (
+            saved_queue_entry_id INTEGER PRIMARY KEY
+                REFERENCES saved_queue_entries(id) ON DELETE CASCADE,
+            bpm REAL NOT NULL CHECK(bpm BETWEEN 20 AND 400),
+            confirmed INTEGER NOT NULL DEFAULT 1 CHECK(confirmed IN (0,1)),
+            source TEXT NOT NULL CHECK(source='MANUAL_SAVED_QUEUE'),
+            changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            based_on_signature TEXT CHECK(
+                based_on_signature IS NULL OR length(based_on_signature)=64
+            )
+        );
+        """
+    )
+
+
+def _migrate_to_v41(connection: sqlite3.Connection) -> None:
+    """Persist bounded structured diagnostics for each tempo-analysis run."""
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata_analysis_runs'"
+    ).fetchone()
+    if table is None:
+        return
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(metadata_analysis_runs)").fetchall()
+    }
+    if "diagnostics_json" not in columns:
+        connection.execute(
+            "ALTER TABLE metadata_analysis_runs ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '{}'"
+        )

@@ -9,6 +9,7 @@ from party_player.database.migrations import migrate
 from party_player.enums import PlayerMode
 from party_player.repository import PartyPlayerRepository
 from party_player.settings_service import SettingsService
+from party_player.presentation import PresentationPreference, Workspace
 from party_player.system_dependencies import DependencySelectionMode
 
 
@@ -89,6 +90,20 @@ def test_workspace_split_ratio_is_persistent_and_safely_bounded(tmp_path: Path) 
     assert SettingsService(repository).workspace_catalog_ratio() == 0.72
     settings.set_workspace_catalog_ratio(2.0)
     assert SettingsService(repository).workspace_catalog_ratio() == 0.8
+
+
+def test_main_window_geometry_is_persisted_without_interpreting_display_values(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "window-geometry.db")
+    migrate(database)
+    settings = SettingsService(PartyPlayerRepository(database))
+
+    assert settings.main_window_geometry() is None
+    value = '{"dpi_scale":1.25,"height":700,"width":1100,"x":20,"y":30}'
+    settings.set_main_window_geometry(value)
+
+    assert SettingsService(PartyPlayerRepository(database)).main_window_geometry() == value
 
 
 def test_emergency_track_ids_are_normalized_and_persistent(tmp_path: Path) -> None:
@@ -411,3 +426,43 @@ def test_invalid_dependency_modes_fall_back_to_auto(tmp_path: Path) -> None:
     settings = SettingsService(repository)
     assert settings.vlc_selection_mode() == DependencySelectionMode.AUTO
     assert settings.ffmpeg_selection_mode() == DependencySelectionMode.AUTO
+
+
+def test_presentation_settings_are_safe_and_persistent(tmp_path: Path) -> None:
+    database = Database(tmp_path / "presentation-settings.db")
+    migrate(database)
+    repository = PartyPlayerRepository(database)
+    settings = SettingsService(repository)
+
+    assert settings.presentation_preference() is PresentationPreference.AUTO
+    assert settings.presentation_workspace() is Workspace.LIVE
+
+    settings.set_presentation_preference(PresentationPreference.LARGE)
+    settings.set_presentation_workspace(Workspace.PREPARATION)
+
+    restored = SettingsService(repository)
+    assert restored.presentation_preference() is PresentationPreference.LARGE
+    assert restored.presentation_workspace() is Workspace.PREPARATION
+
+
+def test_invalid_presentation_settings_use_safe_defaults(tmp_path: Path) -> None:
+    database = Database(tmp_path / "invalid-presentation-settings.db")
+    migrate(database)
+    repository = PartyPlayerRepository(database)
+    repository.set_setting("presentation_preference", "damaged")
+    repository.set_setting("presentation_workspace", "damaged")
+
+    settings = SettingsService(repository)
+    assert settings.presentation_preference() is PresentationPreference.AUTO
+    assert settings.presentation_workspace() is Workspace.LIVE
+
+
+def test_temporary_resolution_does_not_overwrite_large_preference(tmp_path: Path) -> None:
+    database = Database(tmp_path / "temporary-presentation.db")
+    migrate(database)
+    repository = PartyPlayerRepository(database)
+    settings = SettingsService(repository)
+    settings.set_presentation_preference(PresentationPreference.LARGE)
+
+    # ResolvedPresentation is deliberately never persisted by SettingsService.
+    assert SettingsService(repository).presentation_preference() is PresentationPreference.LARGE

@@ -8,8 +8,18 @@ from collections.abc import Iterable
 
 from tinytag import TinyTag, TinyTagException
 
+from party_player.database.connection import Database
 from party_player.models import Track
 from party_player.loudness import LoudnessRepository
+from party_player.metadata_import import (
+    FileImportSnapshot,
+    ImportedFieldValue,
+    ImportedTrackData,
+    MetadataImportOperation,
+    MetadataImportOutcome,
+    MetadataImportResult,
+)
+from party_player.metadata_rules import MetadataSource
 from party_player.repositories.track_repository import TrackRepository
 
 
@@ -26,7 +36,14 @@ class LibraryService:
     ) -> None:
         self._repository = repository
         self._loudness_repository = loudness_repository
+        self._metadata_import = MetadataImportOperation(repository.database)
+        self.last_import_result: MetadataImportResult | None = None
         self._logger = logging.getLogger(__name__)
+
+    @property
+    def database(self) -> Database:
+        """Return the shared database for transaction-level controller services."""
+        return self._repository.database
 
     def catalog_summary(self) -> str:
         """Return a localized catalog status."""
@@ -65,6 +82,26 @@ class LibraryService:
 
     def import_file(self, file_path: Path) -> Track:
         """Import one user-selected MP3/FLAC without modifying the audio file."""
+        result = self._import_file(file_path)
+        if result.track is None:
+            raise RuntimeError(result.error or "Katalogimport wurde nicht abgeschlossen")
+        return result.track
+
+    def import_file_with_result(self, file_path: Path) -> MetadataImportResult:
+        """Import one file atomically and expose structured metadata decisions."""
+        try:
+            return self._import_file(file_path)
+        except Exception as exc:
+            result = MetadataImportResult(
+                MetadataImportOutcome.FAILED,
+                None,
+                None,
+                error=str(exc)[:500],
+            )
+            self.last_import_result = result
+            return result
+
+    def _import_file(self, file_path: Path) -> MetadataImportResult:
         path = file_path.resolve()
         if not path.is_file():
             raise FileNotFoundError(f"Datei nicht gefunden: {path}")
@@ -72,6 +109,7 @@ class LibraryService:
             raise ValueError("Es werden nur MP3- und FLAC-Dateien unterstützt.")
         if path.stat().st_size == 0:
             raise ValueError("Die Audiodatei ist leer oder beschädigt.")
+        initial_snapshot = FileImportSnapshot.capture(path)
         try:
             tag = TinyTag.get(path)
         except (TinyTagException, OSError) as exc:
@@ -82,21 +120,47 @@ class LibraryService:
             raise ValueError("Die Audiodatei enthält keine lesbare Audiospur.")
         year = self._parse_year(tag.year)
         original_year = self._original_release_year(tag)
-        track = self._repository.upsert_file(
-            str(path),
-            tag.title or path.stem,
-            tag.artist or "",
-            tag.album or "",
-            float(tag.duration) if tag.duration is not None else None,
-            tag.genre or "",
-            year,
-            original_year,
+        title_from_tag = bool(tag.title and tag.title.strip())
+        imported = ImportedTrackData(
+            ImportedFieldValue(
+                tag.title if title_from_tag else path.stem,
+                (
+                    MetadataSource.FILE_TAG
+                    if title_from_tag
+                    else MetadataSource.FILE_OR_FOLDER_DERIVATION
+                ),
+                "file_tag:title" if title_from_tag else "file_name",
+            ),
+            ImportedFieldValue(tag.artist, source_detail="file_tag:artist"),
+            ImportedFieldValue(tag.album, source_detail="file_tag:album"),
+            ImportedFieldValue(tag.genre, source_detail="file_tag:genre"),
+            ImportedFieldValue(year, source_detail="file_tag:year"),
+            ImportedFieldValue(original_year, source_detail="file_tag:original_release_year"),
+            float(tag.duration),
         )
+        replaygain: tuple[float | None, float | None, float | None, float | None] | None = None
         if self._loudness_repository is not None:
             replaygain, invalid_fields = self._parse_replaygain_values(tag)
-            self._log_invalid_replaygain(track.id, invalid_fields)
-            self._loudness_repository.save_replaygain(track.id, *replaygain)
-        return track
+            self._log_invalid_replaygain(None, invalid_fields)
+        current_snapshot = FileImportSnapshot.capture(path)
+        result = self._metadata_import.apply(
+            initial_snapshot,
+            imported,
+            current_snapshot=current_snapshot,
+            persist_related=(
+                lambda track_id: (
+                    self._loudness_repository.save_replaygain(track_id, *replaygain)
+                    if self._loudness_repository is not None and replaygain is not None
+                    else None
+                )
+            ),
+        )
+        self.last_import_result = result
+        if result.outcome is MetadataImportOutcome.FILE_CHANGED:
+            return result
+        track = result.track
+        assert track is not None
+        return result
 
     def cover_data(self, file_path: Path) -> bytes | None:
         """Read embedded cover art without changing the audio file."""
@@ -250,7 +314,9 @@ class LibraryService:
         )
         return replaygain_values, tuple(invalid_fields)
 
-    def _log_invalid_replaygain(self, track_id: int, invalid_fields: tuple[str, ...]) -> None:
+    def _log_invalid_replaygain(
+        self, track_id: int | None, invalid_fields: tuple[str, ...]
+    ) -> None:
         if invalid_fields:
             self._logger.warning(
                 "Ungültige ReplayGain-Tags für Titel %s ignoriert: %s",

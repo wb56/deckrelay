@@ -22,6 +22,7 @@ from party_player.controllers.main_controller import MainController
 from party_player.controllers.cue_point_controller import CuePointController
 from party_player.controllers.loudness_controller import LoudnessController
 from party_player.controllers.overlay_controller import OverlayController
+from party_player.ui.compact_deck_actions import bind_compact_decks
 from party_player.core.logging_config import configure_logging
 from party_player.core.paths import AppPaths
 from party_player.crossfader_service import CrossfaderService
@@ -36,7 +37,10 @@ from party_player.playback_history_service import PlaybackHistoryService
 from party_player.queue_service import QueueService
 from party_player.track_selection import TrackSelectionService
 from party_player.track_policy import PersistentTrackBlockService, TrackPolicyRepository
-from party_player.artist_policy import ArtistPolicyRepository, PersistentArtistBlockService
+from party_player.artist_policy import (
+    ArtistPolicyRepository,
+    PersistentArtistBlockService,
+)
 from party_player.track_suitability import (
     TrackSuitabilityRepository,
     TrackSuitabilityService,
@@ -53,7 +57,10 @@ from party_player.automatic_selection import (
 )
 from party_player.enums import EmptyQueuePolicy
 from party_player.file_availability import FileAvailabilityService
-from party_player.emergency_playlist import EmergencyMediaType, LocalEmergencyPlaylistService
+from party_player.emergency_playlist import (
+    EmergencyMediaType,
+    LocalEmergencyPlaylistService,
+)
 from party_player.emergency_storage import EmergencyStoragePolicy
 from party_player.emergency_state import EmergencyStateService
 from party_player.emergency_persistence import (
@@ -61,7 +68,10 @@ from party_player.emergency_persistence import (
     EmergencyPersistenceService,
 )
 from party_player.emergency_controller import EmergencyController
-from party_player.emergency_playback import EmergencyPlaybackResult, EmergencyPlaybackService
+from party_player.emergency_playback import (
+    EmergencyPlaybackResult,
+    EmergencyPlaybackService,
+)
 from party_player.emergency_history import (
     EmergencyHistoryEntry,
     EmergencyHistoryRepository,
@@ -81,6 +91,8 @@ from party_player.repository import PartyPlayerRepository
 from party_player.models import Track
 from party_player.services.library_service import LibraryService
 from party_player.saved_queue_service import SavedQueueService
+from party_player.tempo_context import TempoContextRepository
+from party_player.metadata_analysis_contracts import TempoAnalysisScope
 from party_player.session_service import PartySessionService
 from party_player.settings_service import SettingsService
 from party_player.dependency_locator import DependencyLocator
@@ -116,6 +128,8 @@ from party_player.overlay_transfer import OverlayTransferService
 from party_player.backup_service import BackupService
 from party_player.application_restart import restart_current_application
 from party_player.database_maintenance import DatabaseMaintenanceService
+from party_player.metadata_analysis_coordinator import AnalysisOperatingState
+from party_player.metadata_analysis_service import MetadataAnalysisService
 
 
 class PartyPlayerApplication:
@@ -175,11 +189,27 @@ class PartyPlayerApplication:
         audio_backend = settings.audio_backend()
         if audio_backend != "vlc":
             logger.warning(
-                "Audio-Backend %s ist nicht verfügbar; VLC wird verwendet", audio_backend
+                "Audio-Backend %s ist nicht verfügbar; VLC wird verwendet",
+                audio_backend,
             )
         audio_output_device = settings.audio_output_device()
         session_service = PartySessionService(party_repository)
         session = session_service.restore_or_start(settings.restore_last_session())
+        tempo_context = TempoContextRepository(database)
+
+        def invalidate_cue_tempo(track_id: int) -> None:
+            tempo_context.mark_scope_stale(
+                track_id,
+                TempoAnalysisScope.TRACK_DEFAULT_CUES,
+                "Wirksame globale Titel-Cues wurden geändert",
+            )
+            tempo_context.mark_scope_stale(
+                track_id,
+                TempoAnalysisScope.SAVED_QUEUE_ENTRY,
+                "Geerbte globale Titel-Cues wurden geändert",
+                inherited_only=True,
+            )
+
         cue_points = CuePointService(
             CuePointRepository(database),
             settings.fade_duration(7.0),
@@ -187,6 +217,7 @@ class PartyPlayerApplication:
             settings.minimum_playable_duration(),
             short_track_threshold=30.0,
             short_track_policy=ShortTrackPolicy.USE_REDUCED_FADE,
+            on_global_cues_changed=invalidate_cue_tempo,
         )
         track_blocks = PersistentTrackBlockService(TrackPolicyRepository(database))
         artist_blocks = PersistentArtistBlockService(
@@ -278,7 +309,16 @@ class PartyPlayerApplication:
         worker_registry = WorkerRegistry(enabled=performance_settings.enabled)
 
         callback_state = GuiCallbackState()
-        window = MainWindow(performance_monitor, callback_state)
+        window = MainWindow(
+            performance_monitor,
+            callback_state,
+            saved_geometry=settings.main_window_geometry(),
+            save_geometry=settings.set_main_window_geometry,
+            presentation_preference=settings.presentation_preference(),
+            presentation_workspace=settings.presentation_workspace(),
+            save_presentation_preference=settings.set_presentation_preference,
+            save_presentation_workspace=settings.set_presentation_workspace,
+        )
         if pending_setup_reason is not None or (
             startup_decision is not None and startup_decision.requires_setup
         ):
@@ -475,6 +515,7 @@ class PartyPlayerApplication:
         )
         replaygain_cache.refresh_catalog()
         window.bind_controller(controller)
+        bind_compact_decks(controller, window.compact_deck_a, window.compact_deck_b)
 
         def run_system_diagnostic() -> SystemDiagnosticReport:
             resolution = dependency_service.check_configured(settings)
@@ -498,6 +539,7 @@ class PartyPlayerApplication:
             if (
                 cue_controller.active_analysis_job_count
                 or loudness_controller.active_analysis_job_count
+                or metadata_analysis.active_job_count
             ):
                 raise ValueError("FFmpeg kann während laufender Analysen nicht geändert werden")
             return diagnostic_service.check(
@@ -514,6 +556,7 @@ class PartyPlayerApplication:
             if (
                 cue_controller.active_analysis_job_count
                 or loudness_controller.active_analysis_job_count
+                or metadata_analysis.active_job_count
             ):
                 raise ValueError("FFmpeg kann während laufender Analysen nicht geändert werden")
             settings.reset_ffmpeg_bin_path()
@@ -528,9 +571,12 @@ class PartyPlayerApplication:
             report_after_vlc_reset,
             report_after_ffmpeg_reset,
             controller.can_change_vlc_installation,
-            lambda: not (
-                cue_controller.active_analysis_job_count
-                or loudness_controller.active_analysis_job_count
+            lambda: (
+                not (
+                    cue_controller.active_analysis_job_count
+                    or loudness_controller.active_analysis_job_count
+                    or metadata_analysis.active_job_count
+                )
             ),
             capability_snapshots,
         )
@@ -665,12 +711,49 @@ class PartyPlayerApplication:
         )
         window.bind_loudness_controller(loudness_controller)
 
+        def metadata_analysis_progress(event: str, job_id: str, detail: str) -> None:
+            def deliver() -> None:
+                logger.debug(
+                    "Metadatenanalyse: event=%s job=%s detail=%s",
+                    event,
+                    job_id,
+                    detail,
+                )
+                window.show_metadata_analysis_progress(event, job_id, detail)
+
+            gui_dispatcher.publish(
+                GuiEvent(
+                    GuiEventType.CALLBACK,
+                    "metadata_analysis_progress",
+                    deliver,
+                    coalesce_key="metadata_analysis_progress",
+                )
+            )
+
+        metadata_analysis = MetadataAnalysisService(
+            database,
+            tracks,
+            ffmpeg=(ffmpeg_executable if capabilities.metadata_analysis_available else None),
+            ffprobe=(ffprobe_executable if capabilities.metadata_analysis_available else None),
+            operating_state=lambda: AnalysisOperatingState(
+                production_mode=not settings.background_analysis_enabled(),
+                audio_recovery=controller.metadata_analysis_audio_recovery_active(),
+                automation_active=controller.metadata_analysis_automation_active(),
+                playback_active=controller.is_audio_active(),
+            ),
+            publish_progress=metadata_analysis_progress,
+            worker_registry=worker_registry,
+            cue_points=cue_points,
+        )
+        window.bind_metadata_analysis(metadata_analysis)
+
         required_restore_participants = [
             controller.restore_participant(),
             cue_controller.restore_participant(),
             emergency_persistence.restore_participant(),
             emergency_history.restore_participant(),
             replaygain_cache.restore_participant(),
+            metadata_analysis.restore_participant(),
         ]
         loudness_participant = loudness_controller.restore_participant()
         if loudness_participant is not None:
@@ -692,7 +775,7 @@ class PartyPlayerApplication:
         )
         logger.info(
             "Restore-Runtime: %s",
-            "verfügbar (noch ohne UI)" if restore_runtime.available else restore_runtime.reason,
+            ("verfügbar (noch ohne UI)" if restore_runtime.available else restore_runtime.reason),
         )
         backup_restore_controller = BackupRestoreController(
             BackupService(
@@ -745,14 +828,24 @@ class PartyPlayerApplication:
                     daemon=True,
                 ).start()
 
+        def poll_metadata_analysis() -> None:
+            if not window.winfo_exists():
+                return
+            metadata_analysis.tick()
+            window.after(100, poll_metadata_analysis)
+
         window.after(150, initialize)
+        window.after(200, poll_metadata_analysis)
         try:
             window.mainloop()
         finally:
+            metadata_analysis.close()
             backup_restore_controller.close()
             overlay_controller.close()
-            cue_controller.close()
-            loudness_controller.close()
+            # Network/FFmpeg analysis cancellation is cooperative.  Normal app
+            # shutdown must not keep the closed GUI alive while workers return.
+            cue_controller.close(wait=False)
+            loudness_controller.close(wait=False)
             emergency_persistence.close()
             emergency_history.close()
             logger.info("%s wurde beendet", PRODUCT_NAME)

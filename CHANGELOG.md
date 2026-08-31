@@ -4,6 +4,37 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ## [Unveröffentlicht]
 
+### Added
+
+- Der Titeleditor zeigt schreibgeschützte technische Audiodaten aus dem tatsächlichen
+  FFprobe-Dateiinhalt einschließlich Codec, Container, belastbarem MP3-CBR-/VBR-Status,
+  Bitrate, Abtastrate, Bittiefe, Kanälen, Layout und technischer Dauer. Die asynchrone
+  Ermittlung verwendet einen snapshotgebundenen Cache und verwirft veraltete Ergebnisse.
+- Vollständige Vergleichsdiagnose für getrennte Gesamt- und Cue-Tempoanalysen mit
+  tatsächlichen Analysefenstern, Rohwerten, Aggregationsbeiträgen und eindeutigen
+  Zuständen für wartende, laufende, abgeschlossene, fehlgeschlagene und abgebrochene
+  Läufe.
+
+### Changed
+
+- Die produktive Tempoanalyse verwendet den real abgenommenen Stand
+  `ffmpeg-onset-acf-v0.5` mit `tempo-profile-v3`. Aggregatkonfidenz und
+  Rhythmusstabilität werden getrennt bewertet; nur hinreichend sichere und stabile
+  Ergebnisse werden automatisch für die Planung verwendet.
+
+### Fixed
+
+- Stabile elektronische Titel und Titel mit natürlichem Schlagzeug bleiben
+  automatisch planbar, während Shuffle-/Half-Time-Grenzfälle und Titel mit echten
+  Tempowechseln sicher blockiert werden. Die reale Abnahme umfasst 36 Voll-/Cue-Läufe
+  über FLAC, VBR-MP3 und MP3 mit 320 kbit/s. Sechs Referenzen decken konstanten
+  elektronischen Beat, echtes Schlagzeug, rhythmusarmes Intro, Break/Fade-out,
+  Shuffle/Half-Time und echte Tempowechsel ab. Die weiterhin manuell zu bewertende
+  automatische Shuffle-Freigabe ist als bekannte Produktgrenze dokumentiert. Für den
+  Abschluss wurden weder Musikdateien noch Analysegrenzwerte verändert.
+- Formatintegrationstests finden neben PATH auch die gebündelte FFmpeg-Toolchain und
+  werden dadurch für FLAC, CBR-MP3 und VBR-MP3 nicht mehr übersprungen.
+
 ## [1.0.0] - 2026-08-16
 
 ### Added

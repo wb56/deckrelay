@@ -92,6 +92,8 @@ from party_player.queue_view_events import (
 )
 from party_player.queue_origin import derive_queue_origin
 from party_player.services.library_service import LibraryService
+from party_player.metadata_editor import MetadataEditorService
+from party_player.catalog_maintenance import CatalogMaintenanceService
 from party_player.saved_queue_service import SavedQueueService
 from party_player.settings_service import SettingsService
 from party_player.transition_controller import TransitionController, TransitionState
@@ -188,6 +190,8 @@ class MainView(Protocol):
 
     def show_catalog(self, tracks: list[Track], summary: str) -> None: ...
     def show_track_cues_changed(self, track_id: int, has_manual_cues: bool) -> None: ...
+
+    def show_track_metadata_changed(self, track: Track) -> None: ...
     def show_catalog_paging(self, page: int, page_count: int) -> None: ...
     def show_session(self, session: PartySession) -> None: ...
     def show_start_settings(self, restore_session: bool, fullscreen: bool) -> None: ...
@@ -319,6 +323,8 @@ class MainController:
     ) -> None:
         self._view = view
         self._library_service = library_service
+        self._metadata_editor = MetadataEditorService(library_service.database)
+        self._catalog_maintenance = CatalogMaintenanceService(library_service.database)
         self._queue_service = queue_service
         self._queue = QueueController(queue_service)
         self.deck_a = deck_a
@@ -515,7 +521,7 @@ class MainController:
         )
         self._track_editor_executor = BoundedThreadPoolExecutor(
             max_workers=1,
-            maximum_pending=1,
+            maximum_pending=4,
             thread_name_prefix="track-editor-load",
         )
         self._persistence_executor = persistence_executor or BoundedThreadPoolExecutor(
@@ -805,8 +811,7 @@ class MainController:
                 self._emergency_action_active = False
                 self._current_emergency_action = "Keine"
                 self._last_emergency_action_result = (
-                    f"{result.state} · "
-                    f"{'OK' if result.success else result.error_code or 'FEHLER'}"
+                    f"{result.state} · {'OK' if result.success else result.error_code or 'FEHLER'}"
                 )
                 if result.success:
                     self._view.show_queue_warning("Notfalltitel wurde bestätigt gestartet.")
@@ -1840,6 +1845,33 @@ class MainController:
     def track_cues_changed(self, track_id: int, has_manual_cues: bool) -> None:
         """Refresh only catalog/queue rows whose cue presentation changed."""
         self._view.show_track_cues_changed(track_id, has_manual_cues)
+
+    @property
+    def metadata_editor_service(self) -> MetadataEditorService:
+        return self._metadata_editor
+
+    @property
+    def catalog_maintenance_service(self) -> CatalogMaintenanceService:
+        return self._catalog_maintenance
+
+    def library_track(self, track_id: int) -> Track | None:
+        """Load one catalog track for an existing worker-backed UI request."""
+        return self._library_service.get_track(track_id)
+
+    def track_metadata_changed(self, track_id: int) -> None:
+        """Refresh only visible catalog and queue rows for one changed track."""
+
+        def publish(track: Track | None) -> None:
+            if track is not None:
+                self._view.show_track_metadata_changed(track)
+
+        self.load_track_editor_view_model(
+            lambda: self._library_service.get_track(track_id),
+            publish,
+            lambda error: self._logger.warning(
+                "Titelzeile nach Metadatenänderung nicht aktualisiert: %s", error
+            ),
+        )
 
     def track_editor_equalizer_state(
         self,
@@ -3061,6 +3093,20 @@ class MainController:
     def is_audio_active(self) -> bool:
         return self.deck_a.backend.is_playing() or self.deck_b.backend.is_playing()
 
+    def metadata_analysis_audio_recovery_active(self) -> bool:
+        emergency_recovery_active = (
+            self._emergency is not None and self._emergency.recovery_active()
+        )
+        return bool(
+            self._global_audio_recovery_requested
+            or emergency_recovery_active
+            or self._deck_recovery_action_active
+            or self._emergency_action_active
+        )
+
+    def metadata_analysis_automation_active(self) -> bool:
+        return self._automatic_run_active
+
     def restore_safety_snapshot(
         self, *, cue_analysis_active: bool, loudness_analysis_active: bool
     ) -> RestoreSafetySnapshot:
@@ -3281,7 +3327,7 @@ class MainController:
             try:
                 validated_track, availability = self._queue_service.revalidate_candidate(
                     entry.queue_id,
-                    cancelled=lambda: (generation != self._preload_generation or self._closed),
+                    cancelled=lambda: generation != self._preload_generation or self._closed,
                 )
                 if not availability.accepted:
 
@@ -3886,8 +3932,7 @@ class MainController:
         if deck.model.equalizer_error and deck.model.equalizer_error != previous_error:
             self._performance.record("equalizer_apply_failed_total", 1.0, 100.0)
             self._view.show_queue_warning(
-                f"Deck {deck.model.deck_id}: Equalizer deaktiviert – "
-                f"{deck.model.equalizer_error}"
+                f"Deck {deck.model.deck_id}: Equalizer deaktiviert – {deck.model.equalizer_error}"
             )
         elif changed:
             operation = "equalizer_apply_total" if resolved.enabled else "equalizer_disable_total"
@@ -5636,17 +5681,15 @@ class MainController:
             f"{memory.process_rss_bytes if memory is not None and memory.process_rss_bytes is not None else 'unavailable'}",
             f"  process_rss_status: {memory.process_rss_status if memory is not None else 'unavailable'}",
             f"  tracemalloc_enabled: {str(tracemalloc.is_tracing()).lower()}",
-            "  python_traced_bytes: " f"{memory.python_traced_bytes if memory is not None else 0}",
+            f"  python_traced_bytes: {memory.python_traced_bytes if memory is not None else 0}",
             f"  python_peak_bytes: {memory.python_peak_bytes if memory is not None else 0}",
-            "  active_thread_count: " f"{memory.active_thread_count if memory is not None else 0}",
-            "  gui_event_queue_size: "
-            f"{memory.gui_event_queue_size if memory is not None else 0}",
-            "  active_worker_count: " f"{memory.active_worker_count if memory is not None else 0}",
+            f"  active_thread_count: {memory.active_thread_count if memory is not None else 0}",
+            f"  gui_event_queue_size: {memory.gui_event_queue_size if memory is not None else 0}",
+            f"  active_worker_count: {memory.active_worker_count if memory is not None else 0}",
             f"  cover_cache_size: {memory.cover_cache_size if memory is not None else 0}",
             "  registered_widget_count: "
             f"{memory.registered_widget_count if memory is not None else 0}",
-            "  active_preview_count: "
-            f"{memory.active_preview_count if memory is not None else 0}",
+            f"  active_preview_count: {memory.active_preview_count if memory is not None else 0}",
             "  active_vlc_player_count: "
             f"{memory.active_vlc_player_count if memory is not None else 0}",
             f"  retained_sample_count: {self._memory_monitor.sample_count()}",
@@ -5681,8 +5724,7 @@ class MainController:
             f"  coalesced_count: {dispatcher.coalesced}",
             f"  discarded_count: {dispatcher.discarded}",
             f"  critical_overflow_count: {dispatcher.critical_overflow}",
-            "  maximum_items_processed_per_cycle: "
-            f"{dispatcher.maximum_items_processed_per_cycle}",
+            f"  maximum_items_processed_per_cycle: {dispatcher.maximum_items_processed_per_cycle}",
             f"  maximum_dispatch_duration_ms: {dispatcher.maximum_dispatch_duration_ms:.1f}",
             f"  average_dispatch_duration_ms: {dispatcher.average_dispatch_duration_ms:.1f}",
             "Threads:",
@@ -5708,10 +5750,10 @@ class MainController:
                 for worker in worker_history
             ),
             "Queue instrumentation:",
-            "  complete: " f"{str(not missing_queue_instrumentation).lower()}",
+            f"  complete: {str(not missing_queue_instrumentation).lower()}",
             "  missing: "
             f"{', '.join(missing_queue_instrumentation) if missing_queue_instrumentation else 'none'}",
-            "  counters_plausible: " f"{str(not implausible_queue_counters).lower()}",
+            f"  counters_plausible: {str(not implausible_queue_counters).lower()}",
             "  implausible_counters: "
             f"{', '.join(implausible_queue_counters) if implausible_queue_counters else 'none'}",
             "Timings:",

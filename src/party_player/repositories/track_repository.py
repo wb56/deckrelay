@@ -10,14 +10,16 @@ class TrackRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
+    @property
+    def database(self) -> Database:
+        """Expose the shared connection factory to transaction-level catalog services."""
+        return self._database
+
     def count(self) -> int:
         """Return the number of catalog tracks."""
         with self._database.connect() as connection:
             row = connection.execute(
-                """SELECT COUNT(*) AS total FROM (
-                       SELECT 1 FROM tracks WHERE catalog_visible = 1
-                       GROUP BY lower(trim(title)), lower(trim(artist))
-                   )"""
+                "SELECT COUNT(*) AS total FROM tracks WHERE catalog_visible = 1"
             ).fetchone()
         return int(row["total"])
 
@@ -47,18 +49,9 @@ class TrackRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 """
-                WITH ranked AS (
-                    SELECT id, file_path, title, artist, album, duration_seconds,
-                           genre, year, original_release_year,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY lower(trim(title)), lower(trim(artist))
-                               ORDER BY id
-                           ) AS duplicate_rank
-                    FROM tracks WHERE catalog_visible = 1
-                )
                 SELECT id, file_path, title, artist, album, duration_seconds,
-                       genre, year, original_release_year
-                FROM ranked WHERE duplicate_rank = 1
+                       genre, year, original_release_year, bpm
+                FROM tracks WHERE catalog_visible = 1
                 ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE, id
                 LIMIT ? OFFSET ?
                 """,
@@ -72,29 +65,39 @@ class TrackRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 """
-                WITH ranked AS (
-                    SELECT id, file_path, title, artist, album, duration_seconds,
-                           genre, year, original_release_year,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY lower(trim(title)), lower(trim(artist))
-                               ORDER BY id
-                           ) AS duplicate_rank
-                    FROM tracks WHERE catalog_visible = 1
-                )
                 SELECT id, file_path, title, artist, album, duration_seconds,
-                       genre, year, original_release_year
-                FROM ranked
-                WHERE duplicate_rank = 1
+                       genre, year, original_release_year, bpm
+                FROM tracks
+                WHERE catalog_visible = 1
                   AND (title LIKE ? COLLATE NOCASE
                    OR artist LIKE ? COLLATE NOCASE
                    OR album LIKE ? COLLATE NOCASE
                    OR genre LIKE ? COLLATE NOCASE
+                   OR file_path LIKE ? COLLATE NOCASE
                    OR CAST(year AS TEXT) LIKE ?
-                   OR CAST(original_release_year AS TEXT) LIKE ?)
+                   OR CAST(original_release_year AS TEXT) LIKE ?
+                   OR EXISTS (
+                       SELECT 1
+                       FROM track_metadata_terms AS assignment
+                       JOIN metadata_terms AS term ON term.id = assignment.term_id
+                       WHERE assignment.track_id = tracks.id
+                         AND term.display_name LIKE ? COLLATE NOCASE
+                   ))
                 ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE, id
                 LIMIT ? OFFSET ?
                 """,
-                (pattern, pattern, pattern, pattern, pattern, pattern, limit, offset),
+                (
+                    pattern,
+                    pattern,
+                    pattern,
+                    pattern,
+                    pattern,
+                    pattern,
+                    pattern,
+                    pattern,
+                    limit,
+                    offset,
+                ),
             ).fetchall()
         return [Track(**dict(row)) for row in rows]
 
@@ -102,23 +105,23 @@ class TrackRepository:
         pattern = f"%{query.strip()}%"
         with self._database.connect() as connection:
             row = connection.execute(
-                """WITH ranked AS (
-                       SELECT title, artist, album, genre, year, original_release_year,
-                              ROW_NUMBER() OVER (
-                                  PARTITION BY lower(trim(title)), lower(trim(artist))
-                                  ORDER BY id
-                              ) AS duplicate_rank
-                       FROM tracks WHERE catalog_visible = 1
-                   )
-                   SELECT COUNT(*) AS total FROM ranked
-                   WHERE duplicate_rank = 1
+                """SELECT COUNT(*) AS total FROM tracks
+                   WHERE catalog_visible = 1
                      AND (title LIKE ? COLLATE NOCASE
                       OR artist LIKE ? COLLATE NOCASE
                       OR album LIKE ? COLLATE NOCASE
                       OR genre LIKE ? COLLATE NOCASE
+                      OR file_path LIKE ? COLLATE NOCASE
                       OR CAST(year AS TEXT) LIKE ?
-                      OR CAST(original_release_year AS TEXT) LIKE ?)""",
-                (pattern, pattern, pattern, pattern, pattern, pattern),
+                      OR CAST(original_release_year AS TEXT) LIKE ?
+                      OR EXISTS (
+                          SELECT 1
+                          FROM track_metadata_terms AS assignment
+                          JOIN metadata_terms AS term ON term.id = assignment.term_id
+                            WHERE assignment.track_id = tracks.id
+                            AND term.display_name LIKE ? COLLATE NOCASE
+                      ))""",
+                (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern),
             ).fetchone()
         return int(row["total"])
 
@@ -126,7 +129,7 @@ class TrackRepository:
         with self._database.connect() as connection:
             row = connection.execute(
                 """SELECT id, file_path, title, artist, album, duration_seconds,
-                          genre, year, original_release_year
+                          genre, year, original_release_year, bpm
                    FROM tracks WHERE id = ?""",
                 (track_id,),
             ).fetchone()
@@ -137,7 +140,7 @@ class TrackRepository:
         with self._database.connect() as connection:
             row = connection.execute(
                 """SELECT id, file_path, title, artist, album, duration_seconds,
-                          genre, year, original_release_year
+                          genre, year, original_release_year, bpm
                    FROM tracks WHERE id = ? AND catalog_visible = 1""",
                 (track_id,),
             ).fetchone()
@@ -153,7 +156,7 @@ class TrackRepository:
             with self._database.connect() as connection:
                 rows = connection.execute(
                     f"""SELECT id, file_path, title, artist, album, duration_seconds,
-                               genre, year, original_release_year
+                               genre, year, original_release_year, bpm
                         FROM tracks WHERE id IN ({placeholders})""",
                     batch,
                 ).fetchall()
@@ -172,7 +175,7 @@ class TrackRepository:
             with self._database.connect() as connection:
                 rows = connection.execute(
                     f"""SELECT id, file_path, title, artist, album, duration_seconds,
-                               genre, year, original_release_year
+                               genre, year, original_release_year, bpm
                         FROM tracks WHERE lower(file_path) IN ({placeholders})""",
                     batch,
                 ).fetchall()
@@ -187,7 +190,7 @@ class TrackRepository:
             rows = connection.execute(
                 """WITH ranked AS (
                        SELECT id, file_path, title, artist, album, duration_seconds,
-                              genre, year, original_release_year,
+                              genre, year, original_release_year, bpm,
                               ROW_NUMBER() OVER (
                                   PARTITION BY lower(trim(title)), lower(trim(artist))
                                   ORDER BY id
@@ -195,7 +198,7 @@ class TrackRepository:
                        FROM tracks WHERE catalog_visible = 1
                    )
                    SELECT id, file_path, title, artist, album, duration_seconds,
-                          genre, year, original_release_year
+                          genre, year, original_release_year, bpm
                    FROM ranked WHERE duplicate_rank = 1
                    ORDER BY id"""
             ).fetchall()
@@ -246,7 +249,7 @@ class TrackRepository:
             )
             row = connection.execute(
                 """SELECT id, file_path, title, artist, album, duration_seconds,
-                          genre, year, original_release_year
+                          genre, year, original_release_year, bpm
                    FROM tracks WHERE file_path = ?""",
                 (canonical_path,),
             ).fetchone()

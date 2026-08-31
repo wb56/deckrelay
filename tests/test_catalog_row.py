@@ -81,7 +81,13 @@ def test_catalog_row_reuses_widgets_and_tooltips(monkeypatch) -> None:
     assert row.bind_entry(CatalogEntryViewModel(make_track(2, "Two"), True))
 
     assert FakeWidget.created == widgets_after_creation
-    assert FakeTooltip.created == tooltips_after_creation == 4
+    assert FakeTooltip.created == tooltips_after_creation == 5
+
+
+def test_track_version_text_identifies_the_concrete_file() -> None:
+    track = Track(7, "Mix - VBR.mp3", "Mix", "Artist", "Album", 125.2)
+
+    assert catalog_row.track_version_text(track) == "MP3 · Mix - VBR.mp3 · 2:05"
 
 
 def test_unchanged_catalog_model_does_not_configure_widgets(monkeypatch) -> None:

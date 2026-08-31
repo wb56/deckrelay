@@ -13,6 +13,7 @@ from party_player.settings_service import DependencySettings
 from party_player.system_diagnostic_service import SystemDiagnosticReport
 from party_player.system_dependencies import DependencyStatus
 from party_player.capability_snapshots import CapabilitySnapshotState
+from party_player.ui.responsive_dialog import apply_responsive_dialog_geometry, bind_dialog_escape
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +90,9 @@ class ExternalProgramsDialog(ctk.CTkToplevel):  # type: ignore[misc]
     ) -> None:
         super().__init__(parent)
         self.title("Einstellungen – System / Externe Programme")
-        self.geometry("900x680")
+        apply_responsive_dialog_geometry(
+            self, parent, preferred_size=(900, 680), minimum_size=(620, 440)
+        )
         self.transient(parent)
         self._settings = settings
         self._active_report = initial_report
@@ -110,13 +113,17 @@ class ExternalProgramsDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._generation = capability_snapshots.view().pending_generation
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
         ctk.CTkLabel(
             self,
             text="System / Externe Programme",
             font=ctk.CTkFont(size=22, weight="bold"),
         ).grid(row=0, column=0, padx=20, pady=(20, 8), sticky="w")
-        self._vlc = self._program_group("VLC / libVLC", 1)
-        self._ffmpeg = self._program_group("FFmpeg / FFprobe", 2)
+        self._content = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._content.grid(row=1, column=0, padx=4, sticky="nsew")
+        self._content.grid_columnconfigure(0, weight=1)
+        self._vlc = self._program_group("VLC / libVLC", 0)
+        self._ffmpeg = self._program_group("FFmpeg / FFprobe", 1)
         self._vlc_candidate_paths: dict[str, str] = {}
         self._vlc_candidates = ctk.CTkOptionMenu(
             self._vlc["frame"],
@@ -131,19 +138,20 @@ class ExternalProgramsDialog(ctk.CTkToplevel):  # type: ignore[misc]
             state="disabled",
         )
         self._vlc_candidate_button.grid(row=1, column=2, padx=6, pady=(0, 10))
-        self._message = ctk.CTkLabel(self, text="", wraplength=800, justify="left")
-        self._message.grid(row=3, column=0, padx=20, pady=8, sticky="w")
+        self._message = ctk.CTkLabel(self._content, text="", wraplength=800, justify="left")
+        self._message.grid(row=2, column=0, padx=20, pady=8, sticky="w")
         actions = ctk.CTkFrame(self, fg_color="transparent")
-        actions.grid(row=4, column=0, padx=20, pady=(8, 20), sticky="ew")
+        actions.grid(row=2, column=0, padx=20, pady=(8, 20), sticky="ew")
         self._check_button = ctk.CTkButton(
             actions, text="Prüfen", command=lambda: self._start(self._check)
         )
         self._check_button.pack(side="left")
         ctk.CTkButton(actions, text="Schließen", command=self._close).pack(side="right")
+        bind_dialog_escape(self, self._close)
         self._render()
 
     def _program_group(self, title: str, row: int) -> dict[str, Any]:
-        frame = ctk.CTkFrame(self)
+        frame = ctk.CTkFrame(self._content)
         frame.grid(row=row, column=0, padx=20, pady=8, sticky="ew")
         frame.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(frame, text=title, font=ctk.CTkFont(weight="bold")).grid(

@@ -46,6 +46,26 @@ def test_repository_returns_bounded_track_page(tmp_path: Path) -> None:
     assert tracks[0].title == "Song"
 
 
+def test_catalog_keeps_same_title_versions_individually_selectable(tmp_path: Path) -> None:
+    database = Database(tmp_path / "versions.db")
+    migrate(database)
+    repository = TrackRepository(database)
+    repository.upsert_file("C:/Music/Song.flac", "Song", "Artist", "Album", 120)
+    repository.upsert_file("C:/Music/Song - VBR.mp3", "Song", "Artist", "Album", 120)
+    repository.upsert_file("C:/Music/Song - 320.mp3", "Song", "Artist", "Album", 120)
+
+    tracks = repository.search("Song")
+
+    assert repository.count() == 3
+    assert repository.search_count("Song") == 3
+    assert [Path(track.file_path).name for track in tracks] == [
+        "Song.flac",
+        "Song - VBR.mp3",
+        "Song - 320.mp3",
+    ]
+    assert [Path(track.file_path).name for track in repository.search("VBR")] == ["Song - VBR.mp3"]
+
+
 def test_catalog_search_includes_genre_and_release_years(tmp_path: Path) -> None:
     database = Database(tmp_path / "test.db")
     migrate(database)
@@ -55,6 +75,27 @@ def test_catalog_search_includes_genre_and_release_years(tmp_path: Path) -> None
     assert repository.search("Disco")[0].title == "Song"
     assert repository.search("2001")[0].title == "Song"
     assert repository.search("1978")[0].title == "Song"
+
+
+def test_catalog_search_includes_multivalue_metadata_and_count(tmp_path: Path) -> None:
+    database = Database(tmp_path / "test.db")
+    migrate(database)
+    repository = TrackRepository(database)
+    track = repository.upsert_file("C:/Music/boogie.mp3", "Boogie Man", "AC/DC", "Ballbreaker", 120)
+    with database.connect() as connection:
+        cursor = connection.execute(
+            """INSERT INTO metadata_terms(term_type,normalized_key,display_name)
+               VALUES ('ADDITIONAL_GENRE','dance','Dance')"""
+        )
+        connection.execute(
+            "INSERT INTO track_metadata_terms(track_id,term_id) VALUES (?,?)",
+            (track.id, int(cursor.lastrowid)),
+        )
+
+    matches = repository.search("dance")
+
+    assert [item.id for item in matches] == [track.id]
+    assert repository.search_count("dance") == 1
 
 
 def test_migration_creates_indexes_for_catalog_search_fields(tmp_path: Path) -> None:

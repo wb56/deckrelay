@@ -178,7 +178,7 @@ def test_successful_restore_reports_only_restart_required(tmp_path: Path) -> Non
             RestorePipelineErrorCode.NONE,
             "Restore abgeschlossen. Neustart erforderlich.",
             safety_backup_path=safety,
-            database_schema_version=34,
+            database_schema_version=39,
         )
     )
     controller = BackupRestoreController(
@@ -202,7 +202,7 @@ def test_successful_restore_reports_only_restart_required(tmp_path: Path) -> Non
     assert completed.operation_detail == "RESTORE"
     assert completed.operation_result == "RESTART_REQUIRED"
     assert completed.error_code == "none"
-    assert completed.schema_version == 34
+    assert completed.schema_version == 39
     assert completed.duration_ms >= 0
     assert str(tmp_path / "candidate") not in str(completed.__dict__)
     controller.close()
@@ -268,7 +268,7 @@ def test_manual_backup_path_creates_and_validates_real_archive(
     assert completed_log.operation_result == "COMPLETED"
     assert completed_log.error_code == "none"
     assert completed_log.backup_target == str(tmp_path / "manual-backups")
-    assert completed_log.schema_version == 34
+    assert completed_log.schema_version == 41
     assert completed_log.started_at
     assert completed_log.finished_at
     controller.close()
@@ -346,7 +346,7 @@ def test_manual_maintenance_runs_on_shared_background_worker(
     completed_log = handler.records[1]
     assert completed_log.operation_type == "MAINTENANCE"
     assert completed_log.operation_detail == "QUICK_CHECK"
-    assert completed_log.schema_version == 34
+    assert completed_log.schema_version == 41
     assert completed_log.backup_target == "none"
     controller.close()
 

@@ -12,7 +12,11 @@ from party_player.analysis.loudness_service import (
 from party_player.restore_lifecycle import PersistenceParticipant
 from party_player.deck_controller import DeckController
 from party_player.gui_event_dispatcher import GuiEvent, GuiEventDispatcher, GuiEventType
-from party_player.loudness import LoudnessService, ResolvedLoudnessSettings, TrackLoudness
+from party_player.loudness import (
+    LoudnessService,
+    ResolvedLoudnessSettings,
+    TrackLoudness,
+)
 from party_player.services.library_service import LibraryService
 from party_player.settings_service import SettingsService
 
@@ -204,10 +208,10 @@ class LoudnessController:
         if job is not None and not job.future.done():
             job.cancel()
 
-    def close(self) -> None:
+    def close(self, *, wait: bool = True) -> None:
         self.cancel_batch_analysis()
         if self._analysis_service is not None:
-            self._analysis_service.close()
+            self._analysis_service.close(wait=wait)
 
     @property
     def active_analysis_job_count(self) -> int:
@@ -304,7 +308,11 @@ class LoudnessController:
                 maximum_negative_gain_db,
                 "set_maximum_negative_gain",
             ),
-            ("maximum_output_peak_db", maximum_output_peak_db, "set_maximum_output_peak"),
+            (
+                "maximum_output_peak_db",
+                maximum_output_peak_db,
+                "set_maximum_output_peak",
+            ),
             (
                 "fallback_positive_gain_db",
                 fallback_positive_gain_db,

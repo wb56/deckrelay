@@ -6,12 +6,13 @@ licensing context for source and release distribution.
 ## Core Python Runtime Dependencies
 
 - customtkinter (5.2.2)
-  - License metadata observed: MIT classifier; License field reports CC0 text.
-  - Action: verify upstream canonical license at release time.
+  - Canonical upstream LICENSE: MIT.
+  - Installed package metadata reports CC0; retain this mismatch in the release review
+    and use the canonical upstream license file as the recorded primary-source evidence.
 - python-vlc (3.0.21203)
   - License: LGPL-2.1-or-later.
 - tinytag (2.2.1)
-  - License metadata observed: MIT classifier.
+  - Canonical upstream LICENSE: MIT.
 - Pillow (12.3.0)
   - License expression metadata: MIT-CMU.
 

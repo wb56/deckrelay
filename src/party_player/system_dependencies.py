@@ -97,6 +97,7 @@ class RuntimeCapabilities:
     cue_analysis_available: bool
     loudness_analysis_available: bool
     ffprobe_available: bool
+    metadata_analysis_available: bool = False
 
     @classmethod
     def from_dependencies(
@@ -109,7 +110,7 @@ class RuntimeCapabilities:
         ffmpeg_available = ffmpeg.status == DependencyStatus.AVAILABLE
         ffprobe_available = ffprobe.status == DependencyStatus.AVAILABLE
         analysis = ffmpeg_available and ffprobe_available
-        return cls(playback, analysis, analysis, ffprobe_available)
+        return cls(playback, analysis, analysis, ffprobe_available, analysis)
 
 
 @dataclass(frozen=True, slots=True)

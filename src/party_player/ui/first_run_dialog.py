@@ -12,6 +12,7 @@ from party_player.system_dependencies import FFMPEG_DOWNLOAD_URL, VLC_DOWNLOAD_U
 from party_player.system_dependency_service import SystemDependencyResolution
 from party_player.system_diagnostic_service import SystemDiagnosticReport
 from party_player.diagnostic_export import DiagnosticExportMode
+from party_player.ui.responsive_dialog import apply_responsive_dialog_geometry, bind_dialog_escape
 
 
 def open_official_download(
@@ -42,8 +43,9 @@ class FirstRunSetupDialog(ctk.CTkToplevel):  # type: ignore[misc]
     ) -> None:
         super().__init__(parent)
         self.title("DeckRelay – Einrichtung")
-        self.geometry("760x680")
-        self.minsize(680, 600)
+        apply_responsive_dialog_geometry(
+            self, parent, preferred_size=(760, 680), minimum_size=(600, 440)
+        )
         self.transient(parent)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self._resolution = initial_resolution
@@ -65,14 +67,17 @@ class FirstRunSetupDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self.completed = False
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        self._content = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._content.grid(row=1, column=0, padx=4, sticky="nsew")
+        self._content.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            self,
+            self._content,
             text="DeckRelay – Einrichtung",
             font=ctk.CTkFont(size=24, weight="bold"),
         ).grid(row=0, column=0, padx=24, pady=(24, 8), sticky="w")
         ctk.CTkLabel(
-            self,
+            self._content,
             text=(
                 "VLC ist für die Wiedergabe erforderlich. FFmpeg und FFprobe werden "
                 "für Cue- und Lautheitsanalysen benötigt, sind aber optional."
@@ -81,8 +86,8 @@ class FirstRunSetupDialog(ctk.CTkToplevel):  # type: ignore[misc]
             wraplength=650,
         ).grid(row=1, column=0, padx=24, pady=(0, 16), sticky="w")
 
-        status = ctk.CTkFrame(self)
-        status.grid(row=2, column=0, padx=24, pady=8, sticky="nsew")
+        status = ctk.CTkFrame(self._content)
+        status.grid(row=2, column=0, padx=24, pady=8, sticky="ew")
         status.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(status, text="Komponente", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, padx=12, pady=10, sticky="w"
@@ -100,7 +105,7 @@ class FirstRunSetupDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._message = ctk.CTkLabel(status, text="", justify="left", wraplength=610)
         self._message.grid(row=8, column=0, columnspan=2, padx=12, pady=12, sticky="w")
 
-        links = ctk.CTkFrame(self, fg_color="transparent")
+        links = ctk.CTkFrame(self._content, fg_color="transparent")
         links.grid(row=3, column=0, padx=24, pady=4, sticky="ew")
         self._vlc_download_button = ctk.CTkButton(
             links,
@@ -124,7 +129,7 @@ class FirstRunSetupDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._ffmpeg_select_button.pack(side="left")
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
-        actions.grid(row=4, column=0, padx=24, pady=(8, 24), sticky="ew")
+        actions.grid(row=2, column=0, padx=24, pady=(8, 24), sticky="ew")
         self._check_button = ctk.CTkButton(
             actions, text="Installation erneut prüfen", command=self._start_recheck
         )
@@ -150,6 +155,7 @@ class FirstRunSetupDialog(ctk.CTkToplevel):  # type: ignore[misc]
         ctk.CTkButton(actions, text="DeckRelay beenden", command=self._cancel).pack(
             side="right", padx=8
         )
+        bind_dialog_escape(self, self._cancel)
         self._render()
 
     @staticmethod

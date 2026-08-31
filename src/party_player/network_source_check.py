@@ -41,7 +41,7 @@ class NetworkSourceChecker:
                 normalized, False, message="Nur UNC-Netzwerkquellen werden geprüft"
             )
         script = (
-            "$ok=Test-Path -LiteralPath $args[0] -PathType Container;" "if($ok){exit 0}else{exit 2}"
+            "$ok=Test-Path -LiteralPath $args[0] -PathType Container;if($ok){exit 0}else{exit 2}"
         )
         result = self._runner.run(
             [

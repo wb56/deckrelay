@@ -20,6 +20,7 @@ from party_player.ui.overlay_presentation import (
     format_cue_time,
     parse_cue_time,
 )
+from party_player.ui.responsive_dialog import apply_responsive_dialog_geometry, bind_dialog_escape
 
 
 class OverlayManagementDialog(ctk.CTkToplevel):  # type: ignore[misc]
@@ -48,10 +49,12 @@ class OverlayManagementDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._loading = False
         self._pending_favorite_position: int | None = None
         self.title("Jingles und Effekte verwalten")
-        self.geometry("1050x680")
-        self.minsize(900, 600)
+        apply_responsive_dialog_geometry(
+            self, master, preferred_size=(1050, 680), minimum_size=(720, 480)
+        )
         self.transient(master)
         self.protocol("WM_DELETE_WINDOW", self._request_close)
+        bind_dialog_escape(self, self._request_close)
         self.grid_columnconfigure(0, weight=2)
         self.grid_columnconfigure(1, weight=3)
         self.grid_rowconfigure(0, weight=1)

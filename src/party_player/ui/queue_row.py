@@ -14,6 +14,7 @@ from party_player.gui_callback import measured_gui_callback
 from party_player.gui_heartbeat_watchdog import GuiCallbackState
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.ui import theme
+from party_player.ui.catalog_row import track_version_text
 from party_player.ui.tooltip import SharedTooltipManager, SharedTooltipTarget, Tooltip
 
 
@@ -105,6 +106,7 @@ class QueueRowView:
         self._display_metadata_suffix = ""
         self._configured_widget_count = 0
         self._disposed = False
+        self._active_menu: tk.Menu | None = None
         specs = {
             "cue": ("✎", "Titel-Cues bearbeiten"),
             "deck_a": ("A", "Titel in Deck A laden"),
@@ -184,6 +186,8 @@ class QueueRowView:
         entry = view_model.entry
         track = view_model.track
         name = f"{track.artist} — {track.title}" if track else f"Titel #{entry.track_id}"
+        if track is not None:
+            name = f"{name} · {track_version_text(track)}"
         duration_text = _format_duration(track.duration_seconds if track else None)
         request_suffix = (
             f" · {view_model.request_count} Wünsche" if view_model.request_count > 0 else ""
@@ -409,13 +413,16 @@ class QueueRowView:
 
     def _show_more_actions(self) -> None:
         """Create status-dependent uncommon actions without permanent extra buttons."""
-        if self._entry_id is None or self._last_values is None:
+        if self._entry_id is None or not self._fields:
             return
         queue_id = self._entry_id
         status = str(self._fields.get("state", ""))
         locked = bool(self._fields.get("locked"))
         skip_code = self._fields.get("skip_code")
+        if self._active_menu is not None:
+            self._active_menu.destroy()
         menu = tk.Menu(self._frame, tearoff=False)
+        self._active_menu = menu
         freely_waiting = status == "waiting" and not locked
         if freely_waiting:
             menu.add_command(
@@ -471,6 +478,11 @@ class QueueRowView:
                 label="Wieder auf wartend setzen",
                 command=lambda: self._callbacks["reset"](queue_id),
             )
+        if status == "skipped":
+            menu.add_command(
+                label="Wieder auf wartend setzen",
+                command=lambda: self._callbacks["retry"](queue_id),
+            )
         if status in {"failed", "error"}:
             menu.add_command(
                 label="Erneut versuchen", command=lambda: self._callbacks["retry"](queue_id)
@@ -514,6 +526,9 @@ class QueueRowView:
         for tooltip in self._tooltips.values():
             tooltip.close()
         self._tooltips.clear()
+        if self._active_menu is not None:
+            self._active_menu.destroy()
+            self._active_menu = None
         self._frame.destroy()
         self._visible = False
         self._fields.clear()

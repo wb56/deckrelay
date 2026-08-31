@@ -110,7 +110,7 @@ class SavedQueueService:
             return
         if track is None:
             raise ValueError(
-                f"Cue-Snapshot verweist auf einen unbekannten Titel " f"(Track-ID {entry.track_id})"
+                f"Cue-Snapshot verweist auf einen unbekannten Titel (Track-ID {entry.track_id})"
             )
         if any(value is not None and not isfinite(float(value)) for value in values):
             raise ValueError(f"Ungültiger Cue-Snapshot für „{track.title}“")

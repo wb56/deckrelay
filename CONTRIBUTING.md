@@ -4,8 +4,9 @@ Danke fur dein Interesse an DeckRelay.
 
 ## Aktueller Projektmodus
 
-DeckRelay befindet sich in der öffentlichen Beta. Fehlerberichte,
-Funktionsvorschläge und externe Code-Beiträge sind willkommen.
+DeckRelay 1.0.0 ist stabil veröffentlicht. Die nächste reguläre Entwicklungslinie ist
+DeckRelay 2.0. Fehlerberichte, Funktionsvorschläge und externe Code-Beiträge sind
+willkommen.
 
 ## Was wir aktuell gerne annehmen
 

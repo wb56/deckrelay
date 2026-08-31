@@ -3,9 +3,11 @@
 from party_player.controllers.main_controller import EqualizerDialogState
 from party_player.enums import DeckState
 from party_player.models import Deck, Track
+from party_player.metadata_analysis_service import TempoBatchProgress
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.ui.main_window import (
     DeckPanel,
+    MainWindow,
     _compact_equalizer_labels,
     _configure_focus_cycle,
     _equalizer_effective_text,
@@ -186,6 +188,42 @@ def test_deck_render_has_detailed_timings_and_skips_invisible_progress_change() 
     timings = panel._performance.statistics()
     for suffix in ("text", "cues", "status", "time", "progress", "volume", "message"):
         assert f"status_render.deck_b.{suffix}" in timings
+
+
+def test_deck_render_shows_effective_catalog_bpm() -> None:
+    panel = _panel()
+    track = Track(1, "song.mp3", "Song", "Artist", "Album", 120.0, bpm=98.5)
+
+    panel.render(Deck("B", loaded_track=track, duration=120.0))
+
+    assert "98.5 BPM" in str(dict(panel._render_cache["metadata"])["text"])
+
+
+def test_metadata_batch_progress_is_visible_in_main_window() -> None:
+    class Summary:
+        text = ""
+
+        def configure(self, **values: object) -> None:
+            self.text = str(values["text"])
+
+    class Service:
+        def global_batch_progress(self, _job_id: str) -> TempoBatchProgress:
+            return TempoBatchProgress(
+                12, 5, 4, 1, 2, 0, 0, 0, 7, "Artist — Song", "RUNNING", "", 60.0
+            )
+
+    window = object.__new__(MainWindow)
+    window._metadata_analysis = Service()
+    window._summary = Summary()
+    shown: list[str] = []
+    window._show_compact_active_analysis = shown.append
+
+    window.show_metadata_analysis_progress("FINISHED", "job", "SUCCESS")
+
+    assert window._metadata_analysis_active
+    assert "BPM-Analyse: 5/12" in window._summary.text
+    assert "Ohne BPM: 1" in window._summary.text
+    assert "Aktuell: Artist — Song" in shown[0]
 
 
 def test_on_air_transition_schedules_one_short_settle_step() -> None:

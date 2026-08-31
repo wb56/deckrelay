@@ -388,10 +388,50 @@ def test_more_menu_offers_track_wide_equalizer_actions(monkeypatch) -> None:
     assert FakeMenu.popup_position == (21, 43)
 
 
+def test_more_menu_remains_actionable_after_live_status_update(monkeypatch) -> None:
+    invoked: list[int] = []
+
+    class FakeMenu:
+        commands: list[tuple[str, Any]] = []
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            type(self).commands = []
+
+        def add_command(self, *, label: str, command: Any = None, **_kwargs: object) -> None:
+            type(self).commands.append((label, command))
+
+        def add_separator(self) -> None:
+            pass
+
+        def tk_popup(self, _x: int, _y: int) -> None:
+            pass
+
+        def destroy(self) -> None:
+            pass
+
+    monkeypatch.setattr(queue_row.ctk, "CTkFrame", FakeWidget)
+    monkeypatch.setattr(queue_row.ctk, "CTkLabel", FakeWidget)
+    monkeypatch.setattr(queue_row.ctk, "CTkButton", FakeWidget)
+    monkeypatch.setattr(queue_row, "Tooltip", FakeTooltip)
+    monkeypatch.setattr(queue_row.tk, "Menu", FakeMenu)
+    row_callbacks = callbacks()
+    row_callbacks["played"] = invoked.append
+    row = QueueRowView(object(), row_callbacks, PerformanceMonitor())
+    row.bind_entry(model(4, QueueStatus.READY))
+    row.update_status(QueueStatus.PLAYING)
+
+    row._show_more_actions()
+
+    commands = dict(FakeMenu.commands)
+    commands["Als gespielt markieren"]()
+    assert invoked == [4]
+
+
 def test_more_menu_offers_repetition_override_and_does_not_treat_priority_as_lock(
     monkeypatch,
 ) -> None:
     invoked: list[int] = []
+    reset_to_waiting: list[int] = []
 
     class FakeMenu:
         commands: list[tuple[str, Any]] = []
@@ -415,6 +455,7 @@ def test_more_menu_offers_repetition_override_and_does_not_treat_priority_as_loc
     monkeypatch.setattr(queue_row.tk, "Menu", FakeMenu)
     row_callbacks = callbacks()
     row_callbacks["override_skip"] = invoked.append
+    row_callbacks["retry"] = reset_to_waiting.append
     row = QueueRowView(object(), row_callbacks, PerformanceMonitor())
     base = model(9, QueueStatus.SKIPPED)
     entry = replace(
@@ -431,5 +472,7 @@ def test_more_menu_offers_repetition_override_and_does_not_treat_priority_as_loc
     commands = dict(FakeMenu.commands)
     assert "Sperren" in commands
     assert "Entsperren" not in commands
+    commands["Wieder auf wartend setzen"]()
     commands["Trotzdem abspielen"]()
+    assert reset_to_waiting == [9]
     assert invoked == [9]

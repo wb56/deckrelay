@@ -15,6 +15,17 @@ class AudioFileInfo:
     sample_rate_hz: int
     channels: int
     codec_name: str = ""
+    format_name: str = ""
+    bitrate_bps: int | None = None
+    bitrate_mode: str | None = None
+    bits_per_sample: int | None = None
+    channel_layout: str = ""
+    codec_profile: str = ""
+    encoder: str = ""
+    codec_long_name: str = ""
+    format_long_name: str = ""
+    audio_stream_count: int = 1
+    selected_stream_index: int = 0
 
 
 @dataclass(frozen=True, slots=True)

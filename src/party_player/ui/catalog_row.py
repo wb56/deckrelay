@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 import tkinter as tk
 from typing import Any
 
@@ -12,6 +13,20 @@ from party_player.gui_callback import measured_gui_callback
 from party_player.gui_heartbeat_watchdog import GuiCallbackState
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.ui.tooltip import Tooltip
+
+
+def track_version_text(track: Track) -> str:
+    """Return a compact, file-specific label for otherwise identical entries."""
+    path = Path(track.file_path)
+    format_name = path.suffix.removeprefix(".").upper() or "Datei"
+    filename = path.name
+    if len(filename) > 52:
+        filename = f"{filename[:33]}…{filename[-18:]}"
+    duration = ""
+    if track.duration_seconds is not None:
+        minutes, seconds = divmod(max(0, round(track.duration_seconds)), 60)
+        duration = f" · {minutes}:{seconds:02d}"
+    return f"{format_name} · {filename}{duration}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +53,7 @@ class CatalogRowView:
         self._track: Track | None = None
         self._last_values: tuple[object, ...] | None = None
         self._frame = ctk.CTkFrame(parent)
-        self._label = ctk.CTkLabel(self._frame, text="", anchor="w")
+        self._label = ctk.CTkLabel(self._frame, text="", anchor="w", justify="left")
         self._label.pack(side="left", fill="x", expand=True, padx=6)
         self._buttons: dict[str, Any] = {}
         self._tooltips: dict[str, Tooltip] = {}
@@ -52,6 +67,7 @@ class CatalogRowView:
             button.pack(side="left", padx=2, pady=3)
             self._buttons[action] = button
             self._tooltips[action] = Tooltip(button, tooltip_text)
+        self._tooltips["identity"] = Tooltip(self._label, "")
 
     @property
     def track_id(self) -> int | None:
@@ -78,7 +94,8 @@ class CatalogRowView:
                 tooltip.cancel()
             return changed
         track = model.track
-        values = (track.id, track.artist, track.title, model.has_manual_cues)
+        version = track_version_text(track)
+        values = (track.id, track.artist, track.title, version, model.has_manual_cues)
         if values == self._last_values:
             return False
         self._track = track
@@ -86,7 +103,7 @@ class CatalogRowView:
         with self._performance.measure(
             "gui.catalog_render.configure_widgets", warning_threshold_ms=10.0
         ):
-            self._label.configure(text=f"{track.artist or 'Unbekannt'} — {track.title}")
+            self._label.configure(text=f"{track.artist or 'Unbekannt'} — {track.title}\n{version}")
             self._buttons["deck_a"].configure(
                 command=measured_gui_callback(
                     self._performance,
@@ -115,6 +132,10 @@ class CatalogRowView:
         with self._performance.measure(
             "gui.catalog_render.tooltip_update", warning_threshold_ms=10.0
         ):
+            self._tooltips["identity"].set_text(
+                f"Ausgewählte Datei:\n{track.file_path}\n\n"
+                "A, B, + und das Aktionsmenü gelten genau für diese Version."
+            )
             self._tooltips["more"].set_text(
                 "Weitere Titelaktionen"
                 + (" – manuelle Cue-Werte vorhanden" if model.has_manual_cues else "")

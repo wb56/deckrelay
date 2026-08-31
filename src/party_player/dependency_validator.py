@@ -114,8 +114,7 @@ class DependencyValidator:
                 base,
                 status=DependencyStatus.INCOMPATIBLE,
                 message=(
-                    f"VLC ist {architecture}-Bit, DeckRelay benötigt "
-                    f"{self._process_bitness}-Bit"
+                    f"VLC ist {architecture}-Bit, DeckRelay benötigt {self._process_bitness}-Bit"
                 ),
                 error_code=DependencyErrorCode.VLC_ARCHITECTURE_MISMATCH.value,
             )

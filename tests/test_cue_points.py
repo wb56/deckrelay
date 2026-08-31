@@ -43,6 +43,16 @@ def test_manual_cues_are_persistent_and_define_crossfade_end(tmp_path: Path) -> 
     assert service.manual_track_ids([1]) == {1}
 
 
+def test_cue_changes_publish_targeted_tempo_invalidation(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    changed: list[int] = []
+    service._on_global_cues_changed = changed.append
+
+    service.save_manual(_track(), 2.0, 240.0, 6.0)
+
+    assert changed == [1]
+
+
 def test_editor_save_atomically_updates_manual_values_and_discards_analysis(
     tmp_path: Path,
 ) -> None:
