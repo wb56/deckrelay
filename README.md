@@ -1,86 +1,99 @@
 # DeckRelay
 
-DeckRelay ist eine Windows-Desktopanwendung für große lokale MP3-/FLAC-Sammlungen,
-Veranstaltungsqueues, Zwei-Deck-Wiedergabe, automatische Übergänge, Cue-Punkte,
-Lautheitsanpassung sowie Jingles und Effekte.
+**Music library management and reliable dual-deck playback for Windows**
 
-DeckRelay is a Windows desktop application for local music libraries, event queues,
-dual-deck playback, automatic transitions, cue points, loudness management,
-equalizer presets, and audio overlays.
+DeckRelay is a free, open-source Windows application for organizing music collections, preparing playlists and queues, and running continuous automatic playback with two audio decks and smooth crossfades.
 
-## Entwicklung starten
+It is designed for private parties, small events, clubs, associations, and anyone who wants more control than a simple playlist player provides—without requiring a full professional DJ system.
 
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m party_player
-```
+[Download DeckRelay 1.0.0 for Windows](https://github.com/wb56/deckrelay/releases/download/v1.0.0/DeckRelay-portable-1.0.0.zip) ·[Release notes](https://github.com/wb56/deckrelay/releases/tag/v1.0.0) ·
+[SHA-256 checksums](https://github.com/wb56/deckrelay/releases/download/v1.0.0/SHA256SUMS.txt) · [View documentation](#getting-started) · [Report a problem](https://github.com/wb56/deckrelay/issues)
 
-Die Datenbank wird beim ersten Start unter `data/party_player.db` angelegt.
+> DeckRelay 1.0.0 is the first stable release. It is available as a portable Windows application and does not require a traditional installation.
 
-## Projektstatus
 
-DeckRelay `1.0.0` ist die stabile Windows-Version für den produktiven
-Veranstaltungsbetrieb. VLC/libVLC bleibt für jede Wiedergabe erforderlich.
+<img width="1472" height="807" alt="grafik" src="https://github.com/user-attachments/assets/4c4bd92b-d479-46c7-8ad7-71ec432e098f" />
 
-Langzeitbetrieb, seltene Kombinationen aus Audiogeräten sowie Medien auf NAS- und
-Netzlaufwerken können abhängig von Hardware, Treibern und Netzwerk weiterhin
-Umgebungsrisiken enthalten. Eine vollständig fehlerfreie Funktion in jeder Umgebung
-wird nicht garantiert.
 
-- Quellcode und kostenlose Windows-Releases sind öffentlich verfügbar.
-- Fehler sollen mit Logdatei, möglichst genauem Zeitpunkt und Beschreibung der
-  Testsituation über Issues gemeldet werden.
-- Externe Code-Beiträge per Pull Request sind willkommen. Vor größeren Änderungen
-  sollte zunächst ein Issue zur Abstimmung eröffnet werden.
 
-Details stehen in [CONTRIBUTING.md](CONTRIBUTING.md).
+## What DeckRelay offers
 
-## Lizenz
+* **Music library management**
+  Organize and search your local music collection and maintain track information in one central catalog.
 
-Dieses Projekt steht unter der GNU General Public License v3.0 oder einer
-späteren Version (`GPL-3.0-or-later`). Details siehe [LICENSE](LICENSE).
-Hinweise zu Drittanbieter-Lizenzen und Laufzeitabhaengigkeiten stehen in
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+* **Dual-deck playback**
+  Two independent playback decks provide continuous music and prepare the next track in advance.
 
-## Laufzeitvoraussetzungen fuer Releases
+* **Automatic transitions**
+  DeckRelay handles track changes and smooth crossfades automatically.
 
-- Windows 10 oder Windows 11, 64 Bit.
-- VLC/libVLC ist fuer jede Wiedergabe erforderlich und muss separat installiert
-  werden. DeckRelay prueft zuerst einen bewusst gewaehlten Installationsordner,
-  danach gaengige Windows-Standardinstallationen und anschliessend `PATH`.
-- FFmpeg und FFprobe sind nur fuer neue automatische Cue- und Lautheitsanalysen
-  erforderlich. Wiedergabe sowie vorhandene gespeicherte Analysewerte funktionieren
-  auch ohne diese Werkzeuge. Beide Programme muessen aus demselben `bin`-Ordner
-  stammen.
-- Alternative VLC- und FFmpeg-Verzeichnisse koennen im Einrichtungsassistenten oder
-  unter `Einstellungen -> System / Externe Programme` ausgewaehlt und validiert
-  werden. Aenderungen gelten nach einem Neustart.
-- VLC, libVLC, VLC-Plugins, FFmpeg und FFprobe werden weder mitgeliefert noch von
-  DeckRelay heruntergeladen oder installiert. Downloadseiten werden nur nach einer
-  ausdruecklichen Benutzeraktion im Standardbrowser geoeffnet.
+* **Playlists and live queue**
+  Prepare playlists in advance or adjust the upcoming tracks during playback.
 
-## Architektur
+* **Cue points and track-specific settings**
+  Store playback positions and other settings for individual tracks without changing the original audio files.
 
-`UI -> Controller -> Service -> Repository -> SQLite`
+* **Volume and loudness control**
+  Track-specific gain, loudness analysis, and clipping protection help produce more consistent playback levels.
 
-- `ui`: Darstellung und Benutzerinteraktion
-- `controllers`: Koordination der Oberfläche
-- `services`: Geschäftsregeln
-- `repositories`: ausschließlich Datenbankzugriffe
-- `database`: Verbindung und Migrationen
-- `player`: gekapselte Wiedergabe (wird in der nächsten Ausbaustufe ergänzt)
+* **Local and independent**
+  Your music files and catalog remain on your computer. DeckRelay does not require a cloud service or user account.
 
-Funktionsweise, Bedienung und technische Grenzen der automatischen Cue-Erkennung sind
-in [`docs/automatic_cue_analysis.md`](docs/automatic_cue_analysis.md) beschrieben.
+## Typical uses
 
-Die benutzersichere Bedienung von Automatikmodus, Queue ersetzen/anhängen,
-vollständiger CD-Reihenfolge, Pause/Fortsetzen und Cue-Fallback ist in
-[`docs/automatic_playback.md`](docs/automatic_playback.md) beschrieben.
+DeckRelay is suitable for:
 
-Gain-Reihenfolge, ReplayGain-Priorität, Peak-Schutz, Headroom und unveränderte
-Quelldateien sind in
-[`docs/loudness_normalization.md`](docs/loudness_normalization.md) dokumentiert.
+* private parties and celebrations;
+* background music at events;
+* club and association events;
+* unattended or semi-automatic music playback;
+* managing larger local MP3 and FLAC collections.
 
-Der Einfluss des Equalizer-Sicherheits-Preamps auf die wahrgenommene Lautstärke
-ist in [`docs/equalizer.md`](docs/equalizer.md) erklärt.
+DeckRelay is not intended to replace performance-oriented DJ software. Its focus is on preparation, reliable automation, and easy control of continuous music playback.
+
+## Getting started
+
+Before starting DeckRelay, make sure that VLC is installed. FFmpeg and
+FFprobe are additionally required if you want DeckRelay to analyze new
+audio files.
+
+1. Download `DeckRelay-portable-1.0.0.zip` from the [latest release](https://github.com/wb56/deckrelay/releases/latest).
+2. Extract the complete ZIP archive into a folder of your choice.
+3. Start `DeckRelay.exe`.
+4. Add a folder containing your music files to the catalog.
+5. Add tracks to the queue and start playback.
+
+No separate installation is required. Do not start DeckRelay directly from within the ZIP archive.
+
+> **Windows SmartScreen:** Because DeckRelay is currently not digitally signed, Windows may display a security warning when it is started for the first time. The source code is publicly available, and every official release is tested automatically before publication.
+
+## Supported system
+
+* Windows 10 or Windows 11
+* 64-bit system
+* local MP3 and FLAC files
+* sufficient free disk space for the catalog and application data
+* VLC media player with libVLC for audio playback
+* FFmpeg and FFprobe for cue and loudness analysis
+
+## Stable release
+
+DeckRelay 1.0.0 passed the complete release quality gate:
+
+* 1,119 automated tests passed;
+* Ruff, Black, and MyPy checks passed;
+* three real FFmpeg format tests passed;
+* portable release archive verified;
+* release built from the published source commit.
+
+For technical details and downloadable files, see the [DeckRelay 1.0.0 release](https://github.com/wb56/deckrelay/releases/tag/v1.0.0).
+
+## Feedback and contributions
+
+DeckRelay is a new open-source project. Reports from real-world use are especially valuable.
+
+* [Report a bug](https://github.com/wb56/deckrelay/issues/new)
+* [Suggest an improvement](https://github.com/wb56/deckrelay/issues/new)
+* [View the source code](https://github.com/wb56/deckrelay)
+
+When reporting a playback problem, please include the DeckRelay version, the Windows version, the audio format involved, and—if available—the diagnostic report created by DeckRelay.
