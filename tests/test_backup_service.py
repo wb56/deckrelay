@@ -345,10 +345,14 @@ def test_older_application_backup_requires_migration(
 ) -> None:
     result = BackupService(temporary_database, now=lambda: FIXED_TIME).create_backup(tmp_path)
     assert result.backup_path is not None
+    older_backup = tmp_path / "deckrelay-1.0.0.partyplayer-backup"
+    _rewrite_manifest(result.backup_path, older_backup, application_version="1.0.0")
 
-    validation = validate_backup_archive(result.backup_path, current_application_version="2.0.0")
+    validation = validate_backup_archive(older_backup, current_application_version="2.0.0-beta.1")
 
     assert validation.valid
+    assert validation.manifest is not None
+    assert validation.manifest.application_version == "1.0.0"
     assert validation.compatibility is BackupCompatibility.MIGRATION_REQUIRED
 
 
