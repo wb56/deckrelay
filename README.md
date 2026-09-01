@@ -11,6 +11,24 @@ It is designed for private parties, small events, clubs, associations, and anyon
 
 > DeckRelay 1.0.0 is the first stable release. It is available as a portable Windows application and does not require a traditional installation.
 
+## DeckRelay 2.0 beta preparation
+
+DeckRelay `2.0.0-beta.1` is the next planned prerelease. It is not published yet. When
+it becomes available, it will be listed on the general
+[Releases page](https://github.com/wb56/deckrelay/releases); there is currently no
+beta download or release asset.
+
+The 2.0 development line adds responsive large and compact workspaces, compact Live
+and Preparation modes, work-area-aware dialogs, an extended track editor, catalog and
+typed metadata maintenance, technical audio information, loudness analysis from the
+track editor, and contextual BPM analysis for full-track, cue and playlist scopes.
+Uncertain shuffle and changing-tempo material is kept out of automatic planning.
+
+> **Beta upgrade warning:** Before the first start of 2.0.0-beta.1, back up the complete
+> `data` directory. The database is migrated automatically from schema 34 to schema 41.
+> DeckRelay 1.0.0 cannot open the migrated database; returning to 1.0.0 requires the
+> schema-34 backup made before the upgrade.
+
 
 <img width="1472" height="807" alt="grafik" src="https://github.com/user-attachments/assets/4c4bd92b-d479-46c7-8ad7-71ec432e098f" />
 
@@ -74,7 +92,7 @@ No separate installation is required. Do not start DeckRelay directly from withi
 * local MP3 and FLAC files
 * sufficient free disk space for the catalog and application data
 * VLC media player with libVLC for audio playback
-* FFmpeg and FFprobe for cue and loudness analysis
+* FFmpeg and FFprobe for cue, loudness, BPM and technical audio analysis
 
 ## Stable release
 

@@ -86,3 +86,14 @@ DeckRelay speichert eigene Werte in SQLite, insbesondere:
 
 Die Audioquelldatei wird nur gelesen. DeckRelay schreibt keine MP3-, FLAC-,
 ReplayGain- oder sonstigen Dateimetadaten.
+
+## Analyse im Titeleditor
+
+Das Register **Lautheit** zeigt gespeicherte integrierte Lautheit, Lautheitsbereich,
+True Peak, Analyseversion und Zeitpunkt. Eine neue Analyse kann dort ausdrücklich
+gestartet werden, sofern FFmpeg und FFprobe für die Sitzung verfügbar sind. Der Auftrag
+läuft im begrenzten Hintergrundworker; Status und Fehler werden im Dialog angezeigt.
+
+Das Analyseergebnis ist zunächst ein eigener gespeicherter Messstand. Manuelle
+Verstärkungswerte und die oben beschriebene sichere Auflösung bleiben davon getrennt.
+Die Analyse verändert weder die Audiodatei noch deren Tags.

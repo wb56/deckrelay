@@ -34,9 +34,9 @@ and correction reasons. Do not record monitor names or user paths.
 
 | Display | Scaling | Reported bounds | Reported work area | DPI scale | Result |
 | --- | ---: | --- | --- | ---: | --- |
-| 1366 x 768 | 125% | pending manual run | pending manual run | pending | pending |
+| 1366 x 768 | 125% | not retained in this early provider table | not retained in this early provider table | 1.25 target | later responsive workspace/dialog acceptance passed |
 | 1920 x 1080 | 100% | `0,0–1920,1080` | `0,0–1920,1050` | 1.0 | provider probe passed; safe default `1500x950+202+30` |
-| 1920 x 1080 | 125% | pending manual run | pending manual run | pending | pending |
+| 1920 x 1080 | 125% | not retained in this early provider table | not retained in this early provider table | 1.25 target | later responsive workspace/dialog acceptance passed |
 
 For every row verify startup without saved geometry, restoration of a valid geometry,
 restoration after moving/removing a monitor, taskbar exclusion, access to all window
@@ -46,3 +46,10 @@ interior controls form a compact layout; that remains a separate DeckRelay 2.0 p
 The recorded 100% probe ran on a three-monitor Windows arrangement; all three monitors
 reported 1920 x 1080 bounds, 1920 x 1050 work areas and DPI scale 1.0. No monitor names
 or other user-identifying values were logged.
+
+This table preserves the early geometry-provider evidence and does not invent missing
+coordinates retrospectively. The later practical acceptance for all three target
+display/scaling combinations is recorded in
+[Responsive GUI phase 2A](responsive-gui-phase-2a.md). It covers the responsive
+workspaces and the migrated priority dialogs; historical intermediate findings in that
+development record remain identifiable as such.
