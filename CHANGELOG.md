@@ -75,6 +75,10 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
   `data` der bisherigen Installation gesichert werden.
 - Die vorhandene Datenbank wird beim Start automatisch von Schema 34 auf Schema 41
   migriert. Musikdateien und eingebettete Tags bleiben unverändert.
+- Die reale Upgrade-Abnahme mit einer anonymisierten DeckRelay-1.0.0-Datenkopie
+  bestätigte Datenerhalt, Wiederanlauf nach einem kontrollierten Fehler sowie Backup
+  und Restore; der Hauptnachweis steht in
+  `docs/development/release-2.0.0-beta.1-upgrade-acceptance.md`.
 - DeckRelay 1.0.0 kann eine auf Schema 41 migrierte Datenbank nicht öffnen. Eine
   Rückkehr zu 1.0.0 ist nur mit der zuvor angelegten Schema-34-Sicherung möglich.
 
