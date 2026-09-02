@@ -119,12 +119,13 @@ Grenzen dokumentiert; ihre Steuerungs- und Rückfallpfade sind automatisiert gep
 ## Abschlussgate
 
 Nach den drei Korrekturen aus der realen Abnahme wurde der vollständige Stand am
-2. September 2026 erneut geprüft:
+2. September 2026 zunächst lokal geprüft:
 
 - 48 gezielte Emergency-/Recovery-Regressionstests bestanden;
 - 458 angrenzende Tests für Controller, Queue, Automatik, Decksteuerung,
   Audio-Recovery, Emergency-Verhalten und Shutdown bestanden;
-- vollständige Testsuite: 1.434 Tests bestanden, 6 erwartungsgemäß übersprungen;
+- vollständige Testsuite vor der portablen Testkorrektur: 1.434 Tests bestanden,
+  6 erwartungsgemäß übersprungen;
 - Ruff für `src` und `tests` bestanden;
 - Black-Prüfung für `src` und `tests`: 306 Dateien unverändert;
 - MyPy für alle 164 Produktionsmodule ohne Befund;
@@ -135,9 +136,21 @@ entsprechenden Spawn-Prozesstests für CBR-MP3, VBR-MP3 und FLAC. Im ersten Gate
 Draft-PR liefen die drei realen Formattests mit den über ``PATH`` bereitgestellten
 Werkzeugen erfolgreich. Die Spawn-Prozesstests blieben dagegen übersprungen, weil
 ihre Werkzeugerkennung ausschließlich das lokale ``.tools/ffmpeg``-Bundle prüfte.
-Diese Testinfrastrukturlücke wird in einem Folgecommit durch eine portable Auflösung
-aus explizitem Testpfad, lokalem Bundle oder ``PATH`` geschlossen. Produktionslogik,
-Analysealgorithmus und Emergency-Recovery-Verhalten bleiben davon unberührt.
+Commit ``957573c27231a14902750f3fa52ead74ba44cf5d`` schloss diese
+Testinfrastrukturlücke durch eine portable Auflösung aus expliziten Testpfaden, dem
+lokalen Bundle oder ``PATH``. Produktionslogik, Analysealgorithmus und
+Emergency-Recovery-Verhalten blieben davon unberührt.
+
+Das anschließend erneut ausgeführte Windows-Gate vom 2. September 2026 bestätigte
+den endgültigen PR-Stand:
+
+- Ruff bestanden;
+- Black bestanden;
+- MyPy bestanden;
+- drei reale FFmpeg-Formattests bestanden;
+- drei Spawn-Prozesstests bestanden;
+- vollständige Suite: ``1447 passed``;
+- ``0 skipped``.
 
 Für dieses Abschlussgate wurde kein Build erzeugt. Der Arbeitsblock ist damit auf
 Code-, Test-, Dokumentations- und realer VLC-/Geräteebene abgeschlossen.
