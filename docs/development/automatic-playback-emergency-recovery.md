@@ -130,12 +130,14 @@ Nach den drei Korrekturen aus der realen Abnahme wurde der vollständige Stand a
 - MyPy für alle 164 Produktionsmodule ohne Befund;
 - `git diff --check` bestanden.
 
-Die sechs Skips betreffen ausschließlich die drei realen FFmpeg-Formattests und die
-drei entsprechenden Spawn-Prozesstests für CBR-MP3, VBR-MP3 und FLAC. Grund ist das
-im separaten Worktree nicht vorhandene lokale FFmpeg-/FFprobe-Bundle. Dieselben
-Formatpfade waren bereits im dafür eingerichteten Worktree sowie in der realen
-Musikabnahme geprüft worden. Gegenüber dem vorherigen vollständigen Lauf kamen keine
-unerwarteten Skips hinzu.
+Die sechs lokalen Skips betrafen die drei realen FFmpeg-Formattests und die drei
+entsprechenden Spawn-Prozesstests für CBR-MP3, VBR-MP3 und FLAC. Im ersten Gate des
+Draft-PR liefen die drei realen Formattests mit den über ``PATH`` bereitgestellten
+Werkzeugen erfolgreich. Die Spawn-Prozesstests blieben dagegen übersprungen, weil
+ihre Werkzeugerkennung ausschließlich das lokale ``.tools/ffmpeg``-Bundle prüfte.
+Diese Testinfrastrukturlücke wird in einem Folgecommit durch eine portable Auflösung
+aus explizitem Testpfad, lokalem Bundle oder ``PATH`` geschlossen. Produktionslogik,
+Analysealgorithmus und Emergency-Recovery-Verhalten bleiben davon unberührt.
 
 Für dieses Abschlussgate wurde kein Build erzeugt. Der Arbeitsblock ist damit auf
 Code-, Test-, Dokumentations- und realer VLC-/Geräteebene abgeschlossen.

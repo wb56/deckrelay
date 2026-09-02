@@ -9,19 +9,10 @@ import wave
 import pytest
 
 from party_player.analysis import AnalysisSegment, FfmpegAudioAnalysisBackend
+from ffmpeg_test_tools import resolve_ffmpeg_test_tools
 
 
-_BUNDLED_BIN = Path(".tools/ffmpeg/ffmpeg-8.1.2-essentials_build/bin")
-FFMPEG = (
-    str(_BUNDLED_BIN / "ffmpeg.exe")
-    if (_BUNDLED_BIN / "ffmpeg.exe").is_file()
-    else shutil.which("ffmpeg")
-)
-FFPROBE = (
-    str(_BUNDLED_BIN / "ffprobe.exe")
-    if (_BUNDLED_BIN / "ffprobe.exe").is_file()
-    else shutil.which("ffprobe")
-)
+FFMPEG, FFPROBE = resolve_ffmpeg_test_tools()
 pytestmark = pytest.mark.skipif(
     FFMPEG is None or FFPROBE is None,
     reason="FFmpeg/FFprobe ist für echte Formattests nicht installiert",
