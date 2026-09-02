@@ -19,6 +19,10 @@ from party_player.models import SavedQueueEntry
 from party_player.repositories.saved_queue_repository import SavedQueueRepository
 from party_player.track_selection import TrackSelectionService
 from party_player.track_selection import SelectionDecision
+from party_player.track_suitability import (
+    TrackSuitabilityRepository,
+    TrackSuitabilityService,
+)
 from party_player.emergency_playlist import EmergencyMediaType, LocalEmergencyPlaylistService
 from party_player.emergency_storage import EmergencyDriveKind, EmergencyStoragePolicy
 from party_player.file_availability import FileAvailabilityService
@@ -107,6 +111,32 @@ def test_empty_queue_can_create_automatic_entry_with_injected_rng(tmp_path: Path
             for row in connection.execute("SELECT event_code FROM session_audit_events ORDER BY id")
         ]
     assert events == ["RULE_RELAXATION", "AUTOMATIC_SELECTION", "QUEUE_ADDED"]
+
+
+def test_empty_queue_does_not_add_track_requiring_suitability_approval(
+    tmp_path: Path,
+) -> None:
+    database, session_id = _database(tmp_path / "queue-approval-required.db")
+    tracks = TrackRepository(database)
+    selector = AutomaticSelectionService(
+        tracks,
+        AutomaticSelectionHistory(database),
+        randomizer=random.Random(7),
+    )
+    service = QueueService(
+        PartyPlayerRepository(database),
+        tracks,
+        session_id,
+        empty_queue_policy=EmptyQueuePolicy.AUTOMATIC_SELECTION,
+        automatic_selection=selector,
+        selection_service=TrackSelectionService(
+            (TrackSuitabilityService(TrackSuitabilityRepository(database)),)
+        ),
+    )
+
+    assert service.get_next_candidate() is None
+    assert selector.last_relaxation_stage == "NO_SAFE_CANDIDATE"
+    assert service.entries() == []
 
 
 def test_selection_logs_and_exposes_used_relaxation_stage(

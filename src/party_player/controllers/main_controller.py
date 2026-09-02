@@ -58,7 +58,12 @@ from party_player.equalizer import (
     ResolvedEqualizerPreset,
 )
 from party_player.equalizer_resolver import EqualizerResolver
-from party_player.emergency_state import DeckHealth, EmergencyStateService, EmergencyStateSnapshot
+from party_player.emergency_state import (
+    DeckHealth,
+    EmergencyStateService,
+    EmergencyStateSnapshot,
+    EmergencySystemState,
+)
 from party_player.emergency_controller import EmergencyController, EmergencyEscalationResult
 from party_player.emergency_playback import EmergencyPlaybackResult
 from party_player.audio_recovery import (
@@ -259,6 +264,7 @@ class MainController:
     ONE_DECK_START_RETRY_STEP = 20
     CATALOG_PAGE_SIZE = 50
     MINIMUM_TRANSITION_PREPARATION_SECONDS = 0.5
+    MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES = 3
     DIAGNOSTIC_CONTEXTS = {
         "idle",
         "normal_playback",
@@ -347,6 +353,9 @@ class MainController:
         self._automatic_pause_reason: str | None = None
         self._automatic_audio_paused_decks: set[str] = set()
         self._automatic_start_assessment_bypass = False
+        self._automatic_failure_streak = 0
+        self._automatic_failure_generations = {"A": 0, "B": 0}
+        self._automatic_recovering_decks: set[str] = set()
         self._automatic_status_state = "ready"
         self._automatic_status_reason = ""
         self._last_automatic_status_render: tuple[str, str] | None = None
@@ -720,6 +729,8 @@ class MainController:
         self,
         deck_id: str,
         policy: AudioRecoveryPolicy = AudioRecoveryPolicy.RESUME_POSITION,
+        *,
+        automatic: bool = False,
     ) -> bool:
         """Run an explicitly confirmed single-deck recovery outside the GUI thread."""
         normalized = deck_id.upper()
@@ -740,8 +751,10 @@ class MainController:
             self._publish_emergency_dashboard(force=True)
             return False
         self._deck_recovery_action_active = True
+        recovery_generation = self._automatic_failure_generations[normalized]
         self._current_emergency_action = f"Deck-Recovery {normalized}"
-        self._pause_automatic_queue(f"Deck-Recovery {normalized} angefordert")
+        if not automatic:
+            self._pause_automatic_queue(f"Deck-Recovery {normalized} angefordert")
         self._publish_emergency_dashboard(force=True)
 
         def recover() -> None:
@@ -749,6 +762,17 @@ class MainController:
             result = self._emergency.recover_deck(normalized, policy)
 
             def finish() -> None:
+                if automatic and (
+                    self._closed
+                    or recovery_generation != self._automatic_failure_generations[normalized]
+                ):
+                    self._deck_recovery_action_active = False
+                    self._automatic_recovering_decks.discard(normalized)
+                    self._queue_service.record_audit_event(
+                        "AUTOMATIC_RECOVERY_STALE_RESULT",
+                        details={"deck_id": normalized, "generation": recovery_generation},
+                    )
+                    return
                 self._deck_recovery_action_active = False
                 self._current_emergency_action = "Keine"
                 self._recovery_return_validation_required = True
@@ -761,11 +785,15 @@ class MainController:
                     self._view.show_queue_warning(
                         f"Deck {normalized} wurde repariert und bleibt sicher stumm."
                     )
+                    if automatic:
+                        self._finish_automatic_deck_recovery(normalized)
                 else:
                     self._view.show_queue_warning(
                         f"Deck-Recovery {normalized} fehlgeschlagen: "
                         f"{result.message or result.error_code}"
                     )
+                    if automatic:
+                        self._finish_automatic_deck_recovery(normalized, failed=True)
                 self._publish_emergency_dashboard(force=True)
                 self._publish_recovery_return_requirements(force=True)
 
@@ -2343,22 +2371,27 @@ class MainController:
                 self._auto_load_suppressed_decks.add(deck_id)
                 self._view.show_deck_cover(deck_id, None)
         except Exception as exc:
-            queue_id = self._deck_queue_ids[deck_id]
-            if queue_id is not None:
-                self._queue_service.mark_error(queue_id)
-            if self._history is not None:
-                self._history.finish(
-                    deck_id,
-                    CompletionStatus.ERROR,
-                    deck.model.position,
-                    error_message=str(exc),
-                    skip_code=HistoryReasonCode.PLAYBACK_ERROR,
-                )
-            self._refresh_queue()
-            self._view.show_deck(deck.model)
             if automatic:
-                self._handle_queue_error(f"Deck {deck_id}", exc)
+                self._handle_automatic_media_failure(
+                    deck,
+                    action,
+                    exc,
+                    failure_code="AUTOMATIC_PLAYBACK_COMMAND_FAILED",
+                )
             else:
+                queue_id = self._deck_queue_ids[deck_id]
+                if queue_id is not None:
+                    self._queue_service.mark_error(queue_id)
+                if self._history is not None:
+                    self._history.finish(
+                        deck_id,
+                        CompletionStatus.ERROR,
+                        deck.model.position,
+                        error_message=str(exc),
+                        skip_code=HistoryReasonCode.PLAYBACK_ERROR,
+                    )
+                self._refresh_queue()
+                self._view.show_deck(deck.model)
                 self._handle_error(f"Deck {deck_id}", exc)
 
     def toggle_deck_play_pause(self, deck_id: str) -> None:
@@ -2774,7 +2807,8 @@ class MainController:
             for entry in self._queue_service.entries()
             if entry.status in {QueueStatus.WAITING, QueueStatus.READY, QueueStatus.PLAYING}
         ]
-        if not active_entries:
+        loaded_start_deck = self._loaded_automatic_start_deck()
+        if not active_entries and loaded_start_deck is None:
             message = "Die Automatik kann nicht starten: Die Queue enthält keinen Titel."
             self._view.show_queue_warning(message)
             self._queue_service.record_audit_event(
@@ -2878,11 +2912,21 @@ class MainController:
                     blocked.append((entry, decision.reason or decision.code))
 
             start_entry = playable[0] if playable else None
-            start_track = previews[start_entry.queue_id][0] if start_entry is not None else None
+            loaded_start_deck = self._loaded_automatic_start_deck()
+            start_track = (
+                previews[start_entry.queue_id][0]
+                if start_entry is not None
+                else (
+                    loaded_start_deck.model.loaded_track if loaded_start_deck is not None else None
+                )
+            )
+            playable_count = len(playable) + (
+                1 if start_entry is None and loaded_start_deck is not None else 0
+            )
             lines = [
                 f"Starttitel: {start_track.title if start_track is not None else 'Kein spielbarer Titel'}",
                 f"Wartend/vorbereitet: {len(entries)}",
-                f"Voraussichtlich spielbar: {len(playable)}",
+                f"Voraussichtlich spielbar: {playable_count}",
                 f"Durch Regeln blockiert: {len(blocked)}",
             ]
             if blocked:
@@ -2896,6 +2940,19 @@ class MainController:
                 if len(blocked) > 5:
                     lines.append(f"• … und {len(blocked) - 5} weitere")
             return "\n".join(lines)
+
+    def _loaded_automatic_start_deck(self) -> DeckController | None:
+        """Return already prepared manual media that can seed an automatic restart."""
+        return next(
+            (
+                deck
+                for deck in (self.deck_a, self.deck_b)
+                if deck.model.loaded_track is not None
+                and deck.model.state in {DeckState.LOADED, DeckState.STOPPED}
+                and self._deck_is_ready_for_automatic_playback(deck)
+            ),
+            None,
+        )
 
     def _prepare_automatic_start_from_selection(self, *, skip_earlier: bool = True) -> None:
         """Make the selected queue row the next automatic starting point."""
@@ -3047,6 +3104,9 @@ class MainController:
 
     def close(self, finish_session: bool = False) -> None:
         self._closed = True
+        for deck_id in self._automatic_failure_generations:
+            self._automatic_failure_generations[deck_id] += 1
+        self._automatic_recovering_decks.clear()
         self._heartbeat_watchdog.stop()
         self._preload_generation += 1
         for deck in (self.deck_a, self.deck_b):
@@ -3167,6 +3227,7 @@ class MainController:
             return False
         try:
             deck.load(track)
+            self._mark_deck_reusable(deck.model.deck_id, "Titel wurde manuell erfolgreich geladen")
             self._apply_resolved_equalizer(deck, self._resolve_equalizer(deck, track, queue_id))
             self._apply_cue_points(deck)
             self._apply_loudness(deck)
@@ -3181,7 +3242,7 @@ class MainController:
             self._view.show_deck(deck.model)
             return False
 
-    def _auto_load(self) -> None:
+    def _auto_load(self, *, recovery_replacement: bool = False) -> None:
         if not self.automatic_deck_loading:
             return
         if self._background_preload:
@@ -3193,7 +3254,7 @@ class MainController:
                 or layout.pending_queue_chunks
             ):
                 return
-            self._auto_load_in_background()
+            self._auto_load_in_background(recovery_replacement=recovery_replacement)
             return
         changed = False
         while True:
@@ -3201,7 +3262,10 @@ class MainController:
                 "playback.autoload_candidate_search", warning_threshold_ms=100.0
             ):
                 result = self._queue_service.load_next_into_free_deck(
-                    self.deck_a, self.deck_b, self._auto_load_suppressed_decks
+                    self.deck_a,
+                    self.deck_b,
+                    self._auto_load_suppressed_decks,
+                    allow_empty_queue_selection=not recovery_replacement,
                 )
             if result is None:
                 break
@@ -3222,9 +3286,14 @@ class MainController:
             self._refresh_all()
             self._no_safe_candidate_warning_active = False
         else:
-            self._show_no_safe_candidate_warning()
+            if recovery_replacement:
+                self._pause_automatic_queue(
+                    "Kein sicherer Ersatztitel verfügbar; manueller Eingriff erforderlich"
+                )
+            else:
+                self._show_no_safe_candidate_warning()
 
-    def _auto_load_in_background(self) -> None:
+    def _auto_load_in_background(self, *, recovery_replacement: bool = False) -> None:
         if self._preload_in_progress or self._closed:
             return
         # Keep repository work out of the status cycle while both logical decks
@@ -3234,7 +3303,12 @@ class MainController:
         if monotonic() < self._next_preload_candidate_search_at:
             return
         if not any(entry.status == QueueStatus.WAITING for entry in self._queue_entries_cache):
-            self._show_no_safe_candidate_warning()
+            if recovery_replacement:
+                self._pause_automatic_queue(
+                    "Kein sicherer Ersatztitel verfügbar; manueller Eingriff erforderlich"
+                )
+            else:
+                self._show_no_safe_candidate_warning()
             return
         self._preload_in_progress = True
         self._preload_generation += 1
@@ -3248,7 +3322,10 @@ class MainController:
                     self.deck_a, self.deck_b
                 )
                 candidate = self._queue_service.next_load_candidate(
-                    self.deck_a, self.deck_b, self._auto_load_suppressed_decks
+                    self.deck_a,
+                    self.deck_b,
+                    self._auto_load_suppressed_decks,
+                    allow_empty_queue_selection=not recovery_replacement,
                 )
 
             def search_complete() -> None:
@@ -3258,6 +3335,12 @@ class MainController:
                 if assignments_changed:
                     self._refresh_queue()
                 if candidate is None:
+                    if recovery_replacement:
+                        self._pause_automatic_queue(
+                            "Kein sicherer Ersatztitel verfügbar; "
+                            "manueller Eingriff erforderlich"
+                        )
+                        return
                     self._preload_candidate_misses += 1
                     delay = self._candidate_search_backoff_seconds(self._preload_candidate_misses)
                     self._next_preload_candidate_search_at = monotonic() + delay
@@ -3356,7 +3439,13 @@ class MainController:
                             f"{track.artist} – {track.title}: {availability.reason}"
                         )
                         self._refresh_queue()
-                        self._auto_load()
+                        self._continue_after_preparation_failure(
+                            deck,
+                            entry,
+                            track,
+                            availability.code,
+                            availability.reason,
+                        )
 
                     self._publish_gui_callback(unavailable, "preload")
                     return
@@ -3411,7 +3500,13 @@ class MainController:
                         f"{track.artist} – {track.title}: Vorbereitung fehlgeschlagen"
                     )
                     self._refresh_queue()
-                    self._auto_load()
+                    self._continue_after_preparation_failure(
+                        deck,
+                        entry,
+                        track,
+                        "PREPARATION_FAILED",
+                        str(captured_error),
+                    )
 
                 self._publish_gui_callback(failed, "preload")
                 return
@@ -3587,7 +3682,58 @@ class MainController:
         title = f"{track.artist} – {track.title}" if track is not None else "Queue-Titel"
         self._view.show_queue_warning(f"{title}: Vorbereitung wegen Zeitüberschreitung beendet")
         self._refresh_queue()
-        self._auto_load()
+        self._continue_after_preparation_failure(
+            deck,
+            entry,
+            track,
+            "PREPARATION_TIMEOUT",
+            "Vorbereitung hat das Zeitlimit überschritten",
+        )
+
+    def _continue_after_preparation_failure(
+        self,
+        deck: DeckController,
+        entry: QueueEntry,
+        track: Track | None,
+        failure_code: str,
+        reason: str,
+    ) -> None:
+        """Bound rapid candidate consumption while leaving audible audio untouched."""
+        self._automatic_failure_streak += 1
+        attempt = self._automatic_failure_streak
+        stop = attempt >= self.MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES
+        self._queue_service.record_audit_event(
+            "AUTOMATIC_MEDIA_FAILURE",
+            entity_type="QUEUE",
+            entity_id=entry.queue_id,
+            details={
+                "deck_id": deck.model.deck_id,
+                "track_id": track.id if track is not None else entry.track_id,
+                "file_type": Path(track.file_path).suffix.lower() if track is not None else "",
+                "operation": "prepare",
+                "failure_code": failure_code,
+                "error_type": "PREPARATION",
+                "cause": self._safe_error_message(RuntimeError(reason)),
+                "previous_state": deck.model.state.value,
+                "attempt": attempt,
+                "maximum_attempts": self.MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES,
+                "decision": "MANUAL_FALLBACK" if stop else "SKIP_AND_LOAD_REPLACEMENT",
+            },
+        )
+        self._logger.warning(
+            "automatic.preparation_failure deck=%s track=%s code=%s attempt=%s reason=%s",
+            deck.model.deck_id,
+            track.id if track is not None else entry.track_id,
+            failure_code,
+            attempt,
+            reason,
+        )
+        if stop:
+            self._pause_automatic_queue(
+                "Mehrere Titel konnten nicht vorbereitet werden; manueller Eingriff erforderlich"
+            )
+        else:
+            self._auto_load(recovery_replacement=True)
 
     def _show_no_safe_candidate_warning(self) -> None:
         if self._queue_service.automatic_selection_stage != "NO_SAFE_CANDIDATE":
@@ -4073,6 +4219,7 @@ class MainController:
         ):
             self._drain_background_callbacks()
         queue_state_started = monotonic()
+        failed_observations: list[tuple[DeckController, str]] = []
         for deck in (self.deck_a, self.deck_b):
             previous_state = deck.model.state
             with self._performance.measure(
@@ -4082,9 +4229,18 @@ class MainController:
             ):
                 deck.update_status()
                 if self._deck_health_monitor is not None:
-                    self._deck_health_monitor.observe(deck)
+                    observation = self._deck_health_monitor.observe(deck)
+                    if (
+                        observation.health == DeckHealth.HEALTHY
+                        and deck.model.state == DeckState.PLAYING
+                    ):
+                        self._automatic_failure_streak = 0
+                    if observation.health in {DeckHealth.STALLED, DeckHealth.FAILED}:
+                        failed_observations.append((deck, observation.reason))
             if previous_state == DeckState.PLAYING and deck.model.state == DeckState.FINISHED:
                 self._schedule_finished_deck_completion(deck)
+        for deck, reason in failed_observations:
+            self._handle_runtime_deck_failure(deck, reason)
         self._publish_recovery_return_requirements()
         self._publish_emergency_dashboard()
         self._schedule_source_availability_checks()
@@ -4206,6 +4362,8 @@ class MainController:
             if self._heartbeat_watchdog_enabled:
                 self._heartbeat_watchdog.start()
             self._heartbeat.start()
+            if self.automatic_deck_loading:
+                self._view.schedule(0, self._auto_load)
             self._view.schedule(
                 self._performance_settings.gui_heartbeat_interval_ms,
                 self._heartbeat_tick,
@@ -4439,6 +4597,7 @@ class MainController:
         actual_position = deck.backend.get_position()
         if deck.backend.is_playing() and actual_position >= start_position + 0.1:
             self._one_deck_start_pending = None
+            self._automatic_failure_streak = 0
             self._logger.info(
                 "Ein-Deck-Wiedergabe auf Deck %s bei %.2f Sekunden bestätigt",
                 deck.model.deck_id,
@@ -5291,6 +5450,10 @@ class MainController:
     def _manual_override(self, reason: str) -> None:
         self._preload_generation += 1
         self._preload_in_progress = False
+        self._automatic_failure_streak = 0
+        for deck_id in self._automatic_failure_generations:
+            self._automatic_failure_generations[deck_id] += 1
+        self._automatic_recovering_decks.clear()
         if not self._automatic_run_active and not self._transition.is_transitioning:
             return
         self._queue_service.record_audit_event(
@@ -5345,6 +5508,246 @@ class MainController:
         self._view.show_queue_warning(
             f"Automatik pausiert: {reason}. Mit ▶ kann sie fortgesetzt werden."
         )
+
+    def _handle_automatic_media_failure(
+        self,
+        deck: DeckController,
+        operation: str,
+        error: Exception,
+        *,
+        failure_code: str,
+    ) -> None:
+        """Fail one queue item, free its deck and continue within a bounded budget."""
+        deck_id = deck.model.deck_id
+        if deck_id in self._automatic_recovering_decks or self._closed:
+            return
+        self._automatic_recovering_decks.add(deck_id)
+        self._automatic_failure_generations[deck_id] += 1
+        generation = self._automatic_failure_generations[deck_id]
+        self._automatic_failure_streak += 1
+        attempt = self._automatic_failure_streak
+        queue_id = self._deck_queue_ids.get(deck_id)
+        track = deck.model.loaded_track
+        previous_state = deck.model.state.value
+        if queue_id is not None:
+            entry = self._queue_service.entry(queue_id)
+            if entry is not None and entry.status not in {
+                QueueStatus.PLAYED,
+                QueueStatus.SKIPPED,
+                QueueStatus.FAILED,
+                QueueStatus.REMOVED,
+            }:
+                self._queue_service.mark_error(queue_id, failure_code)
+        if self._history is not None:
+            self._history.finish(
+                deck_id,
+                CompletionStatus.ERROR,
+                deck.model.position,
+                error_message=f"{type(error).__name__}: {error}",
+                skip_code=HistoryReasonCode.PLAYBACK_ERROR,
+            )
+        details: dict[str, object] = {
+            "deck_id": deck_id,
+            "track_id": track.id if track is not None else None,
+            "file_type": Path(track.file_path).suffix.lower() if track is not None else "",
+            "operation": operation,
+            "failure_code": failure_code,
+            "error_type": type(error).__name__,
+            "cause": self._safe_error_message(error),
+            "previous_state": previous_state,
+            "attempt": attempt,
+            "maximum_attempts": self.MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES,
+            "decision": (
+                "MANUAL_FALLBACK"
+                if attempt >= self.MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES
+                else "SKIP_AND_LOAD_REPLACEMENT"
+            ),
+        }
+        self._queue_service.record_audit_event(
+            "AUTOMATIC_MEDIA_FAILURE",
+            entity_type="QUEUE",
+            entity_id=queue_id,
+            details=details,
+        )
+        self._logger.warning("automatic.media_failure details=%s", details)
+        cleanup_started = monotonic()
+        cleanup = deck.detach_for_cleanup()
+        self._deck_queue_ids[deck_id] = None
+        self._view.show_deck_cover(deck_id, None)
+        self._view.show_deck(deck.model)
+        title = track.title if track is not None else "Unbekannter Titel"
+        self._view.show_queue_warning(
+            f"Deck {deck_id}: Wiedergabeaktion für {title} fehlgeschlagen und übersprungen; "
+            + (
+                "manueller Eingriff erforderlich."
+                if attempt >= self.MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES
+                else "DeckRelay bereitet einen Ersatztitel vor."
+            )
+        )
+
+        def cleanup_worker() -> None:
+            cleanup_error: Exception | None = None
+            try:
+                cleanup()
+            except Exception as exc:
+                cleanup_error = exc
+
+            def finish_cleanup() -> None:
+                if generation != self._automatic_failure_generations[deck_id] or self._closed:
+                    self._logger.info(
+                        "automatic.recovery_stale deck=%s generation=%s", deck_id, generation
+                    )
+                    self._queue_service.record_audit_event(
+                        "AUTOMATIC_RECOVERY_STALE_RESULT",
+                        details={"deck_id": deck_id, "generation": generation},
+                    )
+                    return
+                self._automatic_recovering_decks.discard(deck_id)
+                duration = max(0.0, monotonic() - cleanup_started)
+                if cleanup_error is not None:
+                    self._emergency_state.set_deck_health(
+                        deck_id, DeckHealth.FAILED, "Deck konnte nicht zurückgesetzt werden"
+                    )
+                    self._pause_automatic_queue(
+                        f"Deck {deck_id} konnte nicht sicher zurückgesetzt werden"
+                    )
+                    decision = "MANUAL_FALLBACK"
+                else:
+                    self._mark_deck_reusable(deck_id, "Deck nach Titelfehler wieder verwendbar")
+                    decision = (
+                        "MANUAL_FALLBACK"
+                        if attempt >= self.MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES
+                        else "LOAD_REPLACEMENT"
+                    )
+                    if attempt >= self.MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES:
+                        self._pause_automatic_queue(
+                            "Mehrere Titel konnten nicht geladen oder gestartet werden"
+                        )
+                    else:
+                        self._auto_load_suppressed_decks.discard(deck_id)
+                        self._refresh_queue()
+                        self._auto_load()
+                        if not self._preload_in_progress and not any(
+                            item.model.loaded_track is not None
+                            or item.model.state == DeckState.PLAYING
+                            for item in (self.deck_a, self.deck_b)
+                        ):
+                            self._pause_automatic_queue("Kein Ersatztitel verfügbar")
+                self._queue_service.record_audit_event(
+                    "AUTOMATIC_DECK_RECOVERY_FINISHED",
+                    details={
+                        "deck_id": deck_id,
+                        "success": cleanup_error is None,
+                        "decision": decision,
+                        "previous_state": previous_state,
+                        "following_state": (
+                            DeckState.ERROR.value
+                            if cleanup_error is not None
+                            else DeckState.EMPTY.value
+                        ),
+                        "duration_seconds": round(duration, 3),
+                    },
+                )
+                self._publish_emergency_dashboard(force=True)
+
+            self._publish_gui_callback(finish_cleanup, "automatic_media_recovery")
+
+        Thread(
+            target=cleanup_worker,
+            name=f"automatic-media-recovery-{deck_id}",
+            daemon=True,
+        ).start()
+
+    def _handle_runtime_deck_failure(self, deck: DeckController, reason: str) -> None:
+        """Route a confirmed runtime failure through the existing isolated recovery."""
+        deck_id = deck.model.deck_id
+        if (
+            not self._automatic_run_active
+            or deck_id in self._automatic_recovering_decks
+            or deck.model.loaded_track is None
+            or self._closed
+        ):
+            return
+        self._automatic_recovering_decks.add(deck_id)
+        self._automatic_failure_generations[deck_id] += 1
+        queue_id = self._deck_queue_ids.get(deck_id)
+        if queue_id is not None:
+            entry = self._queue_service.entry(queue_id)
+            if entry is not None and entry.status not in {
+                QueueStatus.PLAYED,
+                QueueStatus.SKIPPED,
+                QueueStatus.FAILED,
+                QueueStatus.REMOVED,
+            }:
+                self._queue_service.mark_error(queue_id, "PLAYBACK_ABORTED")
+        if self._history is not None:
+            self._history.finish(
+                deck_id,
+                CompletionStatus.ERROR,
+                deck.model.position,
+                error_message=reason,
+                skip_code=HistoryReasonCode.PLAYBACK_ERROR,
+            )
+        self._deck_queue_ids[deck_id] = None
+        other = self.deck_b if deck is self.deck_a else self.deck_a
+        if other.model.state == DeckState.PLAYING:
+            self.enter_one_deck_mode(other.model.deck_id, f"Deck {deck_id} ausgefallen")
+        self._queue_service.record_audit_event(
+            "AUTOMATIC_RUNTIME_FAILURE",
+            entity_type="QUEUE",
+            entity_id=queue_id,
+            details={
+                "deck_id": deck_id,
+                "track_id": deck.model.loaded_track.id,
+                "file_type": Path(deck.model.loaded_track.file_path).suffix.lower(),
+                "operation": "runtime_playback",
+                "failure_code": "PLAYBACK_ABORTED",
+                "decision": "ISOLATED_BACKEND_RECOVERY",
+                "previous_state": deck.model.state.value,
+                "cause": self._safe_error_message(RuntimeError(reason)),
+            },
+        )
+        if not self.start_deck_recovery_action(
+            deck_id, AudioRecoveryPolicy.SKIP_TRACK, automatic=True
+        ):
+            self._automatic_recovering_decks.discard(deck_id)
+            self._pause_automatic_queue(f"Deck {deck_id} benötigt manuellen Eingriff")
+
+    def _finish_automatic_deck_recovery(self, deck_id: str, *, failed: bool = False) -> None:
+        self._automatic_recovering_decks.discard(deck_id)
+        if failed:
+            if (
+                self.deck_a.model.state != DeckState.PLAYING
+                and self.deck_b.model.state != DeckState.PLAYING
+            ):
+                self._pause_automatic_queue("Beide Decks stehen nicht sicher zur Verfügung")
+            return
+        deck = self._deck(deck_id)
+        deck.set_emergency_muted(False)
+        self._auto_load_suppressed_decks.discard(deck_id)
+        if self._one_deck_mode.snapshot().mode == AudioOperatingMode.ONE_DECK:
+            try:
+                self.return_to_two_deck_mode()
+            except RuntimeError:
+                pass
+        self._refresh_queue()
+        self._auto_load()
+
+    def _mark_deck_reusable(self, deck_id: str, reason: str) -> None:
+        self._emergency_state.set_deck_health(deck_id, DeckHealth.HEALTHY, reason)
+        snapshot = self._emergency_state.snapshot()
+        if snapshot.deck_a != DeckHealth.HEALTHY or snapshot.deck_b != DeckHealth.HEALTHY:
+            return
+        if snapshot.system in {
+            EmergencySystemState.WARNING,
+            EmergencySystemState.DEGRADED,
+            EmergencySystemState.RECOVERY_FAILED,
+        }:
+            if snapshot.system != EmergencySystemState.WARNING:
+                self._emergency_state.transition(
+                    EmergencySystemState.RECOVERING, "Decks werden normalisiert"
+                )
+            self._emergency_state.transition(EmergencySystemState.NORMAL, reason)
 
     def _resume_automatic_queue_audio(self) -> None:
         """Resume only decks paused by the explicit queue-pause operation."""

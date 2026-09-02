@@ -204,11 +204,16 @@ als fertige Titeleditor-Register dargestellt.
 - Begrenzte Recovery- und Notfallstartversuche
 - Timeouts für Erzeugung, Laden, Seek, Start, Bestätigung und Backend-Freigabe
 - Stabile, maschinenlesbare Recovery- und Timeout-Fehlercodes
+- Automatische, begrenzte Behandlung einzelner Lade-, Vorbereitungs- und
+  Wiedergabefehler ohne Unterbrechung des gesunden Decks
+- Konsistente Queue-/History-Abschlüsse, generationensichere Deckfreigabe und
+  automatisches Ersatzladen nach den bestehenden Auswahlregeln
+- Manueller Rückfall nach drei aufeinanderfolgenden Medienfehlern, bei fehlendem
+  Ersatz oder gleichzeitigem Ausfall beider Decks
 
-Der Notfallbetrieb befindet sich weiterhin im Ausbau. Noch offen sind insbesondere
-die vollständige Geräte-Recovery, eine eigene Notfallansicht, separate
-Notfallpersistenz und die ausdrücklich ausgelöste globale Backend-Neuinitialisierung
-als letzte Eskalationsstufe.
+Der titelbezogene Notfallbetrieb und die isolierte Deck-Recovery sind umgesetzt.
+Weiterhin ausdrücklich bedienergeführt bleiben die globale Geräte-/Backend-Recovery
+als letzte Eskalationsstufe sowie die Rückkehr aus einem Zustand ohne spielbares Deck.
 
 ## Unterstützte Laufzeitumgebung
 

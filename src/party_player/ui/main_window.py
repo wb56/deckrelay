@@ -1357,7 +1357,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             on_chunk=lambda duration, rows: self._record_render_chunk("queue", duration, rows),
             on_complete=lambda stats: self._record_render_complete("queue", stats),
             callback_name="queue_render_chunk",
-            is_creation=lambda index: index >= len(self._queue_rows),
+            is_creation=self._queue_row_requires_creation,
             max_create_rows=1,
             split_creation_and_bind=True,
         )
@@ -5992,6 +5992,14 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             )
             self._performance.record(operation, 1.0, 50.0)
         self._publish_layout_state()
+
+    def _queue_row_requires_creation(self, index: int) -> bool:
+        """Distinguish occupied queue slots from intentionally empty pool placeholders."""
+        return (
+            index >= len(self._queue_rows)
+            and index < len(self._queue_view_models)
+            and self._queue_view_models[index] is not None
+        )
 
     def _queue_row_callbacks(self) -> dict[str, Callable[[int], None]]:
         return {

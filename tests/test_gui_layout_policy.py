@@ -381,3 +381,15 @@ def test_queue_dispose_counts_destroyed_widgets_once() -> None:
     assert [row.dispose_count for row in rows] == [1, 1]
     assert window._queue_lifecycle_counters["destroyed_widget_count"] == 12
     assert window._render_counters["widgets_destroyed_total"] == 12
+
+
+def test_empty_queue_pool_placeholder_does_not_wait_for_widget_creation() -> None:
+    window = object.__new__(MainWindow)
+    window._queue_rows = [object(), object()]
+    window._queue_view_models = [object(), object(), None, None]
+
+    assert not window._queue_row_requires_creation(2)
+    assert not window._queue_row_requires_creation(3)
+
+    window._queue_view_models[2] = object()
+    assert window._queue_row_requires_creation(2)

@@ -14,6 +14,7 @@ from pytest import MonkeyPatch
 
 from party_player.audio.fake_backend import FakeAudioBackend
 from party_player.audio_recovery import (
+    AudioRecoveryPolicy,
     AudioRecoveryResult,
     DeckRestartAssessment,
     GlobalAudioRecoveryResult,
@@ -30,7 +31,7 @@ from party_player.database.connection import Database
 from party_player.database.migrations import migrate
 from party_player.deck_controller import DeckController
 from party_player.deck_health_monitor import DeckHealthMonitor
-from party_player.emergency_state import DeckHealth, EmergencyStateService
+from party_player.emergency_state import DeckHealth, EmergencyStateService, EmergencySystemState
 from party_player.emergency_persistence import EmergencyIncident
 from party_player.emergency_actions import EmergencyActionProfile
 from party_player.emergency_playback import EmergencyPlaybackResult
@@ -956,6 +957,23 @@ def test_manual_load_after_unconfirmed_start_allows_automatic_reactivation(
     assert not controller._auto_load_suppressed_decks
 
 
+def test_manual_load_without_queue_entry_can_restart_automatic_playback(tmp_path: Path) -> None:
+    controller, _view = build_controller(tmp_path, track_count=1)
+    controller.initialize()
+    controller.set_player_mode("manual")
+    controller.load_catalog_track(1, "B")
+
+    assert controller._queue_service.entries() == []
+    assert "Starttitel: Song" in controller.automatic_start_summary()
+    assert "Voraussichtlich spielbar: 1" in controller.automatic_start_summary()
+
+    controller.start_automatic_queue()
+
+    assert controller.player_mode == PlayerMode.AUTOMATIC
+    assert controller._automatic_run_active
+    assert controller.deck_b.model.state == DeckState.PLAYING
+
+
 def test_consecutive_unconfirmed_one_deck_tracks_do_not_loop_or_use_failed_deck(
     tmp_path: Path,
 ) -> None:
@@ -1384,6 +1402,53 @@ def test_background_candidate_search_respects_empty_result_cooldown(
     controller._auto_load_in_background()
 
     assert not controller._preload_in_progress
+
+
+def test_recovery_replacement_search_pauses_without_creating_automatic_candidates(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    controller, view = build_controller(tmp_path, background_preload=True)
+    controller.initialize()
+    controller.set_automatic_deck_loading(False)
+    controller._queue_service.add(1)
+    controller._refresh_queue()
+    controller.automatic_deck_loading = True
+    controller._automatic_run_active = True
+    calls: list[bool] = []
+
+    def no_replacement(
+        *_args: object,
+        allow_empty_queue_selection: bool = True,
+        **_kwargs: object,
+    ) -> None:
+        calls.append(allow_empty_queue_selection)
+        return None
+
+    monkeypatch.setattr(controller._queue_service, "next_load_candidate", no_replacement)
+
+    controller._auto_load_in_background(recovery_replacement=True)
+    deadline = monotonic() + 2.0
+    while controller._preload_in_progress and monotonic() < deadline:
+        controller._drain_background_callbacks()
+        sleep(0.01)
+
+    assert calls == [False]
+    assert controller.is_automatic_queue_paused()
+    assert not controller._automatic_run_active
+    assert "Kein sicherer Ersatztitel" in view.queue_warnings[-1]
+
+
+def test_recovery_replacement_pauses_when_no_waiting_entry_remains(tmp_path: Path) -> None:
+    controller, view = build_controller(tmp_path, background_preload=True)
+    controller.initialize()
+    controller._queue_entries_cache = []
+    controller._automatic_run_active = True
+
+    controller._auto_load_in_background(recovery_replacement=True)
+
+    assert controller.is_automatic_queue_paused()
+    assert not controller._automatic_run_active
+    assert "Kein sicherer Ersatztitel" in view.queue_warnings[-1]
 
 
 def test_large_playing_queue_does_not_search_when_inactive_deck_is_ready(
@@ -1955,6 +2020,38 @@ def test_background_preload_waits_for_pending_gui_startup_work(tmp_path: Path) -
         queue_rows_created=10,
     )
     controller._auto_load()
+    assert controller._preload_in_progress
+
+
+def test_first_heartbeat_retries_preload_deferred_by_startup_work(tmp_path: Path) -> None:
+    controller, view = build_controller(tmp_path, background_preload=True)
+    controller.initialize()
+    controller._callback_state.update_layout_state(
+        pending_layout_refreshes=0,
+        pending_focus_request=True,
+        pending_catalog_chunks=0,
+        pending_queue_chunks=0,
+        catalog_rows_created=0,
+        queue_rows_created=0,
+    )
+    controller.add_catalog_track_to_queue(1)
+    assert not controller._preload_in_progress
+
+    controller._callback_state.update_layout_state(
+        pending_layout_refreshes=0,
+        pending_focus_request=False,
+        pending_catalog_chunks=0,
+        pending_queue_chunks=0,
+        catalog_rows_created=1,
+        queue_rows_created=1,
+    )
+    view.scheduled.clear()
+    controller._heartbeat_tick()
+
+    retry = next(
+        callback for callback in view.scheduled if getattr(callback, "__name__", "") == "_auto_load"
+    )
+    retry()
     assert controller._preload_in_progress
 
 
@@ -2926,6 +3023,256 @@ def test_automatic_deck_error_uses_non_blocking_queue_warning(
     assert view.queue_warnings
     assert "Wiedergabeaktion" in view.queue_warnings[-1]
     assert not view.errors
+
+
+@pytest.mark.parametrize("deck_id", ("A", "B"))
+def test_automatic_start_failure_frees_deck_and_keeps_other_deck_playing(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    deck_id: str,
+) -> None:
+    controller, view = build_controller(tmp_path, track_count=3, with_history=True)
+    controller.initialize()
+    for track_id in range(1, 4):
+        controller.add_catalog_track_to_queue(track_id)
+    failed = controller._deck(deck_id)
+    other = controller.deck_b if failed is controller.deck_a else controller.deck_a
+    other.play()
+    other_queue_id = controller._deck_queue_ids[other.model.deck_id]
+    assert other_queue_id is not None
+    controller._queue_service.mark_playing(other_queue_id)
+    failed_queue_id = controller._deck_queue_ids[deck_id]
+    assert failed_queue_id is not None
+    controller._automatic_run_active = True
+
+    def fail() -> None:
+        raise RuntimeError("decoder rejected media")
+
+    monkeypatch.setattr(failed.backend, "play", fail)
+    controller.deck_action(deck_id, "play", automatic=True)
+    deadline = monotonic() + 2.0
+    while deck_id in controller._automatic_recovering_decks and monotonic() < deadline:
+        controller._drain_background_callbacks()
+        sleep(0.01)
+
+    entry = controller._queue_service.entry(failed_queue_id)
+    assert entry is not None
+    assert entry.status == QueueStatus.FAILED
+    assert entry.failure_code == "AUTOMATIC_PLAYBACK_COMMAND_FAILED"
+    assert other.model.state == DeckState.PLAYING
+    assert other.backend.is_playing()
+    assert failed.model.loaded_track is not None
+    assert failed.model.loaded_track.id == 3
+    assert controller._automatic_run_active
+    assert "Ersatztitel" in view.queue_warnings[-1]
+
+
+def test_three_consecutive_automatic_failures_pause_without_consuming_forever(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, view = build_controller(tmp_path, track_count=5)
+    controller.initialize()
+    for track_id in range(1, 6):
+        controller.add_catalog_track_to_queue(track_id)
+    controller._automatic_run_active = True
+
+    for _attempt in range(controller.MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES):
+        deck = next(
+            item
+            for item in (controller.deck_a, controller.deck_b)
+            if item.model.loaded_track is not None and item.model.state == DeckState.LOADED
+        )
+
+        def fail() -> None:
+            raise RuntimeError("broken media")
+
+        monkeypatch.setattr(deck.backend, "play", fail)
+        controller.deck_action(deck.model.deck_id, "play", automatic=True)
+        deadline = monotonic() + 2.0
+        while (
+            deck.model.deck_id in controller._automatic_recovering_decks and monotonic() < deadline
+        ):
+            controller._drain_background_callbacks()
+            sleep(0.01)
+
+    entries = controller._queue_service.entries()
+    assert len([entry for entry in entries if entry.status == QueueStatus.FAILED]) == 3
+    assert (
+        len(
+            [entry for entry in entries if entry.status in {QueueStatus.WAITING, QueueStatus.READY}]
+        )
+        == 2
+    )
+    assert controller.is_automatic_queue_paused()
+    assert not controller._automatic_run_active
+    assert "manueller Eingriff" in view.queue_warnings[-2]
+
+
+def test_manual_load_invalidates_late_automatic_cleanup(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, _view = build_controller(tmp_path, track_count=2)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller._automatic_run_active = True
+    release = Event()
+    original_stop = controller.deck_a.backend.stop
+
+    def delayed_stop() -> None:
+        release.wait(1.0)
+        original_stop()
+
+    monkeypatch.setattr(controller.deck_a.backend, "stop", delayed_stop)
+
+    def fail() -> None:
+        raise RuntimeError("broken media")
+
+    monkeypatch.setattr(controller.deck_a.backend, "play", fail)
+    controller.deck_action("A", "play", automatic=True)
+    controller._emergency_state.set_deck_health("A", DeckHealth.FAILED, "Testfehler")
+    controller._emergency_state.transition(EmergencySystemState.DEGRADED, "Testfehler")
+    controller.load_catalog_track(2, "A")
+    release.set()
+    sleep(0.02)
+    controller._drain_background_callbacks()
+
+    assert controller.deck_a.model.loaded_track is not None
+    assert controller.deck_a.model.loaded_track.id == 2
+    assert not controller._automatic_run_active
+    assert not controller._preload_in_progress
+    assert controller.emergency_snapshot().deck_a == DeckHealth.HEALTHY
+    assert controller.emergency_snapshot().system == EmergencySystemState.NORMAL
+
+
+def test_confirmed_runtime_failure_uses_existing_isolated_recovery(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, _view = build_controller(tmp_path, track_count=2, with_history=True)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller.add_catalog_track_to_queue(2)
+    controller.deck_a.play()
+    controller.deck_b.play()
+    queue_a = controller._deck_queue_ids["A"]
+    queue_b = controller._deck_queue_ids["B"]
+    assert queue_a is not None and queue_b is not None
+    controller._queue_service.mark_playing(queue_a)
+    controller._queue_service.mark_playing(queue_b)
+    controller._automatic_run_active = True
+    requested: list[tuple[str, AudioRecoveryPolicy, bool]] = []
+
+    def request(
+        deck_id: str,
+        policy: AudioRecoveryPolicy = AudioRecoveryPolicy.RESUME_POSITION,
+        *,
+        automatic: bool = False,
+    ) -> bool:
+        requested.append((deck_id, policy, automatic))
+        return True
+
+    monkeypatch.setattr(controller, "start_deck_recovery_action", request)
+    controller._handle_runtime_deck_failure(controller.deck_a, "Backend meldet ERROR")
+
+    assert requested == [("A", AudioRecoveryPolicy.SKIP_TRACK, True)]
+    failed = controller._queue_service.entry(queue_a)
+    assert failed is not None and failed.status == QueueStatus.FAILED
+    assert failed.failure_code == "PLAYBACK_ABORTED"
+    assert controller.deck_b.model.state == DeckState.PLAYING
+    assert controller.deck_b.backend.is_playing()
+    assert controller.audio_operating_mode().mode == AudioOperatingMode.ONE_DECK
+
+
+def test_second_simultaneous_runtime_failure_falls_back_to_manual_state(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, view = build_controller(tmp_path, track_count=2)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller.add_catalog_track_to_queue(2)
+    controller.deck_a.play()
+    controller.deck_b.play()
+    controller._automatic_run_active = True
+    calls = 0
+
+    def request(
+        _deck_id: str,
+        _policy: AudioRecoveryPolicy = AudioRecoveryPolicy.RESUME_POSITION,
+        *,
+        automatic: bool = False,
+    ) -> bool:
+        nonlocal calls
+        assert automatic
+        calls += 1
+        return calls == 1
+
+    monkeypatch.setattr(controller, "start_deck_recovery_action", request)
+    controller._handle_runtime_deck_failure(controller.deck_a, "Deck A ausgefallen")
+    controller._handle_runtime_deck_failure(controller.deck_b, "Deck B ausgefallen")
+
+    assert calls == 2
+    assert controller.is_automatic_queue_paused()
+    assert not controller._automatic_run_active
+    assert "manuellen Eingriff" in view.queue_warnings[-1]
+
+
+def test_shutdown_invalidates_pending_automatic_cleanup(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, _view = build_controller(tmp_path)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller._automatic_run_active = True
+    release = Event()
+    original_stop = controller.deck_a.backend.stop
+
+    def delayed_stop() -> None:
+        release.wait(1.0)
+        original_stop()
+
+    def fail() -> None:
+        raise RuntimeError("broken media")
+
+    monkeypatch.setattr(controller.deck_a.backend, "stop", delayed_stop)
+    monkeypatch.setattr(controller.deck_a.backend, "play", fail)
+    controller.deck_action("A", "play", automatic=True)
+    generation = controller._automatic_failure_generations["A"]
+
+    controller.close()
+    release.set()
+
+    assert controller._closed
+    assert controller._automatic_failure_generations["A"] > generation
+    assert not controller._automatic_recovering_decks
+
+
+def test_failed_only_track_falls_back_to_stable_paused_automatic_state(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, view = build_controller(tmp_path)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller._automatic_run_active = True
+
+    def fail() -> None:
+        raise RuntimeError("broken media")
+
+    monkeypatch.setattr(controller.deck_a.backend, "play", fail)
+    controller.deck_action("A", "play", automatic=True)
+    deadline = monotonic() + 2.0
+    while controller._automatic_recovering_decks and monotonic() < deadline:
+        controller._drain_background_callbacks()
+        sleep(0.01)
+
+    assert controller.is_automatic_queue_paused()
+    assert not controller._automatic_run_active
+    assert controller.deck_a.model.loaded_track is None
+    assert "Kein Ersatztitel" in view.queue_warnings[-1]
 
 
 def test_explicit_eject_leaves_deck_empty_even_with_waiting_queue(tmp_path: Path) -> None:
