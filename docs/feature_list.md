@@ -1,235 +1,248 @@
-# DeckRelay – Feature-Liste
+# DeckRelay – verbindlicher Funktionsumfang
 
-Stand: Vorbereitung DeckRelay 2.0.0-beta.1
+Stand: 3. September 2026, Planung für DeckRelay 2.0 nach Bestandsaufnahme
 
-DeckRelay ist eine eigenständige Windows-Anwendung für Musiksuche,
-Veranstaltungsqueues, Zwei-Deck-Wiedergabe, automatische Übergänge sowie Jingles,
-Ansagen und Effekte. Musikdateien und ihre Tags werden nicht verändert; eigene
-Anwendungsdaten liegen in einer SQLite-Datenbank.
+Dieses Dokument ist die verbindliche Abgrenzung des Funktionsumfangs für DeckRelay
+2.0, 2.1 und 3.0. Historische Phasen-, Beta- und Abnahmedokumente bleiben als
+Zeitaufnahmen erhalten; bei Aussagen zum heutigen Planungsstand hat diese Liste
+Vorrang.
 
-## Musikbibliothek und Suche
+Zuverlässige Wiedergabe ist keine aufschiebbare Komfortfunktion. Fehler wie ein nicht
+mehr ladendes Deck, eine nicht reaktivierbare Automatik, Audioaussetzer oder unklare
+Betriebszustände müssen vor einer stabilen Freigabe behoben sein. Der inzwischen in der
+2.0-Entwicklung entstandene Notfall- und Recovery-Unterbau wird deshalb als notwendige
+Stabilitätsbasis behandelt und nicht als Grund, bekannte Wiedergabefehler auf eine
+spätere Version zu verschieben.
 
-- Import und Verwaltung großer MP3- und FLAC-Kataloge
-- Suche nach Titel, Interpret, Album, Genre und weiteren Katalogdaten
-- Seitennavigation und ressourcenschonendes Lazy Loading
-- Detailansicht für Katalogtitel
-- Erkennung nicht verfügbarer, beschädigter oder ungeeigneter Dateien
-- Gesonderte Behandlung lokaler Dateien und Netzwerkpfade/NAS
-- Coveranzeige mit Hintergrundverarbeitung und Cache
-- Keine Änderungen an Musikdateien oder eingebetteten Tags
+## Verbindliche Versionsgrenze
 
-## Party-Queue und Playlists
+| Version | Verbindlicher Umfang |
+| --- | --- |
+| 2.0 | Vorhandenen Wiedergabe-, Notfall-, Cue-, Lautheits- und GUI-Unterbau real abnehmen; verständliche regelbasierte Musik- und Queue-Planung vervollständigen; Session-Historie und belastbare Wiederaufnahme nach Absturz vervollständigen; anschließend Release- und Langzeitfreigabe. |
+| 2.1 oder später | Betriebsprofile, Veranstaltungscheck und Konfigurationssicherheit sowie die vollständige erweiterte Wunsch- und Queue-Bedienung. Vorhandene technische Grundlagen dafür dürfen früher bestehen, machen den Produktbereich aber noch nicht fertig. |
+| 3.0 | Beatmatching, Beatgrid und tonhöhenerhaltendes Time-Stretching. Ferner nur nach eigener Produktentscheidung: mehr als zwei Decks, Netzwerk-/Web-Fernsteuerung, Aufnahme, Streaming, DMX, Online-Musikdienste, KI-Empfehlungen und eine allgemeine Plugin-Schnittstelle. |
 
-- Titel aus Katalog und Playlists zur aktuellen Party-Queue hinzufügen
-- Einträge entfernen, verschieben, priorisieren, sperren und mischen
-- Gastwünsche mit eigener Priorität und Wunschzähler
-- Queue ersetzen oder neue Titel kontrolliert anhängen
-- Queue beziehungsweise Playlist speichern und später wieder laden
-- Vollständige Alben und Playlists exakt in gespeicherter Reihenfolge abspielen
-- Eigene Cue-Snapshots pro Veranstaltung oder Playlist
-- Effektive Restzeit wahlweise anhand der Cue-Grenzen berechnen
-- Wiederhergestellte Einträge sichtbar kennzeichnen
-- Zustände wie wartend, vorbereitet, laufend, gespielt, übersprungen und fehlerhaft
-- Nachvollziehbare Gründe und Wiederholungsaktionen für übersprungene Titel
+## Die fünf Schwerpunkte von DeckRelay 2.0
 
-## Automatische Titelauswahl
+### 1. Notfallbetrieb und Wiederherstellung
 
-- Start ab erstem wartenden oder bewusst ausgewähltem Queue-Eintrag
-- Vorschau von Starttitel, spielbaren Titeln und erwarteten Sperren
-- Track- und Interpreten-Wiederholungsschutz
-- Übersteuerbarer Wiederholungsschutz für vollständige Album-/Playlist-Wiedergabe
-- Berücksichtigung von Priorität, Gastwünschen, Dateiverfügbarkeit und Eignung
-- Sichere Behandlung leerer Queues, Kurztitel und nicht spielbarer Kandidaten
-- Explizite Zustände für bereit, laufend, Übergang, pausiert und beendet
-- Pause und Fortsetzung nach manuellen Eingriffen ohne verlorene Queue-Einträge
-- Reguläres Queue-Ende erst nach dem letzten tatsächlich spielbaren Titel
-- Strukturierte Audit-Ereignisse für Start, Pause, Skips, Übersteuerungen und Ende
+Vorhanden:
 
-## Zwei Decks und Mixer
+- Deck- und System-Gesundheitszustände, Stall- und Fehlererkennung;
+- lokale, vorab validierte Notfallplaylist sowie sichere Übergabe;
+- isolierte Reparatur eines Deck-Backends ohne Stopp des gesunden Decks;
+- Recovery-Strategien für Fortsetzen, Neustart, Überspringen und Notfalltitel;
+- Ein-Deck-Betrieb, begrenzte automatische Ersatzwahl und manueller Rückfall;
+- getrennte Sicherheits-Mutes, einschließlich Emergency und Panic;
+- verständliche Recovery-Zustände, Fehlercodes, Audit- und Diagnoseinformationen;
+- bedienergeführte globale Geräte-/Backend-Recovery als letzte Eskalationsstufe.
 
-- Unabhängige Decks A und B
-- Laden, Play, Pause, Fortsetzen, Stop, Seek und Eject
-- Decklautstärke, Masterlautstärke und Crossfader
-- Automatische und manuelle Crossfades
-- Eigene Deckfarben und gut sichtbarer ON-AIR-Status
-- Programmatische Crossfaderbewegungen von echten Benutzereingriffen getrennt
-- Totzone gegen versehentliche minimale Crossfaderbewegungen
-- Gleichzeitige Wiedergabe und getrennte Pegelsteuerung beider Decks
-- Ausblendung, Einblendung und sichere Fallbacks am natürlichen Titelende
+Für 2.0 noch erforderlich:
 
-## Cue-Punkte und Übergänge
+- reale Langzeit- und Veranstaltungsabnahme der automatischen Fehlererkennung,
+  isolierten Recovery, Notfallübergabe und Rückkehr zur Automatik;
+- reale Abnahme von USB-/Audiogeräteverlust und der ausdrücklich bedienergeführten
+  globalen Recovery;
+- Freigabe darf keine bekannte reproduzierbare Wiedergabeunterbrechung offenlassen.
 
-- Manuelles Cue In und Cue Out
-- Titelbezogene Überblenddauer
-- Queue-/veranstaltungsbezogene Cue-Überschreibungen
-- Prioritätsauflösung aus Queue-Snapshot, Titelwert, Analyse und Dateigrenze
-- Cue-Editor mit aktueller Position, Zurücksetzen und Validierung
-- Getrennte Vorschau für Cue In, Cue Out und Fade Out
-- Sicherer Vorschauplayer ohne Einfluss auf Queue, History oder On-Air-Decks
-- Automatische Stille- und Signalgrenzenerkennung mit FFmpeg/FFprobe
-- Analyse von Anfang und Ende statt vollständiger Audiodatei
-- Konfidenz, Analysequelle, Version und technische Pegel
-- Vorschläge übernehmen, korrigieren oder verwerfen
-- Stapelanalyse mit Fortschritt, Abbruch und Fehlerbehandlung
-- Sichere Fallbacks bei überschrittenem oder ungeeignetem Cue Out
+### 2. Lautheitsanalyse und Cue-Punkte
 
-## Lautheit und Clip-Schutz
+Vorhanden:
 
-- ReplayGain-Auswertung für unterstützte MP3-/FLAC-Metadaten
-- Manuelle Gain-Korrektur pro Titel
-- Hintergrundanalyse über vorhandene Analysewerkzeuge
-- Quellenanzeige für native, analysierte und manuelle Werte
-- Peak- und True-Peak-basierte Begrenzung
-- Konfigurierbarer Headroom und Zielpegel
-- Laufzeit-Clip-Schutz, sofern vom Backend unterstützt
-- Geglättete Pegeländerungen ohne sprunghafte Lautstärkewechsel
-- Unabhängige Normalisierung beider Decks während Crossfades
-- Keine Rückschreibung von Lautheitswerten in Quelldateien
+- ReplayGain-Auswertung, eigene Lautheitsanalyse, Datenbankpersistenz, Zielpegel,
+  Headroom, Peak-/True-Peak-Schutz und manuelle Korrektur;
+- Hintergrund- und Stapelanalyse sowie Anzeige von Analysequelle und -zustand;
+- automatische Signal-/Stillegrenzen, manuelle und persistente Cue In/Cue Out,
+  titel- und queuebezogene Fade-Dauer sowie wirksame Cue-Snapshots;
+- Cue- und Übergangsvorschau ohne Eingriff in Queue, History oder On-Air-Decks;
+- sichere Behandlung kurzer Titel und Warnungen bei ungeeigneten Grenzen;
+- kontextbezogene Tempoanalyse als Planungsmetadatum, ausdrücklich ohne
+  Beat-Synchronisierung.
 
-## Equalizer
+Für 2.0 noch erforderlich:
 
-- Unabhängiger Equalizer pro Deck
-- Mitgelieferte Presets wie Neutral, Rock, Pop, Bluesrock und Dance
-- Benutzerdefinierte Presets und dynamische VLC-Frequenzbänder
-- Preamp-Schutz gegen vorhersehbares Clipping
-- Die Presets Rock, Pop, Bluesrock und Dance verwenden einen Sicherheits-Preamp
-  von `-3 dB`. Dadurch kann die Wiedergabe trotz unveränderter Lautstärkeregler
-  hörbar leiser wirken.
-- Auflösungsreihenfolge: Titel, Playlist/Queue, Genre, globaler Standard
-- Temporäre Vorschau sowie dauerhafte Zuweisungen
-- Presets kopieren, speichern, umbenennen und löschen
-- Kompakte EQ-Anzeige direkt am Deck
-- Unterschiedliche Presets gleichzeitig auf Deck A und B
-- Keine EQ-Neuberechnung innerhalb zeitkritischer Crossfade-Ticks
+- reale Hörabnahme von Lautheit, Clip-Schutz, Cue-Grenzen und Crossfades mit
+  repräsentativem MP3-/FLAC-Material;
+- Langzeitabnahme der Hintergrundanalyse und der unabhängigen Normalisierung beider
+  Decks;
+- individuelle Fade-Kurven sowie eine ausdrücklich unterschiedliche Lautheitsbehandlung
+  von Musik, Jingles und Sprache sind nicht als vollständige Funktionen belegt und für
+  2.0 noch zu entwickeln.
 
-## Jingles, Ansagen und Effekte
+### 3. Regelbasierte Musikauswahl und Queue-Planung
 
-- Dritter, von Deck A und B unabhängiger Overlay-Audiokanal
-- Jingles, Ansagen und Effekte getrennt vom Musikkatalog und der Musikhistory
-- Start, Ausfaden, Stop und Wechsel eines laufenden Overlays
-- Konfigurierbare Lautstärke, Fade In und Fade Out
-- Optionales Ducking der Musik mit Attack und Release
-- Ducking wirkt konsistent auf beide Decks, auch während Crossfades
-- Sechs persistente Soundboard-Favoriten
-- Tastenkürzel `Strg+1` bis `Strg+6`
-- Overlay-Verwaltung mit Datei, Kategorie, Favorit und Wiedergabeeinstellungen
-- Vorbereitung im Hintergrund und begrenzter Favoritencache
-- Getrennte Overlay-History und Diagnosewerte
-- Fehlende Dateien oder Wiedergabefehler stoppen nicht die Musik
+Vorhanden:
 
-## Titel-Editor
+- deterministische, GUI-unabhängige Auswahlregeln und strukturierte Ablehnungsgründe;
+- Titel-/Interpretensperren, Titel- und Interpreten-Wiederholungsschutz;
+- Prüfung von Dateiverfügbarkeit, Metadaten, Eignung und Kurztiteln;
+- unterschiedliche Queue-Quellen einschließlich manuell, Gastwunsch, automatisch,
+  Playlist und Notfall; Verzeichnisimporte werden derzeit als Playlistquelle
+  normalisiert;
+- Prioritäten, sichere Regelentspannung, Abbruch bei fehlendem Kandidaten sowie
+  Berücksichtigung bisheriger Spielhäufigkeit;
+- gespeicherte BPM-, Genre-, Stimmungs-, Energie- und Bewertungsmetadaten als Grundlage;
+- Queue-Zustände, Skip-/Fehlergründe, Audit-Ereignisse und gespeicherte Queues.
 
-- Zentraler Dialog „Titel bearbeiten“
-- Register für Cue, Lautheit und Metadaten
-- Vollständig implementierter Cue-Bereich
-- Separater Vorschauplayer für Cue In, Cue Out und Fade ohne Einfluss auf Queue,
-  History oder On-Air-Decks
-- Direkte Lautheitsanalyse mit Status und gespeichertem Ergebnis
-- Bearbeitung typisierter Metadaten und bewusste Entscheidungen über Vorschläge
-- Schreibgeschützte technische Audiodaten zu Codec, Container, Bitrate, CBR/VBR,
-  Abtastrate, Bittiefe, Kanälen, Dauer, Profil und Encoder
-- Anzeige von Titel, Interpret, Album, Jahr und Dateipfad
-- Lokales Änderungsmodell: Speicherung erst nach ausdrücklichem Speichern
-- Asynchrone Persistenz ohne Datenbankarbeit im GUI-Thread
-- Schutz gegen Doppelklick und verspätete Worker-Ergebnisse
-- Inkrementelle Aktualisierung nur betroffener Katalog- und Queuezeilen
-- Speichern hält den Dialog für weitere Bearbeitung geöffnet
+Für 2.0 noch zu entwickeln:
 
-Equalizer- und Jingle-Verwaltung bleiben eigenständige Bedienbereiche und werden nicht
-als fertige Titeleditor-Register dargestellt.
+- bedienbar einstellbarer Interpretabstand statt nur technischer Sperrgrundlage;
+- verständliche optionale Regeln für Genrefolgen, Tempo, Stimmung und Energie;
+- nachvollziehbare Gewichtung nach Bewertung beziehungsweise Beliebtheit;
+- eindeutige Produktlogik und Anzeige für Pflicht-, Wunsch- und Automatiktitel;
+- Vorschau der nächsten automatisch geplanten Titel;
+- sichtbare Auswahlbegründung und verständliche Erklärung übersprungener Kandidaten;
+- Regeln müssen optional, deterministisch und erklärbar bleiben; ein
+  undurchschaubares KI-System ist ausdrücklich nicht Teil von 2.0.
 
-## Kontextbezogene Tempoanalyse
+### 4. Zustandsabhängige Oberfläche
 
-- Produktiver Stand `ffmpeg-onset-acf-v0.5` mit `tempo-profile-v3`
-- Getrennte Ergebnisse für Vollaufnahme, wirksamen Cue-Bereich und Playlistkontext
-- Halb-/Doppeltempo als gemeinsame Tempofamilie, ohne unzulässige Drittelpulsumrechnung
-- Getrennte Aggregatkonfidenz und Rhythmusstabilität
-- Diagnose der tatsächlichen Analysefenster, Rohkandidaten und Aggregationsbeiträge
-- Automatische Planung nur bei hinreichend sicherem und stabilem Ergebnis
-- Reale Abnahme mit CBR-MP3, VBR-MP3 und FLAC in sechs musikalischen Kategorien
+Vorhanden:
 
-## Session, Einstellungen und Datenhaltung
+- große und kompakte Darstellung sowie getrennte Arbeitsbereiche für Livebetrieb und
+  Vorbereitung;
+- sichtbare Deck-, On-Air-, Queue-, Automatik-, Recovery- und Notfallzustände;
+- responsive, arbeitsbereichsabhängige Fenster- und Dialoggeometrie;
+- Hauptquelle, Queue-Herkunft, nächster Titel, Warnungen und Bedienhinweise;
+- GUI-Dispatcher, Heartbeat, begrenzte Zeilen-/Workerpfade und inkrementelle
+  Aktualisierungen.
 
-- SQLite-Datenbank mit versionierten Migrationen
-- Wiederherstellung der letzten Session und Queue
-- Persistente Mixer-, Queue-, Analyse-, EQ- und Overlay-Einstellungen
-- Gespeicherte Queue-/Playlist-Zuordnungen und Cue-Snapshots
-- Wiedergabehistorie mit tatsächlicher Laufzeit und Abschlussgrund
-- Fehler-, Skip- und Abbruchgründe in History und Auditdaten
-- Kontrollierte Behandlung verzögerter oder fehlgeschlagener Datenbankschreibvorgänge
-- Serielle, idempotente Hintergrundpersistenz für zeitkritische Übergänge
+Für 2.0 noch erforderlich:
 
-## Oberfläche und Bedienung
+- abschließende reale Prüfung, dass Queue, Playlist, Verzeichnis, automatische Auswahl
+  und Notfallbetrieb jederzeit eindeutig und widerspruchsfrei als aktive Quelle
+  erscheinen;
+- reale Prüfung zustandsabhängiger Bedienbarkeit, Tastaturfokus und konkreter
+  Handlungsempfehlungen in Normal-, Ein-Deck-, Recovery- und Fehlerzuständen;
+- Freigabematrix für die drei vorgesehenen Windows-Auflösungs-/Skalierungsumgebungen
+  einschließlich Wechsel zwischen Monitoren und Arbeitsbereichen.
 
-- Moderne Dark-DJ-Oberfläche mit getrennten Akzenten für Deck A und B
-- Vollbildmodus und optionaler Vollbildstart
-- Anpassung an kleinere Fenster und unterschiedliche Windows-Skalierungen
-- Tastaturbedienung, Fokusführung und sichtbarer Tastaturfokus
-- Tooltips für kompakte Symbolschaltflächen
-- Klare Leerzustände für Katalog, Queue und Decks
-- Deutsche Deck-, Automatik-, Cue-, EQ- und Overlayzustände
-- Kontextbezogene Hilfe für Queue, Automatik und Übergangsfälle
-- Produktionsmodus mit reduzierter Diagnostik
+### 5. Session-Historie und Wiederaufnahme nach Absturz
 
-## Diagnose und Performance
+Vorhanden:
 
-- Speichervorgang für strukturierte Diagnoseberichte
-- Szenarien für Leerlauf, Wiedergabe, Crossfade, Queue-Stress, NAS und Datenbanklast
-- GUI-Heartbeat und unabhängiger Watchdog
-- Automatische Thread-Dumps bei kritischen GUI-Verzögerungen
-- Messwerte für Rendering, Preload, Crossfade, Datenbank und Worker
-- Speicherüberwachung mit RSS und optionalem `tracemalloc`
-- Begrenzte Worker, Callback-Queues, Caches, Logs und Diagnosehistorien
-- Virtualisierte beziehungsweise wiederverwendete Katalog- und Queuezeilen
-- Change Detection zur Vermeidung unveränderter Widgetaktualisierungen
-- Hintergrundverarbeitung für Cover, Analyse, Preload und Persistenz
-- Belastungstest mit künstlich verzögerter SQLite-Persistenz
+- persistente Veranstaltungssessions mit Status und ausgewählter Playlist;
+- Wiederherstellung einer unvollendeten Session beziehungsweise Übernahme ihrer noch
+  offenen Queue in eine neue Session;
+- persistierte Queue-Zustände und Kennzeichnung wiederhergestellter Einträge;
+- Wiedergabeverlauf mit Start, Ende, Laufzeit, Deck und Abschlussstatus;
+- persistente Unterscheidung gespielt, teilweise gespielt, übersprungen, fehlgeschlagen
+  und abgebrochen; Stopp und Fehler werden auf diese stabilen Abschlussklassen
+  abgebildet;
+- Audit-Ereignisse für zahlreiche manuelle, automatische und Recovery-Eingriffe.
 
-## Audio-Robustheit und Notfallbetrieb
+Für 2.0 noch zu entwickeln:
 
-- Getrennte System- und Deck-Gesundheitszustände
-- Stall-Erkennung anhand echten Positionsfortschritts
-- Unterschiedliche Grenzwerte für lokale und Netzwerkdateien
-- Erkennung wiederholter Backendbefehlsfehler und fehlender Audiogeräte
-- Deck-, Master-, Emergency- und Panic-Mute als getrennte Sicherheitsfaktoren
-- Lokale, vorab validierte Notfallplaylist
-- `SAFE_HANDOVER`: Notfalltitel erst stumm starten und bestätigen, dann übergeben
-- Notfallwiedergabe auf einem gesunden Deck vor isolierter Reparatur
-- Isolierter Austausch nur des defekten Deck-Backends
-- Wiederherstellung von Titel, Cue, Position und Lautheitsfaktor
-- Recovery-Richtlinien: Position fortsetzen, Titel neu starten, überspringen oder
-  lokalen Notfalltitel laden
-- Ein-Deck-Betrieb mit gesperrtem Crossfade und sequenziellen kurzen Blenden
-- Rückkehr zum Zwei-Deck-Betrieb nur mit zwei gesunden Decks und ohne aktive Recovery
-- Begrenzte Recovery- und Notfallstartversuche
-- Timeouts für Erzeugung, Laden, Seek, Start, Bestätigung und Backend-Freigabe
-- Stabile, maschinenlesbare Recovery- und Timeout-Fehlercodes
-- Automatische, begrenzte Behandlung einzelner Lade-, Vorbereitungs- und
-  Wiedergabefehler ohne Unterbrechung des gesunden Decks
-- Konsistente Queue-/History-Abschlüsse, generationensichere Deckfreigabe und
-  automatisches Ersatzladen nach den bestehenden Auswahlregeln
-- Manueller Rückfall nach drei aufeinanderfolgenden Medienfehlern, bei fehlendem
-  Ersatz oder gleichzeitigem Ausfall beider Decks
+- zusammenhängende, bedienbare Session-Historie mit vollständiger zeitlicher Sicht auf
+  Wiedergaben, Übergänge und relevante manuelle Eingriffe;
+- belastbarer Wiederaufnahmedialog und eindeutiger Bedienablauf nach unkontrolliertem
+  Programmende;
+- nachgewiesene, idempotente Wiederaufnahme von Queue, Quelle, Automatik- und
+  Übergangszustand ohne Doppelzählungen;
+- CSV-Export der Session-Historie; Excel-Unterstützung nur ohne neue problematische
+  Abhängigkeit oder als späterer Zusatz;
+- sessionbezogene Auswertung von Titeln, Interpreten, Skips und Abbrüchen;
+- reale Absturz-/Neustartabnahme mit dokumentiertem Ergebnis.
 
-Der titelbezogene Notfallbetrieb und die isolierte Deck-Recovery sind umgesetzt.
-Weiterhin ausdrücklich bedienergeführt bleiben die globale Geräte-/Backend-Recovery
-als letzte Eskalationsstufe sowie die Rückkehr aus einem Zustand ohne spielbares Deck.
+## 1. Implementiert und abgeschlossen
 
-## Unterstützte Laufzeitumgebung
+Diese Bereiche benötigen keine weitere Funktionsentwicklung für 2.0. Normale
+Regressionstests und die abschließenden Release-Gates gelten weiterhin.
 
-- Windows-Desktopanwendung
-- VLC als Wiedergabebackend
-- FFmpeg und FFprobe für automatische Cue- und Lautheitsanalyse
-- MP3 und FLAC als primäre Musikformate
-- Lokale Laufwerke und kontrolliert gepufferte Netzwerkpfade
+- Musikbibliothek, Katalogsuche, MP3-/FLAC-Metadaten, technische Audiodaten,
+  Katalogpflege und Stapeländerungen;
+- unabhängige Decks A/B, Mixer, manuelle und automatische Crossfades;
+- Queue-/Playlist-Grundfunktionen, gespeicherte Queues, Cue-Snapshots und stabile
+  Queue-Zustände;
+- Jingle-/Overlaykanal, Favoriten, Fades und Musik-Ducking;
+- Equalizerauflösung und Presetverwaltung;
+- Titeleditor für Cue, Lautheit und typisierte Metadaten;
+- Datenbankmigration Schema 34 auf 41 sowie reale Upgrade-, Backup- und Restore-Probe;
+- asynchrone, serialisierte Persistenz im zeitkritischen Übergangsabschluss;
+- **1000-ms-Datenbankverzögerungsabnahme bestanden**: typischer
+  Übergangsabschluss unter 15 ms in hochauflösender Gegenmessung, Maximum unter 50 ms,
+  Persistenz mindestens ungefähr 1000 ms, keine kritischen Heartbeats und keine
+  technische Unterbrechung von Incoming-Deck, Automatik oder Crossfade. Der
+  reproduzierbare Nachweis steht in
+  [database_delay_test.md](database_delay_test.md).
 
-## Qualitätsstand
+## 2. Implementiert, aber noch real abzunehmen
 
-- Automatisierte Tests für Services, Controller, Datenbank, Audio-Doubles und UI-nahe
-  Abläufe
-- Das aktuelle Main-Quality-Gate umfasst Ruff, Black, MyPy, reale FFmpeg-Formattests
-  und die vollständige Pytest-Suite.
-- Responsive Windows-Darstellungen wurden bei 1920 x 1080 mit 100 und 125 Prozent
-  sowie bei 1366 x 768 mit 125 Prozent praktisch geprüft.
-- Release-Build, Upgradeprobe einer realen 1.0.0-Datenbank und Portable-ZIP-Prüfung
-  bleiben eigene Freigabeschritte für 2.0.0-beta.1.
+Dies sind technische Freigabeprüfungen vorhandener Funktionen, keine fehlenden
+Produktfeatures:
+
+- Notfallbetrieb, isolierte Deck-Recovery, globale bedienergeführte Recovery und
+  Panic-/Notfallübergabe unter realen Fehlerbedingungen;
+- Lautheit, Cue-Erkennung, Clip-Schutz, EQ und Übergänge als Hör- und Langzeitabnahme;
+- Titeleditor und Analyseabläufe mit realem Tk/VLC-Betrieb;
+- NAS-Wiedergabe, Quellenverlust und Wiederkehr unter realistischer Last;
+- Zustands- und Quellenanzeige sowie responsive Bedienbarkeit in der Windows-Matrix;
+- Speicherstabilität und mehrstündiger Veranstaltungsbetrieb;
+- Release-Build, Portable-Artefakt, Abhängigkeits-/Lizenzinventar und abschließender
+  Release-Candidate-Test.
+
+## 3. Noch für Version 2.0 zu entwickeln
+
+In empfohlener Reihenfolge:
+
+1. Regelbasierte Planung vervollständigen: konfigurierbare, optionale Regeln,
+   Gewichtung, Quellentypen, Planungsvorschau und Erklärungen.
+2. Titelbezogene Übergangsvorbereitung um individuelle Fade-Kurven und die noch
+   fehlende medientypbezogene Lautheitsbehandlung ergänzen.
+3. Session-Historie und Absturzwiederaufnahme als vollständigen Bedienablauf samt
+   Export und Auswertung vervollständigen.
+4. Quellen- und Automatikzustände gegen die Produktanforderung schließen; nur dabei
+   gefundene echte Funktionslücken entwickeln.
+5. Die unter „implementiert, aber noch real abzunehmen“ genannten Freigabeprüfungen
+   abschließen und anschließend den Release Candidate abnehmen.
+
+## 4. Bewusst auf Version 2.1 oder später verschoben
+
+### Betriebsprofile
+
+Profile für Party, Hintergrundmusik, Tanz-/Vereinsveranstaltung, Empfang und manuellen
+DJ-Betrieb. Ein Profil soll Quelle, Auswahlregeln, Übergänge, Lautheit,
+Wiederholungsschutz, Interpretabstand, Notfallplaylist, Audioausgänge und GUI-Ansicht
+gemeinsam verwalten. Persistente Einzeleinstellungen sind vorhanden; ein geschlossenes
+Profilprodukt ist nicht belegt.
+
+### Veranstaltungscheck und Konfigurationssicherheit
+
+- Vorabprüfung von Audioausgängen, Musikquelle, Notfalltiteln und Speicherplatz;
+- exportierbare Profile, automatische Konfigurationssicherung und gezielte
+  Wiederherstellung einer funktionierenden Konfiguration;
+- sperrbarer Veranstaltungsmodus und reduzierte Bestätigungen bei unkritischen Aktionen;
+- weiterführender Soundkartenassistent, Testsignal je Ausgang, getrennte Haupt-/Preview-
+  Ausgänge, Mono/Stereo und gerätebezogene Ausgangspegel.
+
+Der vorhandene Ersteinrichtungs-, Diagnose-, Backup-/Restore- und Geräte-Recovery-Unterbau
+ist eine Grundlage, erfüllt diesen Produktbereich aber noch nicht vollständig.
+
+### Erweiterte Wunsch- und Queue-Bedienung
+
+- eigene Bedienoberfläche für Wunschgeber, Wunschpriorität und Rücknahme;
+- Drag-and-drop, Mehrfachauswahl/-verschiebung und allgemeines Queue-Undo;
+- geschätzte Wartezeit und geplante Spielzeit;
+- kontrollierter Abbruch einer laufenden Titelvorbereitung;
+- zeitgesteuerte Jingles, Pausenmodus, geplantes Veranstaltungsende und
+  Abschlussjingle/-playlist.
+
+Service- und Datenbankgrundlagen für Gastwünsche, Duplikatschutz, Wunschgeber,
+Prioritätsgrenzen, Fairness und gespeicherte Queues sind bereits vorhanden. Ohne
+vollständige GUI und End-to-End-Abnahme gilt die erweiterte Wunschverwaltung dennoch
+nicht als fertige 2.0-Funktion.
+
+## 5. Für Version 3 vorgesehen
+
+- Beatmatching;
+- Beatgrid-Ermittlung und -Bearbeitung;
+- tonhöhenerhaltendes Time-Stretching;
+- darauf aufbauende takt-/phasenbezogene Übergangsplanung.
+
+Kontextbezogene BPM-Analyse in 2.0 ist nur ein Planungsmerkmal und darf nicht als
+Beatmatching, Beatgrid oder Time-Stretching bezeichnet werden.
+
+Weitere mögliche Zukunftsthemen wie Web-/Smartphone-Fernsteuerung, mehrere
+Bedienplätze, Aufnahme, Streaming, DMX, Online-Musikdienste, KI-Empfehlungen, mehr als
+zwei Decks und eine allgemeine Plugin-Schnittstelle sind nicht Teil des verbindlichen
+2.x-Umfangs und benötigen jeweils eine eigene Produkt- und Architekturentscheidung.

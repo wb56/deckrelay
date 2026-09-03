@@ -2,6 +2,14 @@
 
 Stand: 18.07.2026, Version 1.0.0
 
+> **Historische Momentaufnahme:** Dieses Audit beschreibt ausschließlich den Stand von
+> DeckRelay 1.0.0 am 18. Juli 2026. Die unten genannten fehlenden Dispatcher, Worker,
+> Messpunkte, Begrenzungen und Datenbankwarteschlangen sind keine aktuelle 2.0-Restliste.
+> Der heutige Funktions- und Planungsstand steht in `docs/feature_list.md`. Insbesondere
+> ist die asynchrone Übergangspersistenz inzwischen implementiert; die bestandene
+> 1000-ms-Datenbankverzögerungsabnahme ist in `docs/database_delay_test.md` dokumentiert.
+> Der historische Befundtext bleibt zur Nachvollziehbarkeit unverändert.
+
 ## Kurzfazit
 
 Die Audio-Crossfade-Berechnung ist bereits von der sichtbaren GUI-Aktualisierung getrennt
