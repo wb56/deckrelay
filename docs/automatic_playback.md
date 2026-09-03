@@ -51,6 +51,19 @@ sicheren Crossfade bleibt, wird der Folgetitel nicht verworfen. Der laufende Tit
 endet natürlich; danach startet der vorbereitete Folgetitel direkt. Eine entsprechende
 Warnung erklärt den verwendeten Fallback.
 
+## Fehler und Notfallfortsetzung
+
+Kann ein einzelner Titel nicht vorbereitet oder gestartet werden, bleibt er mit
+Fehlergrund in der Queue sichtbar. DeckRelay gibt das betroffene Deck kontrolliert
+frei und bereitet nach den bestehenden Queue-Regeln einen Ersatz vor, ohne ein auf
+dem anderen Deck laufendes Stück zu unterbrechen.
+
+Nach mehreren unmittelbar aufeinanderfolgenden Fehlern oder ohne sicheren Ersatz
+pausiert die Automatik. Die Statusmeldung nennt Deck und erforderlichen manuellen
+Eingriff; mit dem normalen Automatik-Start kann nach erfolgreichem Laden oder einer
+Recovery wieder fortgesetzt werden. Bestätigte Laufzeitfehler verwenden den
+vorhandenen Ein-Deck-Betrieb und die isolierte Deck-Recovery.
+
 ## Nach einem Neustart
 
 Bei aktivierter Sitzungswiederherstellung bleiben offene Queue-Einträge erhalten.

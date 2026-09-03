@@ -27,11 +27,10 @@ from party_player.metadata_tempo_backend import (
     select_ranges,
 )
 from party_player.metadata_analysis_supervisor import MetadataAnalysisProcessSupervisor
+from ffmpeg_test_tools import resolve_ffmpeg_test_tools
 
 
-FFMPEG_BIN = Path(".tools/ffmpeg/ffmpeg-8.1.2-essentials_build/bin")
-FFMPEG = FFMPEG_BIN / "ffmpeg.exe"
-FFPROBE = FFMPEG_BIN / "ffprobe.exe"
+FFMPEG, FFPROBE = resolve_ffmpeg_test_tools()
 
 
 def click_samples(bpm: float, seconds: float = 45.0, sample_rate: int = 11_025) -> array:
@@ -246,7 +245,14 @@ def write_wave(path: Path, samples: array, sample_rate: int = 11_025) -> None:
         )
 
 
-def product_job(path: Path, suffix: str = "") -> MetadataAnalysisJob:
+def product_job(
+    path: Path,
+    suffix: str = "",
+    *,
+    ffmpeg: str | None = FFMPEG,
+    ffprobe: str | None = FFPROBE,
+) -> MetadataAnalysisJob:
+    assert ffmpeg is not None and ffprobe is not None
     return MetadataAnalysisJob(
         f"product{suffix}",
         1,
@@ -260,8 +266,8 @@ def product_job(path: Path, suffix: str = "") -> MetadataAnalysisJob:
         datetime.now(timezone.utc).isoformat(),
         MetadataAnalysisBackendKind.FFMPEG_TEMPO,
         (
-            ("ffmpeg", str(FFMPEG.resolve())),
-            ("ffprobe", str(FFPROBE.resolve())),
+            ("ffmpeg", ffmpeg),
+            ("ffprobe", ffprobe),
             ("segment_strategy", "middle"),
         ),
         TempoAnalysisScope.TRACK_DEFAULT_CUES,
@@ -277,6 +283,19 @@ def product_job(path: Path, suffix: str = "") -> MetadataAnalysisJob:
     )
 
 
+def test_product_job_passes_resolved_tool_paths_to_spawn_process(tmp_path: Path) -> None:
+    ffmpeg = str(tmp_path / "tools with spaces" / "ffmpeg.exe")
+    ffprobe = str(tmp_path / "tools with spaces" / "ffprobe.exe")
+    audio = tmp_path / "audio.mp3"
+    audio.touch()
+
+    job = product_job(audio, ffmpeg=ffmpeg, ffprobe=ffprobe)
+
+    settings = dict(job.technical_options)
+    assert settings["ffmpeg"] == ffmpeg
+    assert settings["ffprobe"] == ffprobe
+
+
 def await_result(supervisor: MetadataAnalysisProcessSupervisor):
     deadline = monotonic() + 30.0
     while monotonic() < deadline:
@@ -287,7 +306,10 @@ def await_result(supervisor: MetadataAnalysisProcessSupervisor):
     raise AssertionError("Kein Analyseergebnis")
 
 
-@pytest.mark.skipif(not FFMPEG.is_file() or not FFPROBE.is_file(), reason="lokales FFmpeg fehlt")
+@pytest.mark.skipif(
+    FFMPEG is None or FFPROBE is None,
+    reason="FFmpeg/FFprobe ist für Spawn-Prozesstests nicht installiert",
+)
 @pytest.mark.parametrize(
     ("suffix", "codec"),
     [
@@ -299,11 +321,12 @@ def await_result(supervisor: MetadataAnalysisProcessSupervisor):
 def test_real_formats_run_in_spawn_process(
     tmp_path: Path, suffix: str, codec: tuple[str, ...]
 ) -> None:
+    assert FFMPEG is not None and FFPROBE is not None
     source = tmp_path / "source.wav"
     encoded = tmp_path / f"tempo{suffix}"
     write_wave(source, click_samples(120.0, 20.0))
     subprocess.run(
-        [str(FFMPEG), "-v", "error", "-y", "-i", str(source), *codec, str(encoded)],
+        [FFMPEG, "-v", "error", "-y", "-i", str(source), *codec, str(encoded)],
         check=True,
         timeout=30,
     )

@@ -65,17 +65,6 @@ class AutomaticSelectionService:
                 frozenset({"ARTIST_REPETITION", "TRACK_REPETITION"}),
                 False,
             ),
-            (
-                "UNKNOWN_SUITABILITY",
-                frozenset(
-                    {
-                        "ARTIST_REPETITION",
-                        "TRACK_REPETITION",
-                        "SUITABILITY_APPROVAL_REQUIRED",
-                    }
-                ),
-                False,
-            ),
         )
         candidates = self._tracks.automatic_candidates()
         for stage, relaxed_codes, avoid_recent in stages:
@@ -120,7 +109,6 @@ class AutomaticSelectionService:
             {
                 "ARTIST_REPETITION",
                 "TRACK_REPETITION",
-                "SUITABILITY_APPROVAL_REQUIRED",
             }
         )
         for track in self._emergency_playlist.candidates():

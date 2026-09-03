@@ -689,8 +689,15 @@ class QueueService:
         deck_a: DeckController,
         deck_b: DeckController,
         excluded_decks: set[str] | None = None,
+        *,
+        allow_empty_queue_selection: bool = True,
     ) -> tuple[QueueEntry, DeckController] | None:
-        while candidate := self.next_load_candidate(deck_a, deck_b, excluded_decks):
+        while candidate := self.next_load_candidate(
+            deck_a,
+            deck_b,
+            excluded_decks,
+            allow_empty_queue_selection=allow_empty_queue_selection,
+        ):
             waiting, free_deck, _track = candidate
             track, decision = self.revalidate_candidate(waiting.queue_id)
             if not decision.accepted or track is None:
@@ -735,6 +742,8 @@ class QueueService:
         deck_a: DeckController,
         deck_b: DeckController,
         excluded_decks: set[str] | None = None,
+        *,
+        allow_empty_queue_selection: bool = True,
     ) -> tuple[QueueEntry, DeckController, Track] | None:
         excluded = excluded_decks or set()
         free_deck = next(
@@ -751,7 +760,10 @@ class QueueService:
         if free_deck is None:
             return None
         examined: set[int] = set()
-        while waiting := self.get_next_candidate(examined):
+        while waiting := self.get_next_candidate(
+            examined,
+            allow_empty_queue_selection=allow_empty_queue_selection,
+        ):
             examined.add(waiting.queue_id)
             track = self._tracks.get_active(waiting.track_id)
             decision = self._selection_service.evaluate(waiting, track)
@@ -859,6 +871,8 @@ class QueueService:
     def get_next_candidate(
         self,
         excluded_queue_ids: set[int] | None = None,
+        *,
+        allow_empty_queue_selection: bool = True,
     ) -> QueueEntry | None:
         """Return the next ordered, unexamined waiting entry without loading it.
 
@@ -877,7 +891,11 @@ class QueueService:
         )
         if candidate is not None:
             return candidate
-        if excluded or self.empty_queue_policy is EmptyQueuePolicy.STOP_AFTER_CURRENT:
+        if (
+            excluded
+            or not allow_empty_queue_selection
+            or self.empty_queue_policy is EmptyQueuePolicy.STOP_AFTER_CURRENT
+        ):
             return None
         if self.empty_queue_policy is EmptyQueuePolicy.REPEAT_CURRENT_PLAYLIST:
             return self._repeat_current_playlist()
