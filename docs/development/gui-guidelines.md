@@ -112,7 +112,15 @@ outside production paths, a feature/performance/build-size/maintenance compariso
 LGPLv3 obligations review, the exact Qt modules and licenses, a migration and rollback
 plan, and explicit approval before production changes.
 
-## Current GUI baseline (2.0 planning audit)
+## Historical GUI baseline (early 2.0 planning audit)
+
+> **Status note (3 September 2026):** The following baseline, limitations and
+> implementation proposal record the state before the responsive work-area model,
+> large/compact workspaces and priority-dialog migrations were implemented and accepted.
+> They remain here as an architecture decision record and must not be read as the current
+> 2.0 backlog. Current scope is defined in [the feature list](../feature_list.md); later
+> evidence is recorded in [responsive GUI phase 2A](responsive-gui-phase-2a.md) and the
+> [window-geometry acceptance](window-geometry-acceptance.md).
 
 ### Existing strengths
 

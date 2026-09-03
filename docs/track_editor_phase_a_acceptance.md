@@ -2,6 +2,12 @@
 
 Stand: 30. Juli 2026
 
+> **Historische Momentaufnahme:** Dieses Dokument hält den automatisierten Phase-A-Stand
+> vom 30. Juli 2026 fest. Die damalige Aussage, Phase B sei noch gesperrt, ist kein
+> aktueller Planungsstatus. Der erweiterte Titeleditor ist inzwischen implementiert;
+> verbleibende reale Freigabeprüfungen sind in [der Feature-Liste](feature_list.md)
+> eingeordnet. Der historische Abnahmetext bleibt unverändert.
+
 ## Ergebnis
 
 Die automatisierbaren Anforderungen der Phase A sind umgesetzt. Der bisherige

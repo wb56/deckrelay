@@ -23,6 +23,9 @@ and Preparation modes, work-area-aware dialogs, an extended track editor, catalo
 typed metadata maintenance, technical audio information, loudness analysis from the
 track editor, and contextual BPM analysis for full-track, cue and playlist scopes.
 Uncertain shuffle and changing-tempo material is kept out of automatic planning.
+The authoritative split between completed work, remaining 2.0 development, deferred
+2.1 features and 3.0 topics is maintained in
+[the DeckRelay feature list](docs/feature_list.md).
 
 > **Beta upgrade warning:** Before the first start of 2.0.0-beta.1, back up the complete
 > `data` directory. The database is migrated automatically from schema 34 to schema 41.

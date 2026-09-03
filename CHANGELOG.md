@@ -4,6 +4,11 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ## [2.0.0-beta.1] - Unveröffentlicht
 
+> **Planungsstatus:** Dieser Abschnitt beschreibt bereits implementierte Änderungen der
+> unveröffentlichten Beta, nicht den vollständigen verbleibenden Umfang der stabilen
+> Version 2.0. Die verbindliche Abgrenzung zwischen fertig, noch abzunehmen, noch zu
+> entwickeln sowie 2.1/3.0 steht in `docs/feature_list.md`.
+
 ### Added
 
 - Eine responsive Oberfläche bietet große und kompakte Darstellungen sowie getrennte
@@ -91,7 +96,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 - Die automatische Cue-Erkennung bewertet Signalpegel und nicht die musikalische oder
   dramaturgische Bedeutung eines Intros oder Outros. Cue In, Cue Out und Fade können
   im Titeleditor über den separaten Vorschauplayer vorgehört werden.
-- Der Notfallbetrieb befindet sich weiterhin im Ausbau.
+- Der Notfall- und Recovery-Unterbau ist implementiert. Reale Veranstaltungs-, Geräte-
+  und Langzeitabnahmen stehen vor der stabilen 2.0-Freigabe noch aus; die globale
+  Geräte-/Backend-Recovery bleibt als letzte Eskalationsstufe bewusst bedienergeführt.
 - DeckRelay führt kein Beatmatching und kein tonhöhenerhaltendes Time-Stretching aus.
 
 ## [1.0.0] - 2026-08-16
