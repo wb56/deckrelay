@@ -11,20 +11,30 @@ It is designed for private parties, small events, clubs, associations, and anyon
 
 > DeckRelay 1.0.0 is the first stable release. It is available as a portable Windows application and does not require a traditional installation.
 
-## DeckRelay 2.0 beta preparation
+## DeckRelay 2.0 beta
 
-DeckRelay `2.0.0-beta.1` is the next planned prerelease. It is not published yet. When
-it becomes available, it will be listed on the general
-[Releases page](https://github.com/wb56/deckrelay/releases); there is currently no
-beta download or release asset.
+DeckRelay `2.0.0-beta.1` is now available as a public prerelease for testing.
 
-The 2.0 development line adds responsive large and compact workspaces, compact Live
-and Preparation modes, work-area-aware dialogs, an extended track editor, catalog and
-typed metadata maintenance, technical audio information, loudness analysis from the
-track editor, and contextual BPM analysis for full-track, cue and playlist scopes.
-Uncertain shuffle and changing-tempo material is kept out of automatic planning.
-The authoritative split between completed work, remaining 2.0 development, deferred
-2.1 features and 3.0 topics is maintained in
+[Download DeckRelay 2.0.0-beta.1 for Windows](https://github.com/wb56/deckrelay/releases/download/v2.0.0-beta.1/DeckRelay-portable-2.0.0-beta.1.zip) ·
+[Beta release notes](https://github.com/wb56/deckrelay/releases/tag/v2.0.0-beta.1) ·
+[SHA-256 checksums](https://github.com/wb56/deckrelay/releases/download/v2.0.0-beta.1/SHA256SUMS.txt)
+
+The stable release remains DeckRelay 1.0.0. Version 2.0.0-beta.1 is intended for
+testing and should not yet replace the stable version in unattended production use.
+
+The 2.0 development line introduces:
+
+* responsive large and compact workspaces;
+* dedicated Live and Preparation modes;
+* dialogs that adapt to the available screen space;
+* an extended track editor for cue points, loudness and metadata;
+* improved catalog and audio metadata management;
+* technical audio, loudness and contextual BPM analysis;
+* improved playback recovery when a deck or track fails;
+* more transparent and extensible automatic track selection.
+
+The authoritative split between completed 2.0 work, remaining development,
+features deferred to 2.1, and longer-term 3.0 topics is maintained in
 [the DeckRelay feature list](docs/feature_list.md).
 
 > **Beta upgrade warning:** Before the first start of 2.0.0-beta.1, back up the complete
