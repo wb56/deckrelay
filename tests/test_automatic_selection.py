@@ -10,16 +10,17 @@ from types import SimpleNamespace
 import party_player.automatic_selection as automatic_selection_module
 import pytest
 from party_player.automatic_selection import (
+    AutomaticRecentTrackRule,
     AutomaticSelectionHistory,
     AutomaticSelectionService,
 )
 from party_player.database.connection import Database
 from party_player.database.migrations import migrate
-from party_player.enums import CompletionStatus, EmptyQueuePolicy, QueueSource
+from party_player.enums import CompletionStatus, EmptyQueuePolicy, QueueSource, QueueStatus
 from party_player.queue_service import QueueService
 from party_player.repositories.track_repository import TrackRepository
 from party_player.repository import PartyPlayerRepository
-from party_player.models import SavedQueueEntry
+from party_player.models import QueueEntry, SavedQueueEntry, Track
 from party_player.repositories.saved_queue_repository import SavedQueueRepository
 from party_player.track_selection import TrackSelectionService
 from party_player.track_selection import SelectionDecision
@@ -28,6 +29,7 @@ from party_player.track_suitability import (
     TrackSuitabilityService,
 )
 from party_player.selection_decision import RuleOutcome, SelectionOutcome
+from party_player.selection_decision import SelectionContext, SelectionRuleInput
 from party_player.emergency_playlist import EmergencyMediaType, LocalEmergencyPlaylistService
 from party_player.emergency_storage import EmergencyDriveKind, EmergencyStoragePolicy
 from party_player.file_availability import FileAvailabilityService
@@ -126,6 +128,41 @@ def test_selection_rationale_explains_relaxation_without_changing_rng_result(
         and evaluation.reason_code == "ARTIST_REPETITION"
         for evaluation in selector.last_rationale.rule_evaluations
     )
+
+
+def test_recent_track_rule_is_relaxed_only_at_track_distance() -> None:
+    entry = QueueEntry(
+        -1,
+        1,
+        0,
+        QueueStatus.WAITING,
+        source=QueueSource.AUTOMATIC,
+    )
+    track = Track(1, "one.mp3", "One", "Artist", "", 120.0)
+    rule_input = SelectionRuleInput.from_values(entry, track)
+    rule = AutomaticRecentTrackRule({1})
+
+    strict = rule.evaluate_rule(rule_input, SelectionContext("strict", "STRICT"))
+    artist = rule.evaluate_rule(
+        rule_input,
+        SelectionContext(
+            "artist",
+            "ARTIST_DISTANCE",
+            frozenset({"ARTIST_REPETITION"}),
+        ),
+    )
+    track_distance = rule.evaluate_rule(
+        rule_input,
+        SelectionContext(
+            "track",
+            "TRACK_DISTANCE",
+            frozenset({"ARTIST_REPETITION", "TRACK_REPETITION", "RECENT_TRACK"}),
+        ),
+    )
+
+    assert strict.result_code is RuleOutcome.EXCLUDE
+    assert artist.result_code is RuleOutcome.EXCLUDE
+    assert track_distance.result_code is RuleOutcome.RELAXED
 
 
 def test_selection_rationale_is_bounded_and_keeps_selected_candidate(tmp_path: Path) -> None:

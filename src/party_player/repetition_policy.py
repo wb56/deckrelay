@@ -8,8 +8,18 @@ import logging
 from party_player.database.connection import Database
 from party_player.enums import QueueSource
 from party_player.models import QueueEntry, Track
-from party_player.selection_decision import RuleKind
-from party_player.track_selection import SelectionDecision, normalize_artist_name
+from party_player.selection_decision import (
+    RuleEvaluation,
+    RuleKind,
+    SelectionContext,
+    SelectionRuleInput,
+    hard_rule_evaluation,
+)
+from party_player.track_selection import (
+    SelectionDecision,
+    normalize_artist_name,
+    selection_decision_from_evaluation,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +94,7 @@ class PersistentRepetitionService:
     rule_id = "selection.repetition"
     rule_version = 1
     rule_kind = RuleKind.HARD_EXCLUSION
+    relaxable_reason_codes = frozenset({"TRACK_REPETITION", "ARTIST_REPETITION"})
 
     def __init__(
         self,
@@ -138,8 +149,31 @@ class PersistentRepetitionService:
         return entry.queue_id in self._operator_overrides
 
     def evaluate(self, entry: QueueEntry, track: Track) -> SelectionDecision | None:
+        return selection_decision_from_evaluation(
+            self.evaluate_rule(
+                SelectionRuleInput.from_values(entry, track),
+                SelectionContext("legacy-repetition-policy"),
+            )
+        )
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        track = rule_input.track
+        assert track is not None
+        entry = rule_input.entry
         if entry.queue_id in self._operator_overrides:
-            return None
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="REPETITION_OPERATOR_OVERRIDE",
+                reason="Wiederholungsschutz wurde durch den Operator übersteuert",
+                operator_override=True,
+                relaxable_reason_codes=self.relaxable_reason_codes,
+            )
         source_windows = self._source_windows.get(entry.source, (None, None, None, None))
         track_window_size = max(
             self.track_window_size,
@@ -171,9 +205,14 @@ class PersistentRepetitionService:
             track_window_size
             and any(play.track_id == track.id for play in recent[:track_window_size])
         ) or (track_window and any(now - play.finished_at < track_window for play in track_plays)):
-            return SelectionDecision.reject(
-                "TRACK_REPETITION",
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="TRACK_REPETITION",
                 reason="Titel liegt noch innerhalb des Wiederholungsschutzes",
+                excluded=True,
+                relaxable_reason_codes=self.relaxable_reason_codes,
             )
         artist = normalize_artist_name(track.artist)
         protect_artist = self.queue_artist_repetition_enabled or entry.source not in {
@@ -194,8 +233,20 @@ class PersistentRepetitionService:
                 and any(now - play.finished_at < artist_window for play in artist_plays)
             )
         ):
-            return SelectionDecision.reject(
-                "ARTIST_REPETITION",
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="ARTIST_REPETITION",
                 reason="Interpret liegt noch innerhalb des Wiederholungsschutzes",
+                excluded=True,
+                relaxable_reason_codes=self.relaxable_reason_codes,
             )
-        return None
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code="REPETITION_ALLOWED",
+            reason="Titel und Interpret liegen außerhalb der Wiederholungsfenster",
+            relaxable_reason_codes=self.relaxable_reason_codes,
+        )

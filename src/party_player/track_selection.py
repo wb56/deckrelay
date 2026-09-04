@@ -3,7 +3,7 @@
 from collections import deque
 from dataclasses import dataclass
 import math
-from typing import Protocol
+from typing import Protocol, cast
 import re
 import uuid
 
@@ -11,6 +11,7 @@ from party_player.enums import QueueStatus
 from party_player.models import QueueEntry, Track
 from party_player.selection_decision import (
     CandidateEvaluation,
+    ExecutableSelectionRule,
     RuleEvaluation,
     RuleKind,
     RuleOutcome,
@@ -18,6 +19,8 @@ from party_player.selection_decision import (
     SelectionContext,
     SelectionOutcome,
     SelectionRationale,
+    SelectionRuleInput,
+    hard_rule_evaluation,
 )
 
 
@@ -57,28 +60,159 @@ class SelectionRule(Protocol):
     ) -> SelectionDecision | None: ...
 
 
-class ExplainedSelectionRule(Protocol):
-    rule_id: str
-    rule_version: int
-    rule_kind: RuleKind
+class TrackExistsRule:
+    rule_id = "core.track_exists"
+    rule_version = 1
+    rule_kind = RuleKind.HARD_EXCLUSION
+    relaxable_reason_codes: frozenset[str] = frozenset()
 
-    def operator_override_applies(self, entry: QueueEntry) -> bool: ...
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        missing = rule_input.track is None
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code="TRACK_MISSING" if missing else "TRACK_PRESENT",
+            reason="Katalogeintrag nicht gefunden" if missing else "Katalogeintrag vorhanden",
+            excluded=missing,
+            facts=(("track_id", rule_input.candidate.track_id),),
+            terminal_status=QueueStatus.FAILED if missing else QueueStatus.SKIPPED,
+        )
+
+
+class RequiredMetadataRule:
+    rule_id = "core.required_metadata"
+    rule_version = 1
+    rule_kind = RuleKind.HARD_EXCLUSION
+    relaxable_reason_codes: frozenset[str] = frozenset()
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        track = rule_input.track
+        if track is None:
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="TRACK_MISSING",
+                reason="Stammdatenprüfung ist ohne Katalogeintrag nicht anwendbar",
+                applicable=False,
+            )
+        invalid = (
+            not track.file_path.strip()
+            or not track.title.strip()
+            or (
+                track.duration_seconds is not None
+                and (not math.isfinite(track.duration_seconds) or track.duration_seconds <= 0)
+            )
+        )
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code="INVALID_METADATA" if invalid else "REQUIRED_METADATA_VALID",
+            reason=(
+                "Der Katalogeintrag enthält ungültige Metadaten"
+                if invalid
+                else "Erforderliche Stammdaten sind gültig"
+            ),
+            excluded=invalid,
+            terminal_status=QueueStatus.FAILED if invalid else QueueStatus.SKIPPED,
+        )
+
+
+class LegacySelectionRuleAdapter:
+    """Compatibility path for injected rules that still return SelectionDecision."""
+
+    rule_kind = RuleKind.HARD_EXCLUSION
+    _LEGACY_RELAXABLE_CODES = frozenset({"ARTIST_REPETITION", "TRACK_REPETITION"})
+
+    def __init__(self, rule: SelectionRule) -> None:
+        self._rule = rule
+        rule_type = type(rule)
+        self.rule_id = str(
+            getattr(rule, "rule_id", f"{rule_type.__module__}.{rule_type.__qualname__}")
+        )
+        self.rule_version = int(getattr(rule, "rule_version", 1))
+        self.relaxable_reason_codes = self._LEGACY_RELAXABLE_CODES
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        track = rule_input.track
+        if track is None:
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="TRACK_MISSING",
+                reason="Legacy-Regel ist ohne Katalogeintrag nicht anwendbar",
+                applicable=False,
+            )
+        override_check = getattr(self._rule, "operator_override_applies", None)
+        operator_override = (
+            bool(override_check(rule_input.entry)) if callable(override_check) else False
+        )
+        decision = self._rule.evaluate(rule_input.entry, track)
+        if decision is None or decision.accepted:
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="OPERATOR_OVERRIDE" if operator_override else "RULE_PASSED",
+                reason=(
+                    "Regel wurde durch eine Operatorfreigabe übersteuert"
+                    if operator_override
+                    else "Regel erfüllt"
+                ),
+                operator_override=operator_override,
+                relaxable_reason_codes=self.relaxable_reason_codes,
+            )
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code=decision.code,
+            reason=decision.reason,
+            excluded=True,
+            relaxable_reason_codes=self.relaxable_reason_codes,
+            terminal_status=decision.terminal_status,
+        )
+
+
+def selection_decision_from_evaluation(
+    evaluation: RuleEvaluation,
+) -> SelectionDecision | None:
+    if evaluation.result_code is not RuleOutcome.EXCLUDE:
+        return None
+    return SelectionDecision.reject(
+        evaluation.reason_code,
+        terminal_status=evaluation.terminal_status,
+        reason=evaluation.reason,
+    )
 
 
 class TrackSelectionService:
     """Evaluate availability first and then injected event/business rules."""
 
-    _NON_RELAXABLE_CODES = frozenset(
-        {
-            "BLOCKED_TRACK",
-            "BLOCKED_ARTIST",
-            "RESTRICTED_TRACK",
-            "UNSUITABLE_TRACK",
-        }
-    )
-
-    def __init__(self, rules: tuple[SelectionRule, ...] = ()) -> None:
-        self._rules = rules
+    def __init__(
+        self,
+        rules: tuple[SelectionRule | ExecutableSelectionRule, ...] = (),
+    ) -> None:
+        self._rules: tuple[ExecutableSelectionRule, ...] = (
+            TrackExistsRule(),
+            RequiredMetadataRule(),
+            *(self._as_executable(rule) for rule in rules),
+        )
 
     def evaluate(
         self,
@@ -106,135 +240,27 @@ class TrackSelectionService:
             context_id=uuid.uuid4().hex,
             relaxed_codes=relaxed_codes,
         )
-        candidate = SelectionCandidate.from_entry(entry, track)
+        rule_input = SelectionRuleInput.from_values(entry, track)
+        candidate = rule_input.candidate
         evaluations: list[RuleEvaluation] = []
-        if track is None:
-            decision = SelectionDecision.reject(
-                "TRACK_MISSING",
-                terminal_status=QueueStatus.FAILED,
-                reason="Katalogeintrag nicht gefunden",
-            )
-            evaluations.append(
-                self._evaluation(
-                    "core.track_exists",
-                    decision,
-                    context,
-                    facts={"track_id": entry.track_id},
-                )
-            )
-            return decision, self._single_rationale(candidate, decision, evaluations, context)
-        evaluations.append(self._pass("core.track_exists", context))
-        if (
-            not track.file_path.strip()
-            or not track.title.strip()
-            or (
-                track.duration_seconds is not None
-                and (not math.isfinite(track.duration_seconds) or track.duration_seconds <= 0)
-            )
-        ):
-            decision = SelectionDecision.reject(
-                "INVALID_METADATA",
-                terminal_status=QueueStatus.FAILED,
-                reason="Der Katalogeintrag enthält ungültige Metadaten",
-            )
-            evaluations.append(self._evaluation("core.required_metadata", decision, context))
-            return decision, self._single_rationale(candidate, decision, evaluations, context)
-        evaluations.append(self._pass("core.required_metadata", context))
         for rule in self._rules:
-            rule_id = str(getattr(rule, "rule_id", self._fallback_rule_id(rule)))
-            rule_version = int(getattr(rule, "rule_version", 1))
-            rule_kind = getattr(rule, "rule_kind", RuleKind.HARD_EXCLUSION)
-            override_check = getattr(rule, "operator_override_applies", None)
-            operator_override = bool(override_check(entry)) if callable(override_check) else False
-            rule_decision = rule.evaluate(entry, track)
-            if rule_decision is not None and not rule_decision.accepted:
-                if (
-                    rule_decision.code in context.relaxed_codes
-                    and rule_decision.code not in self._NON_RELAXABLE_CODES
-                ):
-                    evaluations.append(
-                        self._evaluation(
-                            rule_id,
-                            rule_decision,
-                            context,
-                            rule_version=rule_version,
-                            rule_kind=rule_kind,
-                            result=RuleOutcome.RELAXED,
-                        )
-                    )
-                    continue
-                evaluations.append(
-                    self._evaluation(
-                        rule_id,
-                        rule_decision,
-                        context,
-                        rule_version=rule_version,
-                        rule_kind=rule_kind,
-                        operator_override=operator_override,
-                    )
-                )
+            evaluation = rule.evaluate_rule(rule_input, context)
+            evaluations.append(evaluation)
+            rule_decision = selection_decision_from_evaluation(evaluation)
+            if rule_decision is not None:
                 return rule_decision, self._single_rationale(
                     candidate, rule_decision, evaluations, context
                 )
-            evaluations.append(
-                RuleEvaluation(
-                    rule_id=rule_id,
-                    rule_version=rule_version,
-                    rule_kind=rule_kind,
-                    result_code=(RuleOutcome.OVERRIDDEN if operator_override else RuleOutcome.PASS),
-                    reason_code=("OPERATOR_OVERRIDE" if operator_override else "RULE_PASSED"),
-                    reason=(
-                        "Regel wurde durch eine Operatorfreigabe übersteuert"
-                        if operator_override
-                        else "Regel erfüllt"
-                    ),
-                    relaxation_stage=context.relaxation_stage,
-                    operator_override=operator_override,
-                )
-            )
         allowed = SelectionDecision.allow()
         return allowed, self._single_rationale(candidate, allowed, evaluations, context)
 
     @staticmethod
-    def _fallback_rule_id(rule: SelectionRule) -> str:
-        rule_type = type(rule)
-        return f"{rule_type.__module__}.{rule_type.__qualname__}"
-
-    @staticmethod
-    def _pass(rule_id: str, context: SelectionContext) -> RuleEvaluation:
-        return RuleEvaluation(
-            rule_id=rule_id,
-            rule_version=1,
-            rule_kind=RuleKind.HARD_EXCLUSION,
-            result_code=RuleOutcome.PASS,
-            reason_code="RULE_PASSED",
-            reason="Regel erfüllt",
-            relaxation_stage=context.relaxation_stage,
-        )
-
-    @staticmethod
-    def _evaluation(
-        rule_id: str,
-        decision: SelectionDecision,
-        context: SelectionContext,
-        *,
-        rule_version: int = 1,
-        rule_kind: RuleKind = RuleKind.HARD_EXCLUSION,
-        result: RuleOutcome = RuleOutcome.EXCLUDE,
-        operator_override: bool = False,
-        facts: dict[str, str | int | float | bool | None] | None = None,
-    ) -> RuleEvaluation:
-        return RuleEvaluation(
-            rule_id=rule_id,
-            rule_version=rule_version,
-            rule_kind=rule_kind,
-            result_code=result,
-            reason_code=decision.code,
-            reason=decision.reason,
-            relaxation_stage=context.relaxation_stage,
-            operator_override=operator_override,
-            facts=tuple(sorted((facts or {}).items())),
-        )
+    def _as_executable(
+        rule: SelectionRule | ExecutableSelectionRule,
+    ) -> ExecutableSelectionRule:
+        if callable(getattr(rule, "evaluate_rule", None)):
+            return cast(ExecutableSelectionRule, rule)
+        return LegacySelectionRuleAdapter(cast(SelectionRule, rule))
 
     @staticmethod
     def _single_rationale(
@@ -276,6 +302,7 @@ class BlockService:
     rule_id = "selection.block"
     rule_version = 1
     rule_kind = RuleKind.HARD_EXCLUSION
+    relaxable_reason_codes: frozenset[str] = frozenset()
 
     def __init__(
         self,
@@ -299,20 +326,48 @@ class BlockService:
 
     def evaluate(
         self,
-        _entry: QueueEntry,
+        entry: QueueEntry,
         track: Track,
     ) -> SelectionDecision | None:
+        return selection_decision_from_evaluation(
+            self.evaluate_rule(
+                SelectionRuleInput.from_values(entry, track),
+                SelectionContext("legacy-block-service"),
+            )
+        )
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        track = rule_input.track
+        assert track is not None
         if track.id in self._blocked_track_ids:
-            return SelectionDecision.reject(
-                "BLOCKED_TRACK",
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="BLOCKED_TRACK",
                 reason="Titel ist für die automatische Auswahl gesperrt",
+                excluded=True,
             )
         if normalize_artist_name(track.artist) in self._blocked_artists:
-            return SelectionDecision.reject(
-                "BLOCKED_ARTIST",
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="BLOCKED_ARTIST",
                 reason="Interpret ist für die automatische Auswahl gesperrt",
+                excluded=True,
             )
-        return None
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code="BLOCK_POLICY_ALLOWED",
+            reason="Titel und Interpret sind nicht gesperrt",
+        )
 
 
 class RepetitionService:
@@ -321,6 +376,7 @@ class RepetitionService:
     rule_id = "selection.repetition"
     rule_version = 1
     rule_kind = RuleKind.HARD_EXCLUSION
+    relaxable_reason_codes = frozenset({"TRACK_REPETITION", "ARTIST_REPETITION"})
 
     def __init__(
         self,
@@ -340,24 +396,55 @@ class RepetitionService:
 
     def evaluate(
         self,
-        _entry: QueueEntry,
+        entry: QueueEntry,
         track: Track,
     ) -> SelectionDecision | None:
+        return selection_decision_from_evaluation(
+            self.evaluate_rule(
+                SelectionRuleInput.from_values(entry, track),
+                SelectionContext("legacy-repetition-service"),
+            )
+        )
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        track = rule_input.track
+        assert track is not None
         if (
             self.track_window_size
             and track.id in tuple(self._recent_track_ids)[-self.track_window_size :]
         ):
-            return SelectionDecision.reject(
-                "TRACK_REPETITION",
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="TRACK_REPETITION",
                 reason="Titel wurde innerhalb des Wiederholungsfensters bereits gespielt",
+                excluded=True,
+                relaxable_reason_codes=self.relaxable_reason_codes,
             )
         artist = normalize_artist_name(track.artist)
         if (
             self.artist_window_size
             and artist in tuple(self._recent_artists)[-self.artist_window_size :]
         ):
-            return SelectionDecision.reject(
-                "ARTIST_REPETITION",
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="ARTIST_REPETITION",
                 reason="Interpret wurde innerhalb des Wiederholungsfensters bereits gespielt",
+                excluded=True,
+                relaxable_reason_codes=self.relaxable_reason_codes,
             )
-        return None
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code="REPETITION_ALLOWED",
+            reason="Titel und Interpret liegen außerhalb der Wiederholungsfenster",
+            relaxable_reason_codes=self.relaxable_reason_codes,
+        )

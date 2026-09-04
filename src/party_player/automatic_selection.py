@@ -21,6 +21,8 @@ from party_player.selection_decision import (
     SelectionContext,
     SelectionOutcome,
     SelectionRationale,
+    SelectionRuleInput,
+    hard_rule_evaluation,
 )
 
 
@@ -47,6 +49,36 @@ class AutomaticSelectionHistory:
                 (max(0, limit),),
             ).fetchall()
         return {int(row["track_id"]) for row in rows}
+
+
+class AutomaticRecentTrackRule:
+    rule_id = "selection.automatic_recent_track"
+    rule_version = 1
+    rule_kind = RuleKind.HARD_EXCLUSION
+    relaxable_reason_codes = frozenset({"RECENT_TRACK"})
+
+    def __init__(self, recent_track_ids: set[int]) -> None:
+        self._recent_track_ids = recent_track_ids
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        recent = rule_input.candidate.track_id in self._recent_track_ids
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code="RECENT_TRACK" if recent else "RECENT_TRACK_ALLOWED",
+            reason=(
+                "Titel gehört zu den zuletzt gespielten Titeln"
+                if recent
+                else "Titel gehört nicht zu den zuletzt gespielten Titeln"
+            ),
+            excluded=recent,
+            relaxable_reason_codes=self.relaxable_reason_codes,
+        )
 
 
 class AutomaticSelectionService:
@@ -80,18 +112,18 @@ class AutomaticSelectionService:
         summaries: list[CandidateEvaluation] = []
         evaluated_count = 0
         recent = self._history.recent_track_ids(self.recent_track_limit)
+        recent_rule = AutomaticRecentTrackRule(recent)
         counts = self._history.play_counts()
-        stages: tuple[tuple[str, frozenset[str], bool], ...] = (
-            ("STRICT", frozenset(), True),
-            ("ARTIST_DISTANCE", frozenset({"ARTIST_REPETITION"}), True),
+        stages: tuple[tuple[str, frozenset[str]], ...] = (
+            ("STRICT", frozenset()),
+            ("ARTIST_DISTANCE", frozenset({"ARTIST_REPETITION"})),
             (
                 "TRACK_DISTANCE",
-                frozenset({"ARTIST_REPETITION", "TRACK_REPETITION"}),
-                False,
+                frozenset({"ARTIST_REPETITION", "TRACK_REPETITION", "RECENT_TRACK"}),
             ),
         )
         candidates = self._tracks.automatic_candidates()
-        for stage, relaxed_codes, avoid_recent in stages:
+        for stage, relaxed_codes in stages:
             minimum_count: int | None = None
             top: list[tuple[Track, CandidateEvaluation]] = []
             for track in candidates:
@@ -102,21 +134,39 @@ class AutomaticSelectionService:
                     QueueStatus.WAITING,
                     source=QueueSource.AUTOMATIC,
                 )
-                if avoid_recent and track.id in recent:
+                context = SelectionContext(context_id, stage, relaxed_codes)
+                rule_input = SelectionRuleInput.from_values(synthetic, track)
+                recent_evaluation = recent_rule.evaluate_rule(rule_input, context)
+                if recent_evaluation.result_code is RuleOutcome.EXCLUDE:
                     evaluated_count += 1
                     self._append_summary(
                         summaries,
-                        self._recent_exclusion(synthetic, track, stage),
+                        CandidateEvaluation(
+                            candidate=rule_input.candidate,
+                            accepted=False,
+                            code=recent_evaluation.reason_code,
+                            terminal_status=recent_evaluation.terminal_status,
+                            reason=recent_evaluation.reason,
+                            rules=(recent_evaluation,),
+                        ),
                     )
                     continue
                 decision, rationale = rules.evaluate_with_rationale(
                     synthetic,
                     track,
-                    context=SelectionContext(context_id, stage, relaxed_codes),
+                    context=context,
                     relaxed_codes=relaxed_codes,
                 )
                 evaluated_count += 1
-                candidate_evaluation = rationale.evaluated_candidates[0]
+                evaluated = rationale.evaluated_candidates[0]
+                candidate_evaluation = CandidateEvaluation(
+                    candidate=evaluated.candidate,
+                    accepted=evaluated.accepted,
+                    code=evaluated.code,
+                    terminal_status=evaluated.terminal_status,
+                    reason=evaluated.reason,
+                    rules=(recent_evaluation, *evaluated.rules),
+                )
                 self._append_summary(summaries, candidate_evaluation)
                 if decision.accepted:
                     play_count = counts.get(track.id, 0)
@@ -257,32 +307,6 @@ class AutomaticSelectionService:
     ) -> None:
         if len(summaries) < self._RATIONALE_CANDIDATE_LIMIT:
             summaries.append(evaluation)
-
-    @staticmethod
-    def _recent_exclusion(
-        entry: QueueEntry,
-        track: Track,
-        stage: str,
-    ) -> CandidateEvaluation:
-        candidate = SelectionCandidate.from_entry(entry, track)
-        return CandidateEvaluation(
-            candidate=candidate,
-            accepted=False,
-            code="RECENT_TRACK",
-            terminal_status=QueueStatus.SKIPPED,
-            reason="Titel gehört zu den zuletzt gespielten Titeln",
-            rules=(
-                RuleEvaluation(
-                    rule_id="selection.automatic_recent_track",
-                    rule_version=1,
-                    rule_kind=RuleKind.HARD_EXCLUSION,
-                    result_code=RuleOutcome.EXCLUDE,
-                    reason_code="RECENT_TRACK",
-                    reason="Titel gehört zu den zuletzt gespielten Titeln",
-                    relaxation_stage=stage,
-                ),
-            ),
-        )
 
     @staticmethod
     def _rationale(

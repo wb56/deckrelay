@@ -7,6 +7,11 @@ from party_player.database.connection import Database
 from party_player.database.migrations import migrate
 from party_player.enums import CompletionStatus, QueueSource, QueueStatus
 from party_player.models import QueueEntry, Track
+from party_player.selection_decision import (
+    RuleOutcome,
+    SelectionContext,
+    SelectionRuleInput,
+)
 from party_player.repetition_policy import (
     PersistentRepetitionService,
     RepetitionHistoryRepository,
@@ -72,6 +77,45 @@ def test_track_repetition_uses_count_and_time_windows(tmp_path: Path) -> None:
     assert decision.code == "TRACK_REPETITION"
 
 
+def test_track_repetition_relaxes_only_at_track_distance(tmp_path: Path) -> None:
+    database, session_id = _database(tmp_path / "track-relaxation.db")
+    now = datetime(2026, 7, 27, 12, 0)
+    _record(database, session_id, 1, now - timedelta(minutes=5))
+    service = PersistentRepetitionService(
+        RepetitionHistoryRepository(database),
+        track_window_size=1,
+        track_window_minutes=0,
+        artist_window_size=0,
+        artist_window_minutes=0,
+        clock=lambda: now,
+    )
+    entry = QueueEntry(7, 1, 1, QueueStatus.WAITING)
+    track = Track(1, "one.mp3", "One", "Artist A", "", 180)
+    rule_input = SelectionRuleInput.from_values(entry, track)
+
+    strict = service.evaluate_rule(rule_input, SelectionContext("strict", "STRICT"))
+    artist = service.evaluate_rule(
+        rule_input,
+        SelectionContext(
+            "artist",
+            "ARTIST_DISTANCE",
+            frozenset({"ARTIST_REPETITION"}),
+        ),
+    )
+    track_distance = service.evaluate_rule(
+        rule_input,
+        SelectionContext(
+            "track",
+            "TRACK_DISTANCE",
+            frozenset({"ARTIST_REPETITION", "TRACK_REPETITION"}),
+        ),
+    )
+
+    assert strict.result_code is RuleOutcome.EXCLUDE
+    assert artist.result_code is RuleOutcome.EXCLUDE
+    assert track_distance.result_code is RuleOutcome.RELAXED
+
+
 def test_artist_repetition_uses_normalized_identity_and_override(tmp_path: Path) -> None:
     database, session_id = _database(tmp_path / "artist-repeat.db")
     now = datetime(2026, 7, 27, 12, 0)
@@ -93,6 +137,38 @@ def test_artist_repetition_uses_normalized_identity_and_override(tmp_path: Path)
 
     service.allow_queue_entry(entry.queue_id)
     assert service.evaluate(entry, track) is None
+
+
+def test_artist_repetition_relaxes_at_artist_distance(tmp_path: Path) -> None:
+    database, session_id = _database(tmp_path / "artist-relaxation.db")
+    now = datetime(2026, 7, 27, 12, 0)
+    _record(database, session_id, 1, now - timedelta(minutes=5))
+    service = PersistentRepetitionService(
+        RepetitionHistoryRepository(database),
+        track_window_size=0,
+        track_window_minutes=0,
+        artist_window_size=5,
+        artist_window_minutes=20,
+        clock=lambda: now,
+    )
+    entry = QueueEntry(8, 3, 1, QueueStatus.WAITING)
+    track = Track(3, "three.mp3", "Three", "Artist A", "", 180)
+    rule_input = SelectionRuleInput.from_values(entry, track)
+
+    strict = service.evaluate_rule(rule_input, SelectionContext("strict", "STRICT"))
+    relaxed = service.evaluate_rule(
+        rule_input,
+        SelectionContext(
+            "artist",
+            "ARTIST_DISTANCE",
+            frozenset({"ARTIST_REPETITION"}),
+        ),
+    )
+
+    assert strict.reason_code == "ARTIST_REPETITION"
+    assert strict.result_code is RuleOutcome.EXCLUDE
+    assert relaxed.reason_code == "ARTIST_REPETITION"
+    assert relaxed.result_code is RuleOutcome.RELAXED
 
 
 def test_artist_repetition_can_be_disabled_only_for_explicit_queue_sources(

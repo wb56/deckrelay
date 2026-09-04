@@ -5,8 +5,17 @@ from enum import StrEnum
 
 from party_player.database.connection import Database
 from party_player.models import QueueEntry, Track
-from party_player.selection_decision import RuleKind
-from party_player.track_selection import SelectionDecision
+from party_player.selection_decision import (
+    RuleEvaluation,
+    RuleKind,
+    SelectionContext,
+    SelectionRuleInput,
+    hard_rule_evaluation,
+)
+from party_player.track_selection import (
+    SelectionDecision,
+    selection_decision_from_evaluation,
+)
 
 
 class TrackPolicyStatus(StrEnum):
@@ -61,6 +70,7 @@ class PersistentTrackBlockService:
     rule_id = "selection.track_policy"
     rule_version = 1
     rule_kind = RuleKind.HARD_EXCLUSION
+    relaxable_reason_codes: frozenset[str] = frozenset()
 
     def __init__(self, repository: TrackPolicyRepository) -> None:
         self._repository = repository
@@ -81,13 +91,45 @@ class PersistentTrackBlockService:
         return entry.queue_id in self._operator_overrides
 
     def evaluate(self, entry: QueueEntry, track: Track) -> SelectionDecision | None:
+        return selection_decision_from_evaluation(
+            self.evaluate_rule(
+                SelectionRuleInput.from_values(entry, track),
+                SelectionContext("legacy-track-policy"),
+            )
+        )
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        track = rule_input.track
+        assert track is not None
         policy = self._repository.get(track.id)
         if policy.status is TrackPolicyStatus.ALLOWED:
-            return None
-        if entry.queue_id in self._operator_overrides:
-            return None
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="TRACK_POLICY_ALLOWED",
+                reason="Titelrichtlinie erlaubt die Auswahl",
+            )
         code = "BLOCKED_TRACK" if policy.status is TrackPolicyStatus.BLOCKED else "RESTRICTED_TRACK"
-        return SelectionDecision.reject(
-            code,
-            reason=policy.reason or "Titel benötigt eine ausdrückliche Operatorfreigabe",
+        reason = policy.reason or "Titel benötigt eine ausdrückliche Operatorfreigabe"
+        if rule_input.entry.queue_id in self._operator_overrides:
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code=code,
+                reason=reason,
+                operator_override=True,
+            )
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code=code,
+            reason=reason,
+            excluded=True,
         )
