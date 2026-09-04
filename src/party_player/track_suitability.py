@@ -6,6 +6,7 @@ from enum import StrEnum
 from party_player.database.connection import Database
 from party_player.enums import QueueSource
 from party_player.models import QueueEntry, Track
+from party_player.selection_decision import RuleKind
 from party_player.track_selection import SelectionDecision
 
 
@@ -63,6 +64,10 @@ class TrackSuitabilityRepository:
 class TrackSuitabilityService:
     """Require explicit suitability for non-operator queue sources."""
 
+    rule_id = "selection.track_suitability"
+    rule_version = 1
+    rule_kind = RuleKind.HARD_EXCLUSION
+
     _OPERATOR_SOURCES = frozenset({QueueSource.MANUAL, QueueSource.PLAYLIST})
 
     def __init__(self, repository: TrackSuitabilityRepository) -> None:
@@ -71,6 +76,9 @@ class TrackSuitabilityService:
 
     def allow_queue_entry(self, queue_id: int) -> None:
         self._operator_overrides.add(queue_id)
+
+    def operator_override_applies(self, entry: QueueEntry) -> bool:
+        return entry.queue_id in self._operator_overrides
 
     def evaluate(self, entry: QueueEntry, track: Track) -> SelectionDecision | None:
         suitability = self._repository.get(track.id)

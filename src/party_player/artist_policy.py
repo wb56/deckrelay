@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from party_player.database.connection import Database
 from party_player.models import QueueEntry, Track
+from party_player.selection_decision import RuleKind
 from party_player.track_selection import SelectionDecision, normalize_artist_name
 
 
@@ -99,6 +100,10 @@ class ArtistPolicyRepository:
 
 
 class PersistentArtistBlockService:
+    rule_id = "selection.artist_policy"
+    rule_version = 1
+    rule_kind = RuleKind.HARD_EXCLUSION
+
     def __init__(
         self,
         repository: ArtistPolicyRepository,

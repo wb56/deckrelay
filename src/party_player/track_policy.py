@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from party_player.database.connection import Database
 from party_player.models import QueueEntry, Track
+from party_player.selection_decision import RuleKind
 from party_player.track_selection import SelectionDecision
 
 
@@ -57,6 +58,10 @@ class TrackPolicyRepository:
 class PersistentTrackBlockService:
     """Selection rule with explicit per-queue operator overrides."""
 
+    rule_id = "selection.track_policy"
+    rule_version = 1
+    rule_kind = RuleKind.HARD_EXCLUSION
+
     def __init__(self, repository: TrackPolicyRepository) -> None:
         self._repository = repository
         self._operator_overrides: set[int] = set()
@@ -71,6 +76,9 @@ class PersistentTrackBlockService:
 
     def allow_queue_entry(self, queue_id: int) -> None:
         self._operator_overrides.add(queue_id)
+
+    def operator_override_applies(self, entry: QueueEntry) -> bool:
+        return entry.queue_id in self._operator_overrides
 
     def evaluate(self, entry: QueueEntry, track: Track) -> SelectionDecision | None:
         policy = self._repository.get(track.id)

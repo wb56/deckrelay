@@ -4,7 +4,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import random
 import logging
+from threading import Event, Thread
+from types import SimpleNamespace
 
+import party_player.automatic_selection as automatic_selection_module
+import pytest
 from party_player.automatic_selection import (
     AutomaticSelectionHistory,
     AutomaticSelectionService,
@@ -23,6 +27,7 @@ from party_player.track_suitability import (
     TrackSuitabilityRepository,
     TrackSuitabilityService,
 )
+from party_player.selection_decision import RuleOutcome, SelectionOutcome
 from party_player.emergency_playlist import EmergencyMediaType, LocalEmergencyPlaylistService
 from party_player.emergency_storage import EmergencyDriveKind, EmergencyStoragePolicy
 from party_player.file_availability import FileAvailabilityService
@@ -81,6 +86,152 @@ def test_selection_avoids_recent_and_prefers_lower_play_count(tmp_path: Path) ->
 
     assert selected is not None
     assert selected.id == 3
+    assert selector.last_rationale is not None
+    assert selector.last_rationale.outcome is SelectionOutcome.ACCEPTED
+    assert selector.last_rationale.selected_candidate is not None
+    assert selector.last_rationale.selected_candidate.track_id == selected.id
+    assert selector.last_rationale.tie_break_method == "LOWEST_PLAY_COUNT_THEN_INJECTED_RNG"
+
+
+def test_selection_rationale_explains_relaxation_without_changing_rng_result(
+    tmp_path: Path,
+) -> None:
+    class ArtistDistanceRule:
+        rule_id = "test.artist_distance"
+        rule_version = 1
+
+        def evaluate(self, _entry, _track):
+            return SelectionDecision.reject("ARTIST_REPETITION", reason="too recent")
+
+    database, _session_id = _database(tmp_path / "rationale-relaxation.db")
+    expected = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        randomizer=random.Random(11),
+    ).select(TrackSelectionService((ArtistDistanceRule(),)))
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        randomizer=random.Random(11),
+    )
+
+    selected = selector.select(TrackSelectionService((ArtistDistanceRule(),)))
+
+    assert selected is not None and expected is not None
+    assert selected.id == expected.id
+    assert selector.last_rationale is not None
+    assert selector.last_rationale.relaxation_stage == "ARTIST_DISTANCE"
+    assert any(
+        evaluation.result_code is RuleOutcome.RELAXED
+        and evaluation.reason_code == "ARTIST_REPETITION"
+        for evaluation in selector.last_rationale.rule_evaluations
+    )
+
+
+def test_selection_rationale_is_bounded_and_keeps_selected_candidate(tmp_path: Path) -> None:
+    database, _session_id = _database(tmp_path / "bounded-rationale.db")
+    with database.connect() as connection:
+        connection.executemany(
+            "INSERT INTO tracks (id, file_path, title, artist) VALUES (?, ?, ?, ?)",
+            [
+                (track_id, f"{track_id}.mp3", f"Track {track_id}", f"Artist {track_id}")
+                for track_id in range(4, 65)
+            ],
+        )
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        randomizer=random.Random(5),
+    )
+
+    selected = selector.select(TrackSelectionService())
+
+    assert selected is not None
+    assert selector.last_rationale is not None
+    assert len(selector.last_rationale.evaluated_candidates) == 50
+    assert selector.last_rationale.evaluated_candidate_count == 64
+    assert selector.last_rationale.omitted_candidate_count == 14
+    assert selector.last_rationale.selected_candidate is not None
+    assert selector.last_rationale.selected_candidate.track_id == selected.id
+    assert selector.last_rationale.warnings
+    selected_summaries = [
+        evaluation
+        for evaluation in selector.last_rationale.evaluated_candidates
+        if evaluation.accepted and evaluation.candidate.track_id == selected.id
+    ]
+    assert len(selected_summaries) == 1
+    assert all(
+        evaluation.relaxation_stage == selector.last_rationale.relaxation_stage
+        for evaluation in selected_summaries[0].rules
+    )
+
+
+def test_overlapping_selections_publish_the_last_completed_rationale(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class BlockingFirstRule:
+        rule_id = "test.blocking"
+        rule_version = 1
+
+        def __init__(self) -> None:
+            self.first_started = Event()
+            self.release_first = Event()
+            self.calls = 0
+
+        def evaluate(self, _entry, _track):
+            self.calls += 1
+            if self.calls == 1:
+                self.first_started.set()
+                assert self.release_first.wait(timeout=5)
+            return None
+
+    database, _session_id = _database(tmp_path / "parallel-rationale.db")
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        randomizer=random.Random(2),
+    )
+    rule = BlockingFirstRule()
+    contexts = iter([SimpleNamespace(hex="first-context"), SimpleNamespace(hex="second-context")])
+    monkeypatch.setattr(automatic_selection_module.uuid, "uuid4", lambda: next(contexts))
+    results = []
+
+    first = Thread(target=lambda: results.append(selector.select(TrackSelectionService((rule,)))))
+    second = Thread(target=lambda: results.append(selector.select(TrackSelectionService((rule,)))))
+    first.start()
+    assert rule.first_started.wait(timeout=5)
+    second.start()
+    rule.release_first.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert len(results) == 2
+    assert selector.last_rationale is not None
+    assert selector.last_rationale.context_id == "second-context"
+
+
+def test_failed_selection_clears_previous_rationale(tmp_path: Path, monkeypatch) -> None:
+    database, _session_id = _database(tmp_path / "failed-rationale.db")
+    history = AutomaticSelectionHistory(database)
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        history,
+        randomizer=random.Random(2),
+    )
+    assert selector.select(TrackSelectionService()) is not None
+    assert selector.last_rationale is not None
+
+    def fail(_limit: int) -> set[int]:
+        raise RuntimeError("history unavailable")
+
+    monkeypatch.setattr(history, "recent_track_ids", fail)
+
+    with pytest.raises(RuntimeError, match="history unavailable"):
+        selector.select(TrackSelectionService())
+
+    assert selector.last_rationale is None
+    assert selector.last_relaxation_stage == "NONE"
 
 
 def test_empty_queue_can_create_automatic_entry_with_injected_rng(tmp_path: Path) -> None:
@@ -160,6 +311,29 @@ def test_selection_logs_and_exposes_used_relaxation_stage(
     assert selected is not None
     assert selector.last_relaxation_stage == "ARTIST_DISTANCE"
     assert "Regelentspannung ARTIST_DISTANCE" in caplog.text
+
+
+def test_selection_logs_bounded_structured_decision_fields(tmp_path: Path, caplog) -> None:
+    database, _session_id = _database(tmp_path / "structured-selection-log.db")
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        randomizer=random.Random(2),
+    )
+
+    with caplog.at_level(logging.INFO):
+        selected = selector.select(TrackSelectionService())
+
+    assert selected is not None
+    record = next(
+        record
+        for record in caplog.records
+        if record.getMessage() == "Automatische Auswahlentscheidung"
+    )
+    assert record.selection_context_id  # type: ignore[attr-defined]
+    assert record.selection_outcome == "ACCEPTED"  # type: ignore[attr-defined]
+    assert record.reason_code == "SELECTED"  # type: ignore[attr-defined]
+    assert record.relaxation_stage == "STRICT"  # type: ignore[attr-defined]
 
 
 def test_local_emergency_playlist_is_last_stage_and_keeps_hard_blocks(

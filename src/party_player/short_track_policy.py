@@ -3,10 +3,15 @@
 from party_player.cue_points import CuePointService
 from party_player.enums import QueueSource, ShortTrackPolicy
 from party_player.models import QueueEntry, Track
+from party_player.selection_decision import RuleKind
 from party_player.track_selection import SelectionDecision
 
 
 class ShortTrackSelectionRule:
+    rule_id = "selection.short_track"
+    rule_version = 1
+    rule_kind = RuleKind.HARD_EXCLUSION
+
     def __init__(
         self,
         cue_points: CuePointService,

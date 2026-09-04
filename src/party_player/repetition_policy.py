@@ -8,6 +8,7 @@ import logging
 from party_player.database.connection import Database
 from party_player.enums import QueueSource
 from party_player.models import QueueEntry, Track
+from party_player.selection_decision import RuleKind
 from party_player.track_selection import SelectionDecision, normalize_artist_name
 
 
@@ -80,6 +81,10 @@ class RepetitionHistoryRepository:
 class PersistentRepetitionService:
     """Apply independent count and elapsed-time windows to history."""
 
+    rule_id = "selection.repetition"
+    rule_version = 1
+    rule_kind = RuleKind.HARD_EXCLUSION
+
     def __init__(
         self,
         repository: RepetitionHistoryRepository,
@@ -128,6 +133,9 @@ class PersistentRepetitionService:
             "Operator-Override für Wiederholungsschutz: queue_id=%s",
             queue_id,
         )
+
+    def operator_override_applies(self, entry: QueueEntry) -> bool:
+        return entry.queue_id in self._operator_overrides
 
     def evaluate(self, entry: QueueEntry, track: Track) -> SelectionDecision | None:
         if entry.queue_id in self._operator_overrides:
