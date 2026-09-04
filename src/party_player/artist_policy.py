@@ -7,8 +7,18 @@ from enum import StrEnum
 
 from party_player.database.connection import Database
 from party_player.models import QueueEntry, Track
-from party_player.selection_decision import RuleKind
-from party_player.track_selection import SelectionDecision, normalize_artist_name
+from party_player.selection_decision import (
+    RuleEvaluation,
+    RuleKind,
+    SelectionContext,
+    SelectionRuleInput,
+    hard_rule_evaluation,
+)
+from party_player.track_selection import (
+    SelectionDecision,
+    normalize_artist_name,
+    selection_decision_from_evaluation,
+)
 
 
 class ArtistPolicyScope(StrEnum):
@@ -103,6 +113,7 @@ class PersistentArtistBlockService:
     rule_id = "selection.artist_policy"
     rule_version = 1
     rule_kind = RuleKind.HARD_EXCLUSION
+    relaxable_reason_codes: frozenset[str] = frozenset()
 
     def __init__(
         self,
@@ -115,10 +126,31 @@ class PersistentArtistBlockService:
         self._session_id = session_id
         self._clock = clock
 
-    def evaluate(self, _entry: QueueEntry, track: Track) -> SelectionDecision | None:
+    def evaluate(self, entry: QueueEntry, track: Track) -> SelectionDecision | None:
+        return selection_decision_from_evaluation(
+            self.evaluate_rule(
+                SelectionRuleInput.from_values(entry, track),
+                SelectionContext("legacy-artist-policy"),
+            )
+        )
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        track = rule_input.track
+        assert track is not None
         policy = self._repository.get(track.artist)
         if policy is None:
-            return None
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="NO_ARTIST_POLICY",
+                reason="Für den Interpreten ist keine Sperrrichtlinie hinterlegt",
+                applicable=False,
+            )
         active = (
             policy.scope is ArtistPolicyScope.PERMANENT
             or (policy.scope is ArtistPolicyScope.SESSION and policy.session_id == self._session_id)
@@ -129,8 +161,19 @@ class PersistentArtistBlockService:
             )
         )
         if not active:
-            return None
-        return SelectionDecision.reject(
-            "BLOCKED_ARTIST",
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="ARTIST_POLICY_INACTIVE",
+                reason="Die Interpretensperre ist im aktuellen Kontext nicht aktiv",
+                applicable=False,
+            )
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code="BLOCKED_ARTIST",
             reason=policy.reason or "Interpret ist für die automatische Auswahl gesperrt",
+            excluded=True,
         )

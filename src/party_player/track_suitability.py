@@ -6,8 +6,17 @@ from enum import StrEnum
 from party_player.database.connection import Database
 from party_player.enums import QueueSource
 from party_player.models import QueueEntry, Track
-from party_player.selection_decision import RuleKind
-from party_player.track_selection import SelectionDecision
+from party_player.selection_decision import (
+    RuleEvaluation,
+    RuleKind,
+    SelectionContext,
+    SelectionRuleInput,
+    hard_rule_evaluation,
+)
+from party_player.track_selection import (
+    SelectionDecision,
+    selection_decision_from_evaluation,
+)
 
 
 class TrackSuitabilityStatus(StrEnum):
@@ -67,6 +76,7 @@ class TrackSuitabilityService:
     rule_id = "selection.track_suitability"
     rule_version = 1
     rule_kind = RuleKind.HARD_EXCLUSION
+    relaxable_reason_codes: frozenset[str] = frozenset()
 
     _OPERATOR_SOURCES = frozenset({QueueSource.MANUAL, QueueSource.PLAYLIST})
 
@@ -81,24 +91,63 @@ class TrackSuitabilityService:
         return entry.queue_id in self._operator_overrides
 
     def evaluate(self, entry: QueueEntry, track: Track) -> SelectionDecision | None:
+        return selection_decision_from_evaluation(
+            self.evaluate_rule(
+                SelectionRuleInput.from_values(entry, track),
+                SelectionContext("legacy-track-suitability"),
+            )
+        )
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation:
+        track = rule_input.track
+        assert track is not None
         suitability = self._repository.get(track.id)
         if suitability.status is TrackSuitabilityStatus.SUITABLE:
-            return None
-        if entry.queue_id in self._operator_overrides:
-            return None
-        if (
-            suitability.status
-            in {TrackSuitabilityStatus.MANUAL_ONLY, TrackSuitabilityStatus.UNKNOWN}
-            and entry.source in self._OPERATOR_SOURCES
-        ):
-            return None
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="TRACK_SUITABLE",
+                reason="Titel ist für die Auswahl freigegeben",
+            )
         code = (
             "UNSUITABLE_TRACK"
             if suitability.status is TrackSuitabilityStatus.UNSUITABLE
             else "SUITABILITY_APPROVAL_REQUIRED"
         )
-        return SelectionDecision.reject(
-            code,
-            reason=suitability.reason
-            or "Titel ist für die automatische Auswahl nicht ausdrücklich freigegeben",
+        reason = suitability.reason or (
+            "Titel ist für die automatische Auswahl nicht ausdrücklich freigegeben"
+        )
+        if rule_input.entry.queue_id in self._operator_overrides:
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code=code,
+                reason=reason,
+                operator_override=True,
+            )
+        if (
+            suitability.status
+            in {TrackSuitabilityStatus.MANUAL_ONLY, TrackSuitabilityStatus.UNKNOWN}
+            and rule_input.entry.source in self._OPERATOR_SOURCES
+        ):
+            return hard_rule_evaluation(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                context=context,
+                reason_code="SUITABILITY_OPERATOR_SOURCE_ALLOWED",
+                reason="Die Operatorquelle darf den Titel gemäß Eignungsrichtlinie auswählen",
+            )
+        return hard_rule_evaluation(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            context=context,
+            reason_code=code,
+            reason=reason,
+            excluded=True,
         )

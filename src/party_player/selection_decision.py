@@ -4,8 +4,9 @@ The model deliberately contains no scoring concepts yet.  It describes the
 existing ordered hard-rule pipeline without changing its outcome.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Protocol
 
 from party_player.enums import QueueSource, QueueStatus
 from party_player.models import QueueEntry, Track
@@ -20,6 +21,7 @@ class RuleOutcome(StrEnum):
     EXCLUDE = "EXCLUDE"
     RELAXED = "RELAXED"
     OVERRIDDEN = "OVERRIDDEN"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
 class SelectionOutcome(StrEnum):
@@ -59,6 +61,23 @@ class SelectionContext:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectionRuleInput:
+    """Execution-only input; private source objects never enter diagnostics."""
+
+    candidate: SelectionCandidate
+    entry: QueueEntry = field(repr=False, compare=False)
+    track: Track | None = field(repr=False, compare=False)
+
+    @classmethod
+    def from_values(
+        cls,
+        entry: QueueEntry,
+        track: Track | None,
+    ) -> "SelectionRuleInput":
+        return cls(SelectionCandidate.from_entry(entry, track), entry, track)
+
+
+@dataclass(frozen=True, slots=True)
 class RuleEvaluation:
     rule_id: str
     rule_version: int
@@ -67,8 +86,66 @@ class RuleEvaluation:
     reason_code: str
     reason: str
     relaxation_stage: str
+    relaxable: bool = False
     operator_override: bool = False
     facts: tuple[tuple[str, str | int | float | bool | None], ...] = ()
+    terminal_status: QueueStatus = QueueStatus.SKIPPED
+
+
+class ExecutableSelectionRule(Protocol):
+    """Small common contract for deterministic hard selection rules."""
+
+    rule_id: str
+    rule_version: int
+    rule_kind: RuleKind
+    relaxable_reason_codes: frozenset[str]
+
+    def evaluate_rule(
+        self,
+        rule_input: SelectionRuleInput,
+        context: SelectionContext,
+    ) -> RuleEvaluation: ...
+
+
+def hard_rule_evaluation(
+    *,
+    rule_id: str,
+    rule_version: int,
+    context: SelectionContext,
+    reason_code: str,
+    reason: str,
+    excluded: bool = False,
+    operator_override: bool = False,
+    applicable: bool = True,
+    relaxable_reason_codes: frozenset[str] = frozenset(),
+    facts: tuple[tuple[str, str | int | float | bool | None], ...] = (),
+    terminal_status: QueueStatus = QueueStatus.SKIPPED,
+) -> RuleEvaluation:
+    """Build one hard-rule result and apply only explicitly allowed relaxation."""
+    relaxable = reason_code in relaxable_reason_codes
+    if not applicable:
+        outcome = RuleOutcome.NOT_APPLICABLE
+    elif operator_override:
+        outcome = RuleOutcome.OVERRIDDEN
+    elif excluded and relaxable and reason_code in context.relaxed_codes:
+        outcome = RuleOutcome.RELAXED
+    elif excluded:
+        outcome = RuleOutcome.EXCLUDE
+    else:
+        outcome = RuleOutcome.PASS
+    return RuleEvaluation(
+        rule_id=rule_id,
+        rule_version=rule_version,
+        rule_kind=RuleKind.HARD_EXCLUSION,
+        result_code=outcome,
+        reason_code=reason_code,
+        reason=reason,
+        relaxation_stage=context.relaxation_stage,
+        relaxable=relaxable,
+        operator_override=operator_override,
+        facts=facts,
+        terminal_status=terminal_status,
+    )
 
 
 @dataclass(frozen=True, slots=True)
