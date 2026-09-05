@@ -33,6 +33,7 @@ from party_player.selection_decision import SelectionContext, SelectionRuleInput
 from party_player.emergency_playlist import EmergencyMediaType, LocalEmergencyPlaylistService
 from party_player.emergency_storage import EmergencyDriveKind, EmergencyStoragePolicy
 from party_player.file_availability import FileAvailabilityService
+from party_player.selection_source import SelectionSourceClass, SourceResolutionReason
 
 
 def _database(path: Path) -> tuple[Database, int]:
@@ -412,6 +413,18 @@ def test_empty_queue_can_create_automatic_entry_with_injected_rng(tmp_path: Path
     assert candidate is not None
     assert candidate.source is QueueSource.AUTOMATIC
     assert candidate.priority == QueueSource.AUTOMATIC.default_priority
+    assert service.last_source_resolution is not None
+    assert service.last_source_resolution.selected_source is SelectionSourceClass.AUTOMATIC
+    assert (
+        service.last_source_resolution.reason
+        is SourceResolutionReason.AUTOMATIC_REQUIRED_EMPTY_QUEUE
+    )
+    assert selector.last_rationale is not None
+    assert (
+        service.last_source_resolution.context.selection_rationale_context_id
+        == selector.last_rationale.context_id
+        == service.last_source_resolution.context.context_id
+    )
     assert len(service.entries()) == 1
     with database.connect() as connection:
         events = [
@@ -442,6 +455,8 @@ def test_existing_manual_queue_entry_prevents_automatic_scoring(tmp_path: Path) 
 
     assert candidate == manual
     assert selector.last_rationale is None
+    assert service.last_source_resolution is not None
+    assert not service.last_source_resolution.automatic_required
 
 
 @pytest.mark.parametrize("expected_stage", ["STRICT", "ARTIST_DISTANCE", "TRACK_DISTANCE"])
@@ -587,6 +602,48 @@ def test_local_emergency_playlist_is_last_stage_and_keeps_hard_blocks(
 
     assert selector.select_emergency(TrackSelectionService((BlockEmergency(),))) is None
     assert selector.last_relaxation_stage == "NO_SAFE_CANDIDATE"
+
+
+def test_source_resolution_marks_only_automatic_emergency_as_fallback(tmp_path: Path) -> None:
+    class BlockAutomaticCatalog:
+        def evaluate(self, entry, _track):
+            if entry.source is QueueSource.AUTOMATIC:
+                return SelectionDecision.reject("BLOCKED_TRACK")
+            return None
+
+    database, session_id = _database(tmp_path / "resolved-emergency-fallback.db")
+    emergency_file = tmp_path / "three.mp3"
+    emergency_file.write_bytes(b"local emergency audio")
+    tracks = TrackRepository(database)
+    selector = AutomaticSelectionService(
+        tracks,
+        AutomaticSelectionHistory(database),
+        emergency_playlist=LocalEmergencyPlaylistService(
+            tracks,
+            FileAvailabilityService(network_retry_delay_seconds=0),
+            [3],
+        ),
+    )
+    service = QueueService(
+        PartyPlayerRepository(database),
+        tracks,
+        session_id,
+        empty_queue_policy=EmptyQueuePolicy.AUTOMATIC_SELECTION,
+        automatic_selection=selector,
+        selection_service=TrackSelectionService((BlockAutomaticCatalog(),)),
+    )
+
+    candidate = service.get_next_candidate()
+
+    assert candidate is not None and candidate.source is QueueSource.EMERGENCY
+    resolution = service.last_source_resolution
+    assert resolution is not None
+    assert resolution.selected_source is SelectionSourceClass.EMERGENCY
+    assert resolution.reason is SourceResolutionReason.AUTOMATIC_EMERGENCY_FALLBACK
+    assert resolution.automatic_required
+    assert resolution.emergency_fallback
+    assert selector.last_rationale is not None
+    assert resolution.context.context_id == selector.last_rationale.context_id
 
 
 def test_emergency_playlist_exposes_timestamped_readiness_and_rejection_reasons(

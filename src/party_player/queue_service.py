@@ -2,6 +2,7 @@
 
 import logging
 import random
+import uuid
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 from collections.abc import Callable
@@ -17,6 +18,11 @@ from party_player.file_availability import FileAvailabilityChecker, FileAvailabi
 from party_player.automatic_selection import AutomaticSelectionService
 from party_player.structured_logging import log_queue_event
 from party_player.performance_monitor import PerformanceMonitor
+from party_player.selection_source import (
+    SelectionSourceResolver,
+    SourceResolution,
+    SourceResolutionReason,
+)
 
 
 class QueueService:
@@ -130,6 +136,8 @@ class QueueService:
         self._repeat_playlist_entries = repeat_playlist_entries
         self._logger = logging.getLogger(__name__)
         self._performance: PerformanceMonitor | None = None
+        self._source_resolver = SelectionSourceResolver()
+        self.last_source_resolution: SourceResolution | None = None
 
     def close_cached_connection(self) -> bool:
         """Close the repository cache owned by the calling persistence worker."""
@@ -880,26 +888,60 @@ class QueueService:
         callers may reject one candidate, add its id to ``excluded_queue_ids``,
         and request the next entry without mutating positions or deck state.
         """
+        self.last_source_resolution = None
+        resolution_context_id = uuid.uuid4().hex
         excluded = excluded_queue_ids or set()
+        ordered_entries = self._fair_candidate_entries()
         candidate = next(
             (
                 entry
-                for entry in self._fair_candidate_entries()
+                for entry in ordered_entries
                 if entry.status == QueueStatus.WAITING and entry.queue_id not in excluded
             ),
             None,
         )
         if candidate is not None:
+            self.last_source_resolution = self._source_resolver.describe_waiting_queue(
+                candidate,
+                context_id=resolution_context_id,
+                empty_queue_policy=self.empty_queue_policy,
+                waiting_candidate_count=sum(
+                    entry.status is QueueStatus.WAITING and entry.queue_id not in excluded
+                    for entry in ordered_entries
+                ),
+                guest_fairness_round=self._guest_fairness_round(ordered_entries, candidate),
+            )
             return candidate
         if (
             excluded
             or not allow_empty_queue_selection
             or self.empty_queue_policy is EmptyQueuePolicy.STOP_AFTER_CURRENT
         ):
+            self.last_source_resolution = self._source_resolver.describe_unavailable(
+                context_id=resolution_context_id,
+                rationale_context_id=None,
+                empty_queue_policy=self.empty_queue_policy,
+                automatic_required=False,
+            )
             return None
         if self.empty_queue_policy is EmptyQueuePolicy.REPEAT_CURRENT_PLAYLIST:
-            return self._repeat_current_playlist()
+            repeated = self._repeat_current_playlist()
+            if repeated is not None:
+                self.last_source_resolution = self._source_resolver.describe_generated(
+                    repeated,
+                    context_id=resolution_context_id,
+                    rationale_context_id=None,
+                    empty_queue_policy=self.empty_queue_policy,
+                    reason=SourceResolutionReason.REPEAT_PLAYLIST_POLICY,
+                )
+            return repeated
         if self._automatic_selection is None:
+            self.last_source_resolution = self._source_resolver.describe_unavailable(
+                context_id=resolution_context_id,
+                rationale_context_id=None,
+                empty_queue_policy=self.empty_queue_policy,
+                automatic_required=False,
+            )
             return None
         selected = (
             self._automatic_selection.select_emergency(self._selection_service)
@@ -923,6 +965,15 @@ class QueueService:
                 reason_code=stage,
             )
         if selected is None:
+            rationale = self._automatic_selection.last_rationale
+            self.last_source_resolution = self._source_resolver.describe_unavailable(
+                context_id=(
+                    rationale.context_id if rationale is not None else resolution_context_id
+                ),
+                rationale_context_id=(rationale.context_id if rationale is not None else None),
+                empty_queue_policy=self.empty_queue_policy,
+                automatic_required=True,
+            )
             return None
         source = (
             QueueSource.EMERGENCY
@@ -935,7 +986,25 @@ class QueueService:
             entity_id=selected.id,
             details={"stage": stage, "source": source.value},
         )
-        return self.add(selected.id, source=source)
+        added = self.add(selected.id, source=source)
+        rationale = self._automatic_selection.last_rationale
+        context_id = rationale.context_id if rationale is not None else resolution_context_id
+        if source is QueueSource.EMERGENCY:
+            reason = (
+                SourceResolutionReason.DIRECT_EMERGENCY_POLICY
+                if self.empty_queue_policy is EmptyQueuePolicy.EMERGENCY_PLAYLIST
+                else SourceResolutionReason.AUTOMATIC_EMERGENCY_FALLBACK
+            )
+        else:
+            reason = SourceResolutionReason.AUTOMATIC_REQUIRED_EMPTY_QUEUE
+        self.last_source_resolution = self._source_resolver.describe_generated(
+            added,
+            context_id=context_id,
+            rationale_context_id=(rationale.context_id if rationale is not None else None),
+            empty_queue_policy=self.empty_queue_policy,
+            reason=reason,
+        )
+        return added
 
     def _repeat_current_playlist(self) -> QueueEntry | None:
         if self._repeat_playlist_entries is None:
@@ -959,7 +1028,7 @@ class QueueService:
 
     def _fair_candidate_entries(self) -> list[QueueEntry]:
         """Round-robin equal-priority guest wishes without changing stored positions."""
-        entries = self.entries()
+        entries = sorted(self.entries(), key=self._source_resolver.queue_sort_key)
         priorities = {
             entry.priority
             for entry in entries
@@ -1002,6 +1071,20 @@ class QueueService:
             for index, entry in zip(indexes, ordered, strict=True):
                 entries[index] = entry
         return entries
+
+    @staticmethod
+    def _guest_fairness_round(entries: list[QueueEntry], selected: QueueEntry) -> int | None:
+        if selected.source is not QueueSource.GUEST_REQUEST:
+            return None
+        requester = " ".join(selected.requested_by.casefold().split())
+        if not requester:
+            return 0
+        return sum(
+            entry.source is QueueSource.GUEST_REQUEST
+            and entry.priority == selected.priority
+            and " ".join(entry.requested_by.casefold().split()) == requester
+            for entry in entries[: entries.index(selected)]
+        )
 
     def restore_deck_assignments(self, deck_a: DeckController, deck_b: DeckController) -> list[str]:
         """Restore persisted deck loads without ever starting playback."""

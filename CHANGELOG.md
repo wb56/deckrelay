@@ -37,6 +37,8 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Changed
 
+- Queue-, Automatik- und Notfallquellen liefern eine gemeinsame strukturierte Erklärung
+  ihrer unveränderten Prioritäts- und Herkunftsentscheidung.
 - Die automatische Katalogauswahl bildet ihre bisherige Bevorzugung selten gespielter
   Titel als nachvollziehbaren Soft-Score ab. Bei gleicher Abspielhäufigkeit wirkt die
   optionale Bewertung begrenzt; fehlende Bewertungen bleiben ausdrücklich neutral.

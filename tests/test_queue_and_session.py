@@ -28,6 +28,7 @@ from party_player.saved_queue_service import SavedQueueService
 from party_player.session_service import PartySessionService
 from party_player.models import SavedQueueEntry
 from party_player.track_selection import SelectionDecision, TrackSelectionService
+from party_player.selection_source import SelectionSourceClass
 
 
 def database_with_tracks(path: Path) -> Database:
@@ -409,6 +410,11 @@ def test_restart_resets_volatile_queue_states_and_aborts_playing_entry(
     assert entries[preparing.queue_id].lock_source == "NONE"
     assert entries[ready.queue_id].locked
     assert entries[ready.queue_id].lock_source == "MANUAL"
+    recovered_queue = QueueService(repository, TrackRepository(database), session.session_id)
+    next_candidate = recovered_queue.get_next_candidate()
+    assert next_candidate is not None and next_candidate.queue_id == waiting.queue_id
+    assert recovered_queue.last_source_resolution is not None
+    assert recovered_queue.last_source_resolution.selected_source is SelectionSourceClass.MANUAL
     with database.connect() as connection:
         history = connection.execute(
             """SELECT completion_status, result_code, skip_code, queue_id
