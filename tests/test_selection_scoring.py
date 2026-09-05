@@ -1,6 +1,9 @@
 """Tests for transparent, deterministic soft candidate scoring."""
 
 from dataclasses import replace
+import math
+
+import pytest
 
 from party_player.enums import QueueSource, QueueStatus
 from party_player.models import QueueEntry, Track
@@ -93,6 +96,21 @@ def test_not_applicable_and_unknown_metadata_are_always_neutral() -> None:
         0,
     )
     assert (unknown.result_code, unknown.score_delta) == (RuleOutcome.UNKNOWN_METADATA, 0)
+
+
+@pytest.mark.parametrize("score", [math.inf, -math.inf, math.nan])
+def test_rule_evaluation_cannot_store_non_finite_score(score: float) -> None:
+    with pytest.raises(ValueError, match="endlich"):
+        RuleEvaluation(
+            rule_id="test.invalid-score",
+            rule_version=1,
+            rule_kind=RuleKind.SOFT_WEIGHT,
+            result_code=RuleOutcome.SCORE_DELTA,
+            reason_code="INVALID",
+            reason="",
+            relaxation_stage="STRICT",
+            score_delta=score,
+        )
 
 
 def test_aggregator_ignores_score_values_from_non_scoring_outcomes() -> None:

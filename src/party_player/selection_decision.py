@@ -6,6 +6,7 @@ score contributions without coupling selection to the GUI.
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+import math
 from typing import Protocol
 
 from party_player.enums import QueueSource, QueueStatus
@@ -95,9 +96,13 @@ class RuleEvaluation:
     terminal_status: QueueStatus = QueueStatus.SKIPPED
     score_delta: float = 0.0
 
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.score_delta):
+            raise ValueError("Score-Beiträge müssen endlich sein")
+
 
 class ExecutableSelectionRule(Protocol):
-    """Small common contract for deterministic hard selection rules."""
+    """Small common contract for deterministic hard and soft selection rules."""
 
     rule_id: str
     rule_version: int

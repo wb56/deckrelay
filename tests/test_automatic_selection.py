@@ -184,6 +184,37 @@ def test_candidate_container_order_cannot_change_seeded_tie_result(tmp_path: Pat
     assert first_selected.id == second_selected.id
 
 
+def test_rng_runs_once_only_for_a_complete_score_tie(tmp_path: Path) -> None:
+    class CountingRandom(random.Random):
+        def __init__(self) -> None:
+            super().__init__(17)
+            self.choice_calls = 0
+
+        def choice(self, sequence):
+            self.choice_calls += 1
+            return super().choice(sequence)
+
+    database, _session_id = _database(tmp_path / "rng-only-for-tie.db")
+    tracks = TrackRepository(database)
+    history = AutomaticSelectionHistory(database)
+    tied_random = CountingRandom()
+    tied = AutomaticSelectionService(tracks, history, randomizer=tied_random)
+
+    assert tied.select(TrackSelectionService()) is not None
+    assert tied_random.choice_calls == 1
+
+    with database.connect() as connection:
+        connection.execute("UPDATE tracks SET rating = 5 WHERE id = 1")
+        connection.execute("UPDATE tracks SET rating = 1 WHERE id IN (2, 3)")
+    unique_random = CountingRandom()
+    unique = AutomaticSelectionService(tracks, history, randomizer=unique_random)
+
+    selected = unique.select(TrackSelectionService())
+
+    assert selected is not None and selected.id == 1
+    assert unique_random.choice_calls == 0
+
+
 def test_selection_rationale_explains_relaxation_without_changing_rng_result(
     tmp_path: Path,
 ) -> None:

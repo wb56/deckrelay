@@ -188,8 +188,9 @@ class AutomaticSelectionService:
                         top.append((track, candidate_evaluation))
             if not top:
                 continue
-            selected, selected_evaluation = self._random.choice(
-                sorted(top, key=lambda item: item[0].id)
+            stable_top = sorted(top, key=lambda item: item[0].id)
+            selected, selected_evaluation = (
+                stable_top[0] if len(stable_top) == 1 else self._random.choice(stable_top)
             )
             self.last_relaxation_stage = stage
             self.last_rationale = self._rationale(
