@@ -26,7 +26,7 @@ def derive_queue_origin(entries: list[QueueEntry]) -> QueueOrigin:
     active_entries = [entry for entry in entries if entry.status in active_statuses]
     if not active_entries:
         return QueueOrigin("empty", "Queue leer")
-    origins = {_entry_origin(entry) for entry in active_entries}
+    origins = {entry_origin(entry) for entry in active_entries}
     if len(origins) != 1:
         return QueueOrigin("mixed", "gemischte Queue")
     kind, name = origins.pop()
@@ -37,7 +37,8 @@ def derive_queue_origin(entries: list[QueueEntry]) -> QueueOrigin:
     return QueueOrigin(kind, name)
 
 
-def _entry_origin(entry: QueueEntry) -> tuple[str, str]:
+def entry_origin(entry: QueueEntry) -> tuple[str, str]:
+    """Return safe origin kind and label without exposing a full directory path."""
     raw = entry.source_detail.strip()
     normalized = raw.casefold()
     if normalized.startswith("directory:"):
