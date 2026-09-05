@@ -1,11 +1,12 @@
 """Immutable explanation model for track-selection decisions.
 
-The model deliberately contains no scoring concepts yet.  It describes the
-existing ordered hard-rule pipeline without changing its outcome.
+The model describes both ordered hard-rule decisions and transparent soft
+score contributions without coupling selection to the GUI.
 """
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+import math
 from typing import Protocol
 
 from party_player.enums import QueueSource, QueueStatus
@@ -14,6 +15,7 @@ from party_player.models import QueueEntry, Track
 
 class RuleKind(StrEnum):
     HARD_EXCLUSION = "HARD_EXCLUSION"
+    SOFT_WEIGHT = "SOFT_WEIGHT"
 
 
 class RuleOutcome(StrEnum):
@@ -22,6 +24,8 @@ class RuleOutcome(StrEnum):
     RELAXED = "RELAXED"
     OVERRIDDEN = "OVERRIDDEN"
     NOT_APPLICABLE = "NOT_APPLICABLE"
+    SCORE_DELTA = "SCORE_DELTA"
+    UNKNOWN_METADATA = "UNKNOWN_METADATA"
 
 
 class SelectionOutcome(StrEnum):
@@ -90,10 +94,15 @@ class RuleEvaluation:
     operator_override: bool = False
     facts: tuple[tuple[str, str | int | float | bool | None], ...] = ()
     terminal_status: QueueStatus = QueueStatus.SKIPPED
+    score_delta: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.score_delta):
+            raise ValueError("Score-Beiträge müssen endlich sein")
 
 
 class ExecutableSelectionRule(Protocol):
-    """Small common contract for deterministic hard selection rules."""
+    """Small common contract for deterministic hard and soft selection rules."""
 
     rule_id: str
     rule_version: int
@@ -156,6 +165,7 @@ class CandidateEvaluation:
     terminal_status: QueueStatus
     reason: str
     rules: tuple[RuleEvaluation, ...]
+    total_score: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,6 +19,7 @@ class Track:
     year: int | None = None
     original_release_year: int | None = None
     bpm: float | None = None
+    rating: int | None = None
 
 
 @dataclass(slots=True)

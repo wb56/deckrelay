@@ -24,6 +24,11 @@ from party_player.selection_decision import (
     SelectionRuleInput,
     hard_rule_evaluation,
 )
+from party_player.selection_scoring import (
+    CandidateScorer,
+    PlayCountScoringRule,
+    RatingScoringRule,
+)
 
 
 class AutomaticSelectionHistory:
@@ -114,6 +119,7 @@ class AutomaticSelectionService:
         recent = self._history.recent_track_ids(self.recent_track_limit)
         recent_rule = AutomaticRecentTrackRule(recent)
         counts = self._history.play_counts()
+        scorer = CandidateScorer((PlayCountScoringRule(counts), RatingScoringRule()))
         stages: tuple[tuple[str, frozenset[str]], ...] = (
             ("STRICT", frozenset()),
             ("ARTIST_DISTANCE", frozenset({"ARTIST_REPETITION"})),
@@ -124,7 +130,7 @@ class AutomaticSelectionService:
         )
         candidates = self._tracks.automatic_candidates()
         for stage, relaxed_codes in stages:
-            minimum_count: int | None = None
+            highest_score: float | None = None
             top: list[tuple[Track, CandidateEvaluation]] = []
             for track in candidates:
                 synthetic = QueueEntry(
@@ -167,17 +173,25 @@ class AutomaticSelectionService:
                     reason=evaluated.reason,
                     rules=(recent_evaluation, *evaluated.rules),
                 )
+                if decision.accepted:
+                    candidate_evaluation = scorer.evaluate(
+                        rule_input,
+                        context,
+                        candidate_evaluation,
+                    )
                 self._append_summary(summaries, candidate_evaluation)
                 if decision.accepted:
-                    play_count = counts.get(track.id, 0)
-                    if minimum_count is None or play_count < minimum_count:
-                        minimum_count = play_count
+                    if highest_score is None or candidate_evaluation.total_score > highest_score:
+                        highest_score = candidate_evaluation.total_score
                         top = [(track, candidate_evaluation)]
-                    elif play_count == minimum_count:
+                    elif candidate_evaluation.total_score == highest_score:
                         top.append((track, candidate_evaluation))
             if not top:
                 continue
-            selected, selected_evaluation = self._random.choice(top)
+            stable_top = sorted(top, key=lambda item: item[0].id)
+            selected, selected_evaluation = (
+                stable_top[0] if len(stable_top) == 1 else self._random.choice(stable_top)
+            )
             self.last_relaxation_stage = stage
             self.last_rationale = self._rationale(
                 context_id,
@@ -186,7 +200,7 @@ class AutomaticSelectionService:
                 summaries,
                 evaluated_count,
                 stage,
-                "LOWEST_PLAY_COUNT_THEN_INJECTED_RNG",
+                "HIGHEST_SOFT_SCORE_THEN_STABLE_ID_ORDER_THEN_INJECTED_RNG",
                 selected_evaluation=selected_evaluation,
             )
             self._log_decision(self.last_rationale, reason_code="SELECTED")

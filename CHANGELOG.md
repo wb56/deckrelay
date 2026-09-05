@@ -37,6 +37,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Changed
 
+- Die automatische Katalogauswahl bildet ihre bisherige Bevorzugung selten gespielter
+  Titel als nachvollziehbaren Soft-Score ab. Bei gleicher Abspielhäufigkeit wirkt die
+  optionale Bewertung begrenzt; fehlende Bewertungen bleiben ausdrücklich neutral.
 - Der Titeleditor speichert Cue- und Metadatenänderungen ausdrücklich, bleibt danach
   aber für weitere Bearbeitung geöffnet. Lange Titel und Cue-Aktionen passen sich an
   die verfügbare Dialogbreite an.
