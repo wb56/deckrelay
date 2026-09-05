@@ -92,7 +92,96 @@ def test_selection_avoids_recent_and_prefers_lower_play_count(tmp_path: Path) ->
     assert selector.last_rationale.outcome is SelectionOutcome.ACCEPTED
     assert selector.last_rationale.selected_candidate is not None
     assert selector.last_rationale.selected_candidate.track_id == selected.id
-    assert selector.last_rationale.tie_break_method == "LOWEST_PLAY_COUNT_THEN_INJECTED_RNG"
+    assert (
+        selector.last_rationale.tie_break_method
+        == "HIGHEST_SOFT_SCORE_THEN_STABLE_ID_ORDER_THEN_INJECTED_RNG"
+    )
+
+
+def test_rating_orders_candidates_only_when_play_counts_are_equal(tmp_path: Path) -> None:
+    database, _session_id = _database(tmp_path / "rating-score.db")
+    with database.connect() as connection:
+        connection.execute("UPDATE tracks SET rating = 1 WHERE id = 1")
+        connection.execute("UPDATE tracks SET rating = 5 WHERE id = 2")
+        connection.execute("UPDATE tracks SET rating = NULL WHERE id = 3")
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(4),
+    )
+
+    selected = selector.select(TrackSelectionService())
+
+    assert selected is not None and selected.id == 2
+    assert selector.last_rationale is not None
+    selected_evaluation = next(
+        item
+        for item in selector.last_rationale.evaluated_candidates
+        if item.candidate.track_id == selected.id
+    )
+    assert selected_evaluation.total_score == 2
+    assert [rule.rule_id for rule in selected_evaluation.rules[-2:]] == [
+        "selection.play_count",
+        "selection.rating",
+    ]
+
+
+def test_one_fewer_play_always_outweighs_rating_difference(tmp_path: Path) -> None:
+    database, session_id = _database(tmp_path / "play-count-dominates.db")
+    repository = PartyPlayerRepository(database)
+    with database.connect() as connection:
+        connection.execute("UPDATE tracks SET rating = 1 WHERE id = 1")
+        connection.execute("UPDATE tracks SET rating = 5 WHERE id = 2")
+        connection.execute("UPDATE tracks SET rating = 5 WHERE id = 3")
+    _played(repository, session_id, 2, datetime(2026, 7, 27, 12, 0))
+    _played(repository, session_id, 3, datetime(2026, 7, 27, 12, 1))
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(4),
+    )
+
+    selected = selector.select(TrackSelectionService())
+
+    assert selected is not None and selected.id == 1
+
+
+def test_same_seed_and_input_produce_same_scored_selection(tmp_path: Path) -> None:
+    database, _session_id = _database(tmp_path / "scored-seed.db")
+    first = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        randomizer=random.Random(19),
+    )
+    second = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        randomizer=random.Random(19),
+    )
+
+    first_selected = first.select(TrackSelectionService())
+    second_selected = second.select(TrackSelectionService())
+
+    assert first_selected is not None and second_selected is not None
+    assert first_selected.id == second_selected.id
+
+
+def test_candidate_container_order_cannot_change_seeded_tie_result(tmp_path: Path) -> None:
+    database, _session_id = _database(tmp_path / "stable-candidate-order.db")
+    tracks = TrackRepository(database).automatic_candidates()
+    history = AutomaticSelectionHistory(database)
+    ascending = SimpleNamespace(automatic_candidates=lambda: list(tracks))
+    descending = SimpleNamespace(automatic_candidates=lambda: list(reversed(tracks)))
+    first = AutomaticSelectionService(ascending, history, randomizer=random.Random(23))
+    second = AutomaticSelectionService(descending, history, randomizer=random.Random(23))
+
+    first_selected = first.select(TrackSelectionService())
+    second_selected = second.select(TrackSelectionService())
+
+    assert first_selected is not None and second_selected is not None
+    assert first_selected.id == second_selected.id
 
 
 def test_selection_rationale_explains_relaxation_without_changing_rng_result(
@@ -299,6 +388,69 @@ def test_empty_queue_can_create_automatic_entry_with_injected_rng(tmp_path: Path
             for row in connection.execute("SELECT event_code FROM session_audit_events ORDER BY id")
         ]
     assert events == ["RULE_RELAXATION", "AUTOMATIC_SELECTION", "QUEUE_ADDED"]
+
+
+def test_existing_manual_queue_entry_prevents_automatic_scoring(tmp_path: Path) -> None:
+    database, session_id = _database(tmp_path / "manual-before-score.db")
+    tracks = TrackRepository(database)
+    selector = AutomaticSelectionService(
+        tracks,
+        AutomaticSelectionHistory(database),
+        randomizer=random.Random(7),
+    )
+    service = QueueService(
+        PartyPlayerRepository(database),
+        tracks,
+        session_id,
+        empty_queue_policy=EmptyQueuePolicy.AUTOMATIC_SELECTION,
+        automatic_selection=selector,
+    )
+    manual = service.add(1, source=QueueSource.MANUAL)
+
+    candidate = service.get_next_candidate()
+
+    assert candidate == manual
+    assert selector.last_rationale is None
+
+
+@pytest.mark.parametrize("expected_stage", ["STRICT", "ARTIST_DISTANCE", "TRACK_DISTANCE"])
+def test_selected_candidate_is_scored_in_every_relaxation_stage(
+    tmp_path: Path,
+    expected_stage: str,
+) -> None:
+    class ArtistBlocked:
+        def evaluate(self, _entry, _track):
+            if expected_stage != "STRICT":
+                return SelectionDecision.reject("ARTIST_REPETITION")
+            return None
+
+    database, session_id = _database(tmp_path / f"scored-{expected_stage}.db")
+    if expected_stage == "TRACK_DISTANCE":
+        repository = PartyPlayerRepository(database)
+        now = datetime(2026, 7, 27, 12, 0)
+        for track_id in (1, 2, 3):
+            _played(repository, session_id, track_id, now + timedelta(minutes=track_id))
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=25 if expected_stage == "TRACK_DISTANCE" else 0,
+        randomizer=random.Random(7),
+    )
+
+    selected = selector.select(TrackSelectionService((ArtistBlocked(),)))
+
+    assert selected is not None
+    assert selector.last_rationale is not None
+    assert selector.last_rationale.relaxation_stage == expected_stage
+    selected_evaluation = next(
+        item
+        for item in selector.last_rationale.evaluated_candidates
+        if item.candidate.track_id == selected.id and item.accepted
+    )
+    assert [rule.rule_id for rule in selected_evaluation.rules[-2:]] == [
+        "selection.play_count",
+        "selection.rating",
+    ]
 
 
 def test_empty_queue_does_not_add_track_requiring_suitability_approval(

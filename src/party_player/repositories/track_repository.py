@@ -50,7 +50,7 @@ class TrackRepository:
             rows = connection.execute(
                 """
                 SELECT id, file_path, title, artist, album, duration_seconds,
-                       genre, year, original_release_year, bpm
+                       genre, year, original_release_year, bpm, rating
                 FROM tracks WHERE catalog_visible = 1
                 ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE, id
                 LIMIT ? OFFSET ?
@@ -66,7 +66,7 @@ class TrackRepository:
             rows = connection.execute(
                 """
                 SELECT id, file_path, title, artist, album, duration_seconds,
-                       genre, year, original_release_year, bpm
+                       genre, year, original_release_year, bpm, rating
                 FROM tracks
                 WHERE catalog_visible = 1
                   AND (title LIKE ? COLLATE NOCASE
@@ -129,7 +129,7 @@ class TrackRepository:
         with self._database.connect() as connection:
             row = connection.execute(
                 """SELECT id, file_path, title, artist, album, duration_seconds,
-                          genre, year, original_release_year, bpm
+                          genre, year, original_release_year, bpm, rating
                    FROM tracks WHERE id = ?""",
                 (track_id,),
             ).fetchone()
@@ -140,7 +140,7 @@ class TrackRepository:
         with self._database.connect() as connection:
             row = connection.execute(
                 """SELECT id, file_path, title, artist, album, duration_seconds,
-                          genre, year, original_release_year, bpm
+                          genre, year, original_release_year, bpm, rating
                    FROM tracks WHERE id = ? AND catalog_visible = 1""",
                 (track_id,),
             ).fetchone()
@@ -156,7 +156,7 @@ class TrackRepository:
             with self._database.connect() as connection:
                 rows = connection.execute(
                     f"""SELECT id, file_path, title, artist, album, duration_seconds,
-                               genre, year, original_release_year, bpm
+                               genre, year, original_release_year, bpm, rating
                         FROM tracks WHERE id IN ({placeholders})""",
                     batch,
                 ).fetchall()
@@ -175,7 +175,7 @@ class TrackRepository:
             with self._database.connect() as connection:
                 rows = connection.execute(
                     f"""SELECT id, file_path, title, artist, album, duration_seconds,
-                               genre, year, original_release_year, bpm
+                               genre, year, original_release_year, bpm, rating
                         FROM tracks WHERE lower(file_path) IN ({placeholders})""",
                     batch,
                 ).fetchall()
@@ -190,7 +190,7 @@ class TrackRepository:
             rows = connection.execute(
                 """WITH ranked AS (
                        SELECT id, file_path, title, artist, album, duration_seconds,
-                              genre, year, original_release_year, bpm,
+                              genre, year, original_release_year, bpm, rating,
                               ROW_NUMBER() OVER (
                                   PARTITION BY lower(trim(title)), lower(trim(artist))
                                   ORDER BY id
@@ -198,7 +198,7 @@ class TrackRepository:
                        FROM tracks WHERE catalog_visible = 1
                    )
                    SELECT id, file_path, title, artist, album, duration_seconds,
-                          genre, year, original_release_year, bpm
+                          genre, year, original_release_year, bpm, rating
                    FROM ranked WHERE duplicate_rank = 1
                    ORDER BY id"""
             ).fetchall()
@@ -249,7 +249,7 @@ class TrackRepository:
             )
             row = connection.execute(
                 """SELECT id, file_path, title, artist, album, duration_seconds,
-                          genre, year, original_release_year, bpm
+                          genre, year, original_release_year, bpm, rating
                    FROM tracks WHERE file_path = ?""",
                 (canonical_path,),
             ).fetchone()
