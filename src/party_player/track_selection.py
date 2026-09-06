@@ -1,6 +1,7 @@
 """Composable, GUI-independent rules for automatic queue candidates."""
 
 from collections import deque
+import copy
 from dataclasses import dataclass
 import math
 from typing import Protocol, cast
@@ -214,6 +215,23 @@ class TrackSelectionService:
             *(self._as_executable(rule) for rule in rules),
         )
 
+    def copy_for_preview(self) -> "TrackSelectionService":
+        """Copy rule-local state so preview simulation cannot mutate live rules."""
+        preview = object.__new__(TrackSelectionService)
+        copied_rules: list[ExecutableSelectionRule] = []
+        for rule in self._rules:
+            copier = getattr(rule, "copy_for_preview", None)
+            copied_rules.append(copier() if callable(copier) else copy.copy(rule))
+        preview._rules = tuple(copied_rules)
+        return preview
+
+    def record_preview_played(self, track: Track) -> None:
+        """Advance only copied rules that model a played-track sequence."""
+        for rule in self._rules:
+            recorder = getattr(rule, "record_preview_played", None)
+            if callable(recorder):
+                recorder(track)
+
     def evaluate(
         self,
         entry: QueueEntry,
@@ -393,6 +411,18 @@ class RepetitionService:
     def record_played(self, track: Track) -> None:
         self._recent_track_ids.append(track.id)
         self._recent_artists.append(normalize_artist_name(track.artist))
+
+    def copy_for_preview(self) -> "RepetitionService":
+        preview = RepetitionService(
+            track_window_size=self.track_window_size,
+            artist_window_size=self.artist_window_size,
+        )
+        preview._recent_track_ids.extend(self._recent_track_ids)
+        preview._recent_artists.extend(self._recent_artists)
+        return preview
+
+    def record_preview_played(self, track: Track) -> None:
+        self.record_played(track)
 
     def evaluate(
         self,
