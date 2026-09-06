@@ -137,6 +137,21 @@ class PersistentRepetitionService:
         self._operator_overrides: set[int] = set()
         self.queue_artist_repetition_enabled = True
         self._logger = logging.getLogger(__name__)
+        self._preview_plays: list[RecentPlay] = []
+        self._preview_now: datetime | None = None
+
+    def copy_for_preview(self) -> "PersistentRepetitionService":
+        preview = object.__new__(PersistentRepetitionService)
+        preview.__dict__ = self.__dict__.copy()
+        preview._operator_overrides = set(self._operator_overrides)
+        preview._preview_plays = list(self._preview_plays)
+        preview._preview_now = self._clock()
+        return preview
+
+    def record_preview_played(self, track: Track) -> None:
+        assert self._preview_now is not None
+        self._preview_now += timedelta(seconds=max(0.0, track.duration_seconds or 0.0))
+        self._preview_plays.insert(0, RecentPlay(track.id, track.artist, self._preview_now))
 
     def allow_queue_entry(self, queue_id: int) -> None:
         self._operator_overrides.add(queue_id)
@@ -196,10 +211,15 @@ class PersistentRepetitionService:
             ),
         )
         maximum = max(track_window_size, artist_window_size, 1)
-        recent = self._repository.recent_completed(maximum)
-        now = self._clock()
+        recent = [*self._preview_plays, *self._repository.recent_completed(maximum)][:maximum]
+        now = self._preview_now if self._preview_now is not None else self._clock()
         widest_window = max(track_window, artist_window)
         timed = self._repository.completed_since(now - widest_window) if widest_window else []
+        if widest_window:
+            timed = [
+                *(play for play in self._preview_plays if now - play.finished_at < widest_window),
+                *timed,
+            ]
         track_plays = [play for play in timed if play.track_id == track.id]
         if (
             track_window_size

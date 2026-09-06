@@ -11,6 +11,8 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Eine begrenzte, zustandsneutrale Mehrschritt-Vorschau verwendet die bestehende
+  erklärbare Automatikauswahl, ohne produktive Auswahlzustände fortzuschalten.
 - Eine responsive Oberfläche bietet große und kompakte Darstellungen sowie getrennte
   kompakte Arbeitsbereiche für Livebetrieb und Vorbereitung. Decks, Queue, Automatik,
   Katalog und wichtige Aktionen bleiben auch bei kleineren Arbeitsflächen erreichbar.

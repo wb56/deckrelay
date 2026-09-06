@@ -1,10 +1,12 @@
 """Deterministic, history-aware automatic catalog selection."""
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import datetime
 import random
 import logging
 from threading import Lock
+from typing import Protocol
 import uuid
 
 from party_player.database.connection import Database
@@ -32,6 +34,53 @@ from party_player.selection_scoring import (
     PlayCountScoringRule,
     RatingScoringRule,
 )
+from party_player.selection_preview import (
+    SelectionPreview,
+    SelectionPreviewCompletion,
+    SelectionPreviewStep,
+)
+from party_player.selection_decision import attach_source_resolution
+from party_player.selection_source import SelectionSourceResolver, SourceResolutionReason
+from party_player.enums import EmptyQueuePolicy
+
+
+@dataclass(slots=True)
+class _PreviewHistory:
+    counts: dict[int, int]
+    recent_ids: list[int]
+
+    def play_counts(self) -> dict[int, int]:
+        return dict(self.counts)
+
+    def recent_track_ids(self, limit: int) -> set[int]:
+        return set(self.recent_ids[: max(0, limit)])
+
+    def record_played(self, track: Track) -> None:
+        self.counts[track.id] = self.counts.get(track.id, 0) + 1
+        self.recent_ids.insert(0, track.id)
+
+    def preview_snapshot(self) -> "_PreviewHistory":
+        return _PreviewHistory(dict(self.counts), list(self.recent_ids))
+
+
+@dataclass(frozen=True, slots=True)
+class _PreviewTracks:
+    candidates: tuple[Track, ...]
+
+    def automatic_candidates(self) -> list[Track]:
+        return list(self.candidates)
+
+
+class _AutomaticTrackSource(Protocol):
+    def automatic_candidates(self) -> list[Track]: ...
+
+
+class _AutomaticHistorySource(Protocol):
+    def play_counts(self) -> dict[int, int]: ...
+
+    def recent_track_ids(self, limit: int) -> set[int]: ...
+
+    def preview_snapshot(self) -> _PreviewHistory: ...
 
 
 class AutomaticSelectionHistory:
@@ -57,6 +106,20 @@ class AutomaticSelectionHistory:
                 (max(0, limit),),
             ).fetchall()
         return {int(row["track_id"]) for row in rows}
+
+    def preview_snapshot(self) -> _PreviewHistory:
+        """Load ordered history once for an isolated multi-step simulation."""
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """SELECT track_id FROM play_history
+                   WHERE completion_status = 'PLAYED'
+                   ORDER BY finished_at DESC, id DESC"""
+            ).fetchall()
+        recent_ids = [int(row["track_id"]) for row in rows]
+        counts: dict[int, int] = {}
+        for track_id in recent_ids:
+            counts[track_id] = counts.get(track_id, 0) + 1
+        return _PreviewHistory(counts, recent_ids)
 
 
 class AutomaticRecentTrackRule:
@@ -91,11 +154,12 @@ class AutomaticRecentTrackRule:
 
 class AutomaticSelectionService:
     _RATIONALE_CANDIDATE_LIMIT = 50
+    MAX_PREVIEW_DEPTH = 10
 
     def __init__(
         self,
-        tracks: TrackRepository,
-        history: AutomaticSelectionHistory,
+        tracks: TrackRepository | _AutomaticTrackSource,
+        history: AutomaticSelectionHistory | _AutomaticHistorySource,
         *,
         recent_track_limit: int = 25,
         randomizer: random.Random | None = None,
@@ -114,6 +178,68 @@ class AutomaticSelectionService:
     def select(self, rules: TrackSelectionService) -> Track | None:
         with self._selection_lock:
             return self._run_isolated(lambda: self._select(rules))
+
+    def preview(self, rules: TrackSelectionService, count: int) -> SelectionPreview:
+        """Predict automatic choices without advancing any productive state."""
+        if not 1 <= count <= self.MAX_PREVIEW_DEPTH:
+            raise ValueError(f"Vorschautiefe muss zwischen 1 und {self.MAX_PREVIEW_DEPTH} liegen")
+        with self._selection_lock:
+            candidates = tuple(self._tracks.automatic_candidates())
+            history = self._history.preview_snapshot()
+            preview_rules = rules.copy_for_preview()
+            preview_random = random.Random()
+            preview_random.setstate(self._random.getstate())
+        preview_selector = AutomaticSelectionService(
+            _PreviewTracks(candidates),
+            history,
+            recent_track_limit=self.recent_track_limit,
+            randomizer=preview_random,
+            emergency_playlist=None,
+        )
+        preview_id = uuid.uuid4().hex
+        steps: list[SelectionPreviewStep] = []
+        completion = SelectionPreviewCompletion.REQUESTED_DEPTH_REACHED
+        for position in range(1, count + 1):
+            selected = preview_selector.select(preview_rules)
+            rationale = preview_selector.last_rationale
+            if selected is None or rationale is None:
+                completion = SelectionPreviewCompletion.NO_SAFE_CANDIDATE
+                break
+            source_entry = QueueEntry(
+                -selected.id,
+                selected.id,
+                0,
+                QueueStatus.WAITING,
+                source=QueueSource.AUTOMATIC,
+            )
+            resolution = SelectionSourceResolver().describe_generated(
+                source_entry,
+                context_id=rationale.context_id,
+                rationale_context_id=rationale.context_id,
+                empty_queue_policy=EmptyQueuePolicy.AUTOMATIC_SELECTION,
+                reason=SourceResolutionReason.AUTOMATIC_REQUIRED_EMPTY_QUEUE,
+            )
+            rationale = attach_source_resolution(rationale, resolution)
+            steps.append(
+                SelectionPreviewStep(
+                    position,
+                    selected.id,
+                    selected.title,
+                    selected.artist,
+                    rationale.relaxation_stage,
+                    rationale,
+                )
+            )
+            history.record_played(selected)
+            preview_rules.record_preview_played(selected)
+        return SelectionPreview(
+            preview_id=preview_id,
+            created_at=datetime.now(),
+            requested_depth=count,
+            achieved_depth=len(steps),
+            steps=tuple(steps),
+            completion_reason=completion,
+        )
 
     def _select(self, rules: TrackSelectionService) -> Track | None:
         context_id = uuid.uuid4().hex
