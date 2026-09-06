@@ -23,6 +23,13 @@ from party_player.selection_source import (
     SourceResolution,
     SourceResolutionReason,
 )
+from party_player.selection_decision import (
+    SelectionRationale,
+    attach_source_resolution,
+    finalize_candidate_decision,
+    source_selection_rationale,
+    SelectionContext,
+)
 
 
 class QueueService:
@@ -138,6 +145,7 @@ class QueueService:
         self._performance: PerformanceMonitor | None = None
         self._source_resolver = SelectionSourceResolver()
         self.last_source_resolution: SourceResolution | None = None
+        self.last_selection_rationale: SelectionRationale | None = None
 
     def close_cached_connection(self) -> bool:
         """Close the repository cache owned by the calling persistence worker."""
@@ -827,24 +835,91 @@ class QueueService:
         cancelled: Callable[[], bool] | None = None,
     ) -> tuple[Track | None, SelectionDecision]:
         """Reload and fully validate one waiting candidate immediately before preparation."""
+        source_resolution = self.last_source_resolution
+        source_rationale = self.last_selection_rationale
         if cancelled is not None and cancelled():
-            return None, SelectionDecision.reject("CANDIDATE_CANCELLED")
+            decision = SelectionDecision.reject("CANDIDATE_CANCELLED")
+            if source_rationale is not None:
+                self.last_selection_rationale = finalize_candidate_decision(
+                    source_rationale,
+                    accepted=False,
+                    code=decision.code,
+                    reason=decision.reason,
+                    terminal_status=decision.terminal_status,
+                )
+            return None, decision
         entry = self._repository.get_queue_entry(queue_id)
         if entry is None or entry.status is not QueueStatus.WAITING:
             decision = SelectionDecision.reject(
                 "CANDIDATE_STATE_CHANGED",
                 reason="Der Queue-Zustand hat sich geändert",
             )
+            if source_rationale is not None:
+                self.last_selection_rationale = finalize_candidate_decision(
+                    source_rationale,
+                    accepted=False,
+                    code=decision.code,
+                    reason=decision.reason,
+                    terminal_status=decision.terminal_status,
+                )
             return None, decision
         track = self._tracks.get_active(entry.track_id)
         if cancelled is not None and cancelled():
-            return None, SelectionDecision.reject("CANDIDATE_CANCELLED")
-        decision = self._selection_service.evaluate(entry, track)
+            decision = SelectionDecision.reject("CANDIDATE_CANCELLED")
+            if source_rationale is not None:
+                self.last_selection_rationale = finalize_candidate_decision(
+                    source_rationale,
+                    accepted=False,
+                    code=decision.code,
+                    reason=decision.reason,
+                    terminal_status=decision.terminal_status,
+                )
+            return None, decision
+        rationale_context = (
+            SelectionContext(source_resolution.context.context_id)
+            if source_resolution is not None
+            and source_rationale is not None
+            and source_rationale.selected_candidate is not None
+            and source_rationale.selected_candidate.queue_id == queue_id
+            else None
+        )
+        decision, rationale = self._selection_service.evaluate_with_rationale(
+            entry,
+            track,
+            context=rationale_context,
+        )
         if decision.accepted:
             assert track is not None
             decision = self.candidate_availability(track, cancelled)
         if cancelled is not None and cancelled():
-            return None, SelectionDecision.reject("CANDIDATE_CANCELLED")
+            decision = SelectionDecision.reject("CANDIDATE_CANCELLED")
+            rationale = finalize_candidate_decision(
+                rationale,
+                accepted=False,
+                code=decision.code,
+                reason=decision.reason,
+                terminal_status=decision.terminal_status,
+            )
+            if (
+                source_resolution is not None
+                and source_resolution.context.context_id == rationale.context_id
+            ):
+                rationale = attach_source_resolution(rationale, source_resolution)
+            self.last_selection_rationale = rationale
+            return None, decision
+        rationale = finalize_candidate_decision(
+            rationale,
+            accepted=decision.accepted,
+            code=decision.code,
+            reason=decision.reason,
+            terminal_status=decision.terminal_status,
+        )
+        if (
+            source_resolution is not None
+            and source_resolution.context.context_id == rationale.context_id
+        ):
+            rationale = attach_source_resolution(rationale, source_resolution)
+        self.last_selection_rationale = rationale
         self.record_audit_event(
             "CANDIDATE_REVALIDATED",
             entity_type="QUEUE",
@@ -889,6 +964,7 @@ class QueueService:
         and request the next entry without mutating positions or deck state.
         """
         self.last_source_resolution = None
+        self.last_selection_rationale = None
         resolution_context_id = uuid.uuid4().hex
         excluded = excluded_queue_ids or set()
         ordered_entries = self._fair_candidate_entries()
@@ -911,6 +987,9 @@ class QueueService:
                 ),
                 guest_fairness_round=self._guest_fairness_round(ordered_entries, candidate),
             )
+            self.last_selection_rationale = source_selection_rationale(
+                candidate, self.last_source_resolution
+            )
             return candidate
         if (
             excluded
@@ -923,6 +1002,9 @@ class QueueService:
                 empty_queue_policy=self.empty_queue_policy,
                 automatic_required=False,
             )
+            self.last_selection_rationale = source_selection_rationale(
+                None, self.last_source_resolution
+            )
             return None
         if self.empty_queue_policy is EmptyQueuePolicy.REPEAT_CURRENT_PLAYLIST:
             repeated = self._repeat_current_playlist()
@@ -934,6 +1016,9 @@ class QueueService:
                     empty_queue_policy=self.empty_queue_policy,
                     reason=SourceResolutionReason.REPEAT_PLAYLIST_POLICY,
                 )
+                self.last_selection_rationale = source_selection_rationale(
+                    repeated, self.last_source_resolution
+                )
             return repeated
         if self._automatic_selection is None:
             self.last_source_resolution = self._source_resolver.describe_unavailable(
@@ -941,6 +1026,9 @@ class QueueService:
                 rationale_context_id=None,
                 empty_queue_policy=self.empty_queue_policy,
                 automatic_required=False,
+            )
+            self.last_selection_rationale = source_selection_rationale(
+                None, self.last_source_resolution
             )
             return None
         selected = (
@@ -974,6 +1062,14 @@ class QueueService:
                 empty_queue_policy=self.empty_queue_policy,
                 automatic_required=True,
             )
+            if rationale is not None:
+                combined = attach_source_resolution(rationale, self.last_source_resolution)
+                self._automatic_selection.last_rationale = combined
+                self.last_selection_rationale = combined
+            else:
+                self.last_selection_rationale = source_selection_rationale(
+                    None, self.last_source_resolution
+                )
             return None
         source = (
             QueueSource.EMERGENCY
@@ -1004,6 +1100,14 @@ class QueueService:
             empty_queue_policy=self.empty_queue_policy,
             reason=reason,
         )
+        if rationale is not None:
+            combined = attach_source_resolution(rationale, self.last_source_resolution)
+            self._automatic_selection.last_rationale = combined
+            self.last_selection_rationale = combined
+        else:
+            self.last_selection_rationale = source_selection_rationale(
+                added, self.last_source_resolution
+            )
         return added
 
     def _repeat_current_playlist(self) -> QueueEntry | None:

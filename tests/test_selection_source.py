@@ -8,6 +8,7 @@ import pytest
 from party_player.enums import EmptyQueuePolicy, QueueSource, QueueStatus
 from party_player.models import QueueEntry
 from party_player.queue_service import QueueService
+from party_player.selection_decision import CandidateDecisionCategory, SelectionOutcome
 from party_player.selection_source import (
     SelectionSourceClass,
     SelectionSourceResolver,
@@ -98,6 +99,13 @@ def test_queue_resolution_uses_existing_order_without_mutation_or_extra_reads() 
         SelectionSourceClass.EMERGENCY,
     )
     assert not resolution.automatic_required
+    rationale = service.last_selection_rationale
+    assert rationale is not None
+    assert rationale.outcome is SelectionOutcome.ACCEPTED
+    assert rationale.context_id == resolution.context.context_id
+    assert rationale.source_resolution is resolution
+    assert rationale.evaluated_candidates[0].decision_category is CandidateDecisionCategory.SELECTED
+    assert rationale.evaluated_candidates[0].decision_reason_code == "SELECTED_QUEUE_PRIORITY"
 
 
 def test_every_queue_tie_key_is_deterministic_for_random_repository_order() -> None:

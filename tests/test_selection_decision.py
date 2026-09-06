@@ -1,7 +1,8 @@
 """Behavior-neutral contracts for structured selection explanations."""
 
 from copy import deepcopy
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, asdict
+import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from party_player.database.migrations import migrate
 from party_player.enums import QueueSource, QueueStatus, ShortTrackPolicy
 from party_player.models import QueueEntry, Track
 from party_player.selection_decision import (
+    CandidateDecisionCategory,
     RuleEvaluation,
     RuleKind,
     RuleOutcome,
@@ -85,6 +87,9 @@ def test_rejection_exposes_stable_rule_and_reason_codes() -> None:
     assert rejection.rule_id == "test.blocked_track"
     assert rejection.rule_version == 2
     assert rejection.reason == "Operator block"
+    candidate = rationale.evaluated_candidates[0]
+    assert candidate.decision_category is CandidateDecisionCategory.EXCLUDED
+    assert candidate.decision_reason_code == "BLOCKED_TRACK"
 
 
 def test_relaxed_rule_is_explained_and_evaluated_only_once() -> None:
@@ -155,6 +160,17 @@ def test_decision_model_is_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         rationale.context_id = "changed"  # type: ignore[misc]
+
+
+def test_rationale_is_json_serializable_without_execution_objects() -> None:
+    entry, track = _entry_and_track()
+    _decision, rationale = TrackSelectionService().evaluate_with_rationale(entry, track)
+
+    serialized = json.dumps(asdict(rationale))
+
+    assert "song.mp3" not in serialized
+    assert "requested_by" not in serialized
+    assert "database" not in serialized.casefold()
 
 
 def test_diagnostic_contract_does_not_expose_paths_or_requester_data() -> None:
