@@ -95,6 +95,7 @@ from party_player.tempo_context import TempoContextRepository
 from party_player.metadata_analysis_contracts import TempoAnalysisScope
 from party_player.session_service import PartySessionService
 from party_player.settings_service import SettingsService
+from party_player.selection_rule_settings import SelectionRuleSettingsRepository
 from party_player.dependency_locator import DependencyLocator
 from party_player.dependency_validator import DependencyValidator
 from party_player.system_dependency_service import SystemDependencyService
@@ -261,6 +262,7 @@ class PartyPlayerApplication:
             tracks,
             AutomaticSelectionHistory(database),
             emergency_playlist=emergency_playlist,
+            rule_settings=SelectionRuleSettingsRepository(database),
         )
         saved_queue_repository = SavedQueueRepository(database)
         equalizer_resolver = EqualizerResolver(

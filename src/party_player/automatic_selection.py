@@ -22,6 +22,7 @@ from party_player.selection_decision import (
     RuleEvaluation,
     RuleKind,
     RuleOutcome,
+    ExecutableSelectionRule,
     SelectionCandidate,
     SelectionContext,
     SelectionOutcome,
@@ -41,6 +42,11 @@ from party_player.selection_preview import (
 )
 from party_player.selection_decision import attach_source_resolution
 from party_player.selection_source import SelectionSourceResolver, SourceResolutionReason
+from party_player.selection_rule_settings import (
+    DEFAULT_SELECTION_SCORING_SETTINGS,
+    SelectionScoringSettings,
+    SelectionRuleSettingsRepository,
+)
 from party_player.enums import EmptyQueuePolicy
 
 
@@ -164,12 +170,14 @@ class AutomaticSelectionService:
         recent_track_limit: int = 25,
         randomizer: random.Random | None = None,
         emergency_playlist: LocalEmergencyPlaylistService | None = None,
+        rule_settings: SelectionRuleSettingsRepository | None = None,
     ) -> None:
         self._tracks = tracks
         self._history = history
         self.recent_track_limit = max(0, recent_track_limit)
         self._random = randomizer or random.Random()
         self._emergency_playlist = emergency_playlist
+        self._rule_settings = rule_settings
         self.last_relaxation_stage = "NONE"
         self.last_rationale: SelectionRationale | None = None
         self._selection_lock = Lock()
@@ -177,7 +185,8 @@ class AutomaticSelectionService:
 
     def select(self, rules: TrackSelectionService) -> Track | None:
         with self._selection_lock:
-            return self._run_isolated(lambda: self._select(rules))
+            settings = self._load_rule_settings()
+            return self._run_isolated(lambda: self._select(rules, settings))
 
     def preview(self, rules: TrackSelectionService, count: int) -> SelectionPreview:
         """Predict automatic choices without advancing any productive state."""
@@ -189,6 +198,7 @@ class AutomaticSelectionService:
             preview_rules = rules.copy_for_preview()
             preview_random = random.Random()
             preview_random.setstate(self._random.getstate())
+            settings = self._load_rule_settings()
         preview_selector = AutomaticSelectionService(
             _PreviewTracks(candidates),
             history,
@@ -200,7 +210,9 @@ class AutomaticSelectionService:
         steps: list[SelectionPreviewStep] = []
         completion = SelectionPreviewCompletion.REQUESTED_DEPTH_REACHED
         for position in range(1, count + 1):
-            selected = preview_selector.select(preview_rules)
+            selected = preview_selector._run_isolated(
+                lambda: preview_selector._select(preview_rules, settings)
+            )
             rationale = preview_selector.last_rationale
             if selected is None or rationale is None:
                 completion = SelectionPreviewCompletion.NO_SAFE_CANDIDATE
@@ -241,14 +253,28 @@ class AutomaticSelectionService:
             completion_reason=completion,
         )
 
-    def _select(self, rules: TrackSelectionService) -> Track | None:
+    def _load_rule_settings(self) -> SelectionScoringSettings:
+        return (
+            self._rule_settings.load()
+            if self._rule_settings is not None
+            else DEFAULT_SELECTION_SCORING_SETTINGS
+        )
+
+    def _select(
+        self, rules: TrackSelectionService, settings: SelectionScoringSettings
+    ) -> Track | None:
         context_id = uuid.uuid4().hex
         summaries: list[CandidateEvaluation] = []
         evaluated_count = 0
         recent = self._history.recent_track_ids(self.recent_track_limit)
         recent_rule = AutomaticRecentTrackRule(recent)
         counts = self._history.play_counts()
-        scorer = CandidateScorer((PlayCountScoringRule(counts), RatingScoringRule()))
+        soft_rules: list[ExecutableSelectionRule] = []
+        if settings.play_count.enabled:
+            soft_rules.append(PlayCountScoringRule(counts, settings.play_count.weight))
+        if settings.rating.enabled:
+            soft_rules.append(RatingScoringRule(settings.rating.weight))
+        scorer = CandidateScorer(tuple(soft_rules))
         stages: tuple[tuple[str, frozenset[str]], ...] = (
             ("STRICT", frozenset()),
             ("ARTIST_DISTANCE", frozenset({"ARTIST_REPETITION"})),

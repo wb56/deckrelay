@@ -58,10 +58,10 @@ class PlayCountScoringRule:
     rule_version = 1
     rule_kind = RuleKind.SOFT_WEIGHT
     relaxable_reason_codes: frozenset[str] = frozenset()
-    points_per_play = -10.0
 
-    def __init__(self, play_counts: dict[int, int]) -> None:
+    def __init__(self, play_counts: dict[int, int], penalty_per_play: float = 10.0) -> None:
         self._play_counts = dict(play_counts)
+        self.points_per_play = -float(penalty_per_play)
 
     def evaluate_rule(
         self,
@@ -92,6 +92,9 @@ class RatingScoringRule:
     rule_kind = RuleKind.SOFT_WEIGHT
     relaxable_reason_codes: frozenset[str] = frozenset()
 
+    def __init__(self, weight: float = 1.0) -> None:
+        self._weight = float(weight)
+
     def evaluate_rule(
         self,
         rule_input: SelectionRuleInput,
@@ -113,7 +116,7 @@ class RatingScoringRule:
                 metadata_known=False,
                 facts=(("rating", None),),
             )
-        score_delta = float(rating - 3)
+        score_delta = float(rating - 3) * self._weight
         return soft_rule_evaluation(
             rule_id=self.rule_id,
             rule_version=self.rule_version,

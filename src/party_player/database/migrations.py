@@ -4,7 +4,7 @@ import sqlite3
 
 from party_player.database.connection import Database
 
-LATEST_SCHEMA_VERSION = 41
+LATEST_SCHEMA_VERSION = 42
 
 
 def migrate(database: Database) -> None:
@@ -187,6 +187,10 @@ def migrate(database: Database) -> None:
         if version < 41:
             _migrate_to_v41(connection)
             _set_version(connection, 41)
+            version = 41
+        if version < 42:
+            _migrate_to_v42(connection)
+            _set_version(connection, 42)
 
 
 def _migrate_to_v1(connection: sqlite3.Connection) -> None:
@@ -1714,3 +1718,24 @@ def _migrate_to_v41(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE metadata_analysis_runs ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '{}'"
         )
+
+
+def _migrate_to_v42(connection: sqlite3.Connection) -> None:
+    """Persist bounded configuration for the two existing soft-selection rules."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS selection_rule_settings (
+            rule_id TEXT PRIMARY KEY,
+            config_version INTEGER NOT NULL CHECK(config_version >= 1),
+            enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+            weight REAL NOT NULL CHECK(weight >= 0 AND weight <= 100),
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT OR IGNORE INTO selection_rule_settings
+            (rule_id, config_version, enabled, weight)
+            VALUES ('selection.play_count', 1, 1, 10.0);
+        INSERT OR IGNORE INTO selection_rule_settings
+            (rule_id, config_version, enabled, weight)
+            VALUES ('selection.rating', 1, 1, 1.0);
+        """
+    )
