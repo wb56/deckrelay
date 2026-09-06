@@ -370,6 +370,52 @@ def test_selection_rationale_is_bounded_and_keeps_selected_candidate(tmp_path: P
     )
 
 
+def test_bounded_rationale_keeps_rng_reason_when_tied_candidates_are_omitted(
+    tmp_path: Path,
+) -> None:
+    class RejectFirstFifty:
+        def evaluate(self, _entry, track):
+            if track.id <= 50:
+                return SelectionDecision.reject("BLOCKED_TRACK")
+            return None
+
+    class SelectLast(random.Random):
+        def choice(self, sequence):
+            return sequence[-1]
+
+    database, _session_id = _database(tmp_path / "bounded-tie-rationale.db")
+    with database.connect() as connection:
+        connection.executemany(
+            "INSERT INTO tracks (id, file_path, title, artist) VALUES (?, ?, ?, ?)",
+            [
+                (track_id, f"{track_id}.mp3", f"Track {track_id}", f"Artist {track_id}")
+                for track_id in range(4, 65)
+            ],
+        )
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        randomizer=SelectLast(),
+    )
+
+    selected = selector.select(TrackSelectionService((RejectFirstFifty(),)))
+
+    assert selected is not None and selected.id == 64
+    assert selector.last_rationale is not None
+    assert len(selector.last_rationale.evaluated_candidates) == 50
+    assert selector.last_rationale.evaluated_candidate_count == 64
+    assert selector.last_rationale.omitted_candidate_count == 14
+    selected_summaries = [
+        item
+        for item in selector.last_rationale.evaluated_candidates
+        if item.decision_category is CandidateDecisionCategory.SELECTED
+    ]
+    assert len(selected_summaries) == 1
+    assert selected_summaries[0].candidate.track_id == 64
+    assert selected_summaries[0].decision_reason_code == "SELECTED_RNG_TIE_BREAK"
+    assert selector.last_rationale.decision_reason_code == "SELECTED_RNG_TIE_BREAK"
+
+
 def test_overlapping_selections_publish_the_last_completed_rationale(
     tmp_path: Path, monkeypatch
 ) -> None:

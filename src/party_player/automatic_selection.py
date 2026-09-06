@@ -205,6 +205,7 @@ class AutomaticSelectionService:
                 stage,
                 "HIGHEST_SOFT_SCORE_THEN_STABLE_ID_ORDER_THEN_INJECTED_RNG",
                 selected_evaluation=selected_evaluation,
+                tie_candidate_count=len(stable_top),
             )
             self._log_decision(self.last_rationale, reason_code="SELECTED")
             if stage != "STRICT":
@@ -335,6 +336,7 @@ class AutomaticSelectionService:
         stage: str,
         tie_break_method: str,
         selected_evaluation: CandidateEvaluation | None = None,
+        tie_candidate_count: int = 0,
     ) -> SelectionRationale:
         if selected_evaluation is not None and selected_evaluation not in summaries:
             if len(summaries) >= AutomaticSelectionService._RATIONALE_CANDIDATE_LIMIT:
@@ -372,13 +374,9 @@ class AutomaticSelectionService:
                 if stage == "EMERGENCY_PLAYLIST":
                     reason = CandidateDecisionReason.SELECTED_EMERGENCY_ORDER
                 elif "INJECTED_RNG" in tie_break_method:
-                    tied = sum(
-                        candidate.accepted and candidate.total_score == selected_score
-                        for candidate in summaries
-                    )
                     reason = (
                         CandidateDecisionReason.SELECTED_RNG_TIE_BREAK
-                        if tied > 1
+                        if tie_candidate_count > 1
                         else CandidateDecisionReason.SELECTED_HIGHEST_SCORE
                     )
                 else:
