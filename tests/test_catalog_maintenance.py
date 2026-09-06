@@ -52,7 +52,7 @@ def test_schema_39_contains_bounded_batch_suggestion_and_analysis_history(
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-    assert version == LATEST_SCHEMA_VERSION == 41
+    assert version == LATEST_SCHEMA_VERSION == 42
     assert {
         "metadata_batch_actions",
         "metadata_batch_changes",
@@ -75,7 +75,7 @@ def test_schema_37_database_is_upgraded_without_reinterpreting_old_tables(
             """SELECT name FROM sqlite_master
                WHERE type='table' AND name='metadata_batch_suggestion_changes'"""
         ).fetchone()
-    assert version == 41
+    assert version == 42
     assert table is not None
 
 
