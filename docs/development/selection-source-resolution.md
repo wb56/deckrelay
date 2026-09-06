@@ -36,7 +36,8 @@ aber als `directory` mit dem letzten Verzeichnisnamen erkennbar. Vollständige P
 Wunschpersonendaten werden nicht in `SourceResolution` übernommen.
 
 Bei automatischer oder Notfallauswahl entspricht die technische Kontext-ID der
-`SelectionRationale.context_id`. Queue-Entscheidungen erhalten eine eigene Kontext-ID.
+`SelectionRationale.context_id`. Queue-Entscheidungen erhalten eine eigene Kontext-ID,
+die bei der unmittelbar folgenden Kandidatenrevalidierung erhalten bleibt.
 Die Erklärung verwendet ausschließlich bereits geladene Queue-Einträge und das bereits
 vorhandene Automatikresultat; sie führt keine zusätzlichen Datenbankabfragen aus und
 verändert weder Queue, Session, Verlauf, Audit noch Deckzustand.

@@ -1,6 +1,7 @@
 """Deterministic, history-aware automatic catalog selection."""
 
 from collections.abc import Callable
+from dataclasses import replace
 import random
 import logging
 from threading import Lock
@@ -14,6 +15,8 @@ from party_player.track_selection import TrackSelectionService
 from party_player.emergency_playlist import LocalEmergencyPlaylistService
 from party_player.selection_decision import (
     CandidateEvaluation,
+    CandidateDecisionCategory,
+    CandidateDecisionReason,
     RuleEvaluation,
     RuleKind,
     RuleOutcome,
@@ -360,20 +363,79 @@ class AutomaticSelectionService:
                 ),
                 selected,
             )
-        omitted = max(0, evaluated_count - len(summaries))
+        selected_score = (
+            selected_evaluation.total_score if selected_evaluation is not None else None
+        )
+        finalized: list[CandidateEvaluation] = []
+        for item in summaries:
+            if selected_evaluation is not None and item is selected_evaluation:
+                if stage == "EMERGENCY_PLAYLIST":
+                    reason = CandidateDecisionReason.SELECTED_EMERGENCY_ORDER
+                elif "INJECTED_RNG" in tie_break_method:
+                    tied = sum(
+                        candidate.accepted and candidate.total_score == selected_score
+                        for candidate in summaries
+                    )
+                    reason = (
+                        CandidateDecisionReason.SELECTED_RNG_TIE_BREAK
+                        if tied > 1
+                        else CandidateDecisionReason.SELECTED_HIGHEST_SCORE
+                    )
+                else:
+                    reason = CandidateDecisionReason.SELECTED_STABLE_TIE_BREAK
+                finalized.append(
+                    replace(
+                        item,
+                        decision_category=CandidateDecisionCategory.SELECTED,
+                        decision_reason_code=reason.value,
+                        tie_break_method=tie_break_method,
+                    )
+                )
+                continue
+            if item.accepted:
+                if selected_score is not None and item.total_score < selected_score:
+                    reason = CandidateDecisionReason.LOWER_TOTAL_SCORE
+                elif "INJECTED_RNG" in tie_break_method:
+                    reason = CandidateDecisionReason.RNG_TIE_BREAK_LOSS
+                else:
+                    reason = CandidateDecisionReason.STABLE_TIE_BREAK_LOSS
+                finalized.append(
+                    replace(
+                        item,
+                        decision_category=CandidateDecisionCategory.ELIGIBLE_NOT_SELECTED,
+                        decision_reason_code=reason.value,
+                        tie_break_method=tie_break_method,
+                    )
+                )
+                continue
+            finalized.append(item)
+        omitted = max(0, evaluated_count - len(finalized))
         warnings = (
             (f"{omitted} Kandidatenauswertungen wurden nicht gespeichert",) if omitted else ()
+        )
+        selected_summary = next(
+            (
+                candidate
+                for candidate in finalized
+                if candidate.decision_category is CandidateDecisionCategory.SELECTED
+            ),
+            None,
         )
         return SelectionRationale(
             context_id=context_id,
             outcome=outcome,
             selected_candidate=selected_candidate,
-            evaluated_candidates=tuple(summaries),
+            evaluated_candidates=tuple(finalized),
             relaxation_stage=stage,
             tie_break_method=tie_break_method,
             warnings=warnings,
             evaluated_candidate_count=evaluated_count,
             omitted_candidate_count=omitted,
+            decision_reason_code=(
+                selected_summary.decision_reason_code
+                if selected_summary is not None
+                else outcome.value
+            ),
         )
 
     def _log_decision(self, rationale: SelectionRationale, *, reason_code: str) -> None:

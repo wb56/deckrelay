@@ -28,7 +28,11 @@ from party_player.track_suitability import (
     TrackSuitabilityRepository,
     TrackSuitabilityService,
 )
-from party_player.selection_decision import RuleOutcome, SelectionOutcome
+from party_player.selection_decision import (
+    CandidateDecisionCategory,
+    RuleOutcome,
+    SelectionOutcome,
+)
 from party_player.selection_decision import SelectionContext, SelectionRuleInput
 from party_player.emergency_playlist import EmergencyMediaType, LocalEmergencyPlaylistService
 from party_player.emergency_storage import EmergencyDriveKind, EmergencyStoragePolicy
@@ -126,6 +130,15 @@ def test_rating_orders_candidates_only_when_play_counts_are_equal(tmp_path: Path
         "selection.play_count",
         "selection.rating",
     ]
+    assert selected_evaluation.decision_category is CandidateDecisionCategory.SELECTED
+    assert selected_evaluation.decision_reason_code == "SELECTED_HIGHEST_SCORE"
+    lower = next(
+        item
+        for item in selector.last_rationale.evaluated_candidates
+        if item.accepted and item.candidate.track_id == 1
+    )
+    assert lower.decision_category is CandidateDecisionCategory.ELIGIBLE_NOT_SELECTED
+    assert lower.decision_reason_code == "LOWER_TOTAL_SCORE"
 
 
 def test_one_fewer_play_always_outweighs_rating_difference(tmp_path: Path) -> None:
@@ -203,6 +216,11 @@ def test_rng_runs_once_only_for_a_complete_score_tie(tmp_path: Path) -> None:
 
     assert tied.select(TrackSelectionService()) is not None
     assert tied_random.choice_calls == 1
+    assert tied.last_rationale is not None
+    categories = [item.decision_category for item in tied.last_rationale.evaluated_candidates]
+    assert categories.count(CandidateDecisionCategory.SELECTED) == 1
+    assert categories.count(CandidateDecisionCategory.ELIGIBLE_NOT_SELECTED) == 2
+    assert tied.last_rationale.decision_reason_code == "SELECTED_RNG_TIE_BREAK"
 
     with database.connect() as connection:
         connection.execute("UPDATE tracks SET rating = 5 WHERE id = 1")
@@ -214,6 +232,34 @@ def test_rng_runs_once_only_for_a_complete_score_tie(tmp_path: Path) -> None:
 
     assert selected is not None and selected.id == 1
     assert unique_random.choice_calls == 0
+
+
+def test_reading_rationale_does_not_consume_rng_or_change_selection(tmp_path: Path) -> None:
+    class CountingRandom(random.Random):
+        def __init__(self) -> None:
+            super().__init__(29)
+            self.choice_calls = 0
+
+        def choice(self, sequence):
+            self.choice_calls += 1
+            return super().choice(sequence)
+
+    database, _session_id = _database(tmp_path / "rationale-read-rng.db")
+    randomizer = CountingRandom()
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        randomizer=randomizer,
+    )
+
+    selected = selector.select(TrackSelectionService())
+    calls_after_selection = randomizer.choice_calls
+    rationale = selector.last_rationale
+    assert rationale is not None
+    _ = (rationale.rule_evaluations, rationale.exclusion_reasons, repr(rationale))
+
+    assert selected is not None
+    assert randomizer.choice_calls == calls_after_selection == 1
 
 
 def test_selection_rationale_explains_relaxation_without_changing_rng_result(
@@ -420,6 +466,8 @@ def test_empty_queue_can_create_automatic_entry_with_injected_rng(tmp_path: Path
         is SourceResolutionReason.AUTOMATIC_REQUIRED_EMPTY_QUEUE
     )
     assert selector.last_rationale is not None
+    assert service.last_selection_rationale is selector.last_rationale
+    assert selector.last_rationale.source_resolution is service.last_source_resolution
     assert (
         service.last_source_resolution.context.selection_rationale_context_id
         == selector.last_rationale.context_id
@@ -432,6 +480,19 @@ def test_empty_queue_can_create_automatic_entry_with_injected_rng(tmp_path: Path
             for row in connection.execute("SELECT event_code FROM session_audit_events ORDER BY id")
         ]
     assert events == ["RULE_RELAXATION", "AUTOMATIC_SELECTION", "QUEUE_ADDED"]
+
+    _track, availability = service.revalidate_candidate(candidate.queue_id)
+
+    assert not availability.accepted and availability.code == "FILE_MISSING"
+    assert service.last_selection_rationale is not None
+    selected_trace = next(
+        item
+        for item in service.last_selection_rationale.evaluated_candidates
+        if item.candidate.track_id == candidate.track_id
+        and item.decision_category is CandidateDecisionCategory.EXCLUDED
+    )
+    assert selected_trace.decision_reason_code == "FILE_MISSING"
+    assert service.last_selection_rationale.selected_candidate is None
 
 
 def test_existing_manual_queue_entry_prevents_automatic_scoring(tmp_path: Path) -> None:
@@ -457,6 +518,34 @@ def test_existing_manual_queue_entry_prevents_automatic_scoring(tmp_path: Path) 
     assert selector.last_rationale is None
     assert service.last_source_resolution is not None
     assert not service.last_source_resolution.automatic_required
+    source_context_id = service.last_source_resolution.context.context_id
+
+    _track, decision = service.revalidate_candidate(manual.queue_id)
+
+    assert not decision.accepted and decision.code == "FILE_MISSING"
+    assert service.last_selection_rationale is not None
+    assert service.last_selection_rationale.context_id == source_context_id
+    assert service.last_selection_rationale.source_resolution is service.last_source_resolution
+    evaluated = service.last_selection_rationale.evaluated_candidates[0]
+    assert evaluated.decision_category is CandidateDecisionCategory.EXCLUDED
+    assert evaluated.decision_reason_code == "FILE_MISSING"
+
+
+def test_cancelled_revalidation_replaces_selected_source_rationale(tmp_path: Path) -> None:
+    database, session_id = _database(tmp_path / "cancelled-rationale.db")
+    tracks = TrackRepository(database)
+    service = QueueService(PartyPlayerRepository(database), tracks, session_id)
+    manual = service.add(1, source=QueueSource.MANUAL)
+    assert service.get_next_candidate() == manual
+
+    track, decision = service.revalidate_candidate(manual.queue_id, cancelled=lambda: True)
+
+    assert track is None and decision.code == "CANDIDATE_CANCELLED"
+    assert service.last_selection_rationale is not None
+    assert service.last_selection_rationale.selected_candidate is None
+    candidate = service.last_selection_rationale.evaluated_candidates[0]
+    assert candidate.decision_category is CandidateDecisionCategory.EXCLUDED
+    assert candidate.decision_reason_code == "CANDIDATE_CANCELLED"
 
 
 @pytest.mark.parametrize("expected_stage", ["STRICT", "ARTIST_DISTANCE", "TRACK_DISTANCE"])
@@ -737,6 +826,13 @@ def test_no_safe_candidate_is_exposed_when_every_stage_is_empty(tmp_path: Path) 
 
     assert selector.select(TrackSelectionService((HardBlock(),))) is None
     assert selector.last_relaxation_stage == "NO_SAFE_CANDIDATE"
+    assert selector.last_rationale is not None
+    assert selector.last_rationale.outcome is SelectionOutcome.NO_SAFE_CANDIDATE
+    assert selector.last_rationale.decision_reason_code == "NO_SAFE_CANDIDATE"
+    assert all(
+        candidate.decision_category is CandidateDecisionCategory.EXCLUDED
+        for candidate in selector.last_rationale.evaluated_candidates
+    )
 
 
 def test_empty_queue_can_repeat_current_saved_playlist(tmp_path: Path) -> None:

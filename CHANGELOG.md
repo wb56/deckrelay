@@ -37,6 +37,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Changed
 
+- Quellenentscheidung, tatsächlich ausgeführte harte Regeln, Soft-Scores und
+  abschließende Kandidatenkategorie werden in einer gemeinsamen, sicheren
+  `SelectionRationale` zusammengeführt, ohne die Auswahl erneut auszuführen.
 - Queue-, Automatik- und Notfallquellen liefern eine gemeinsame strukturierte Erklärung
   ihrer unveränderten Prioritäts- und Herkunftsentscheidung.
 - Die automatische Katalogauswahl bildet ihre bisherige Bevorzugung selten gespielter
