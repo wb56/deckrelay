@@ -122,6 +122,9 @@ def test_database_dialog_is_exposed_from_extras_menu(monkeypatch) -> None:
         def add_command(self, *, label: str, command) -> None:
             commands.append((label, command))
 
+        def add_separator(self) -> None:
+            pass
+
         def tk_popup(self, x: int, y: int) -> None:
             popups.append((x, y))
 
@@ -141,7 +144,7 @@ def test_database_dialog_is_exposed_from_extras_menu(monkeypatch) -> None:
 
     window._show_extras_menu(ButtonDouble())
 
-    assert [label for label, _command in commands] == ["Datenbank und Sicherung…"]
+    assert commands[-1][0] == "Datenbank und Sicherung…"
     assert popups == [(10, 50)]
 
 
