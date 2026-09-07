@@ -11,6 +11,8 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Eine manuell berechnete, zustandsneutrale Automatikvorschau zeigt bis zu zehn
+  nächste Titel mit verständlichen Auswahlgründen und Relaxationshinweisen an.
 - Die beiden konfigurierbaren Soft-Regeln für Abspielhäufigkeit und Titelbewertung
   können über einen responsiven Einstellungsdialog verständlich bearbeitet werden.
 - Die beiden bestehenden Soft-Regeln für Abspielhäufigkeit und Titelbewertung
