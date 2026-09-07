@@ -95,6 +95,7 @@ from party_player.controllers.selection_rule_settings_controller import (
     SelectionRuleSettingsController,
 )
 from party_player.ui.selection_rule_settings_dialog import SelectionRuleSettingsDialog
+from party_player.ui.automatic_selection_preview_dialog import AutomaticSelectionPreviewDialog
 from party_player.ui.dirty_row_scheduler import DirtyRowScheduler, RenderBatchStatistics
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.presentation import (
@@ -1233,6 +1234,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._external_program_binding: tuple[object, ...] | None = None
         self._selection_rule_settings_controller: SelectionRuleSettingsController | None = None
         self._selection_rule_settings_dialog: SelectionRuleSettingsDialog | None = None
+        self._automatic_selection_preview_dialog: AutomaticSelectionPreviewDialog | None = None
         self._backup_restore_controller: BackupRestoreController | None = None
         self._database_backup_dialog_generation = 0
         self._database_operation_generation: int | None = None
@@ -2920,8 +2922,24 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
 
     def _show_extras_menu(self, button: Any) -> None:
         menu = tk.Menu(self, tearoff=False)
+        menu.add_command(label="Automatik-Vorschau…", command=self._show_automatic_preview)
+        menu.add_separator()
         menu.add_command(label="Datenbank und Sicherung…", command=self._show_database_backup)
         menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+
+    def _show_automatic_preview(self) -> None:
+        controller = self._controller
+        if controller is None:
+            return
+        current = self._automatic_selection_preview_dialog
+        if current is not None:
+            try:
+                if current.winfo_exists():
+                    current.focus_force()
+                    return
+            except (RuntimeError, TclError):
+                pass
+        self._automatic_selection_preview_dialog = AutomaticSelectionPreviewDialog(self, controller)
 
     def bind_backup_restore(
         self, controller: BackupRestoreController, default_backup_directory: Path

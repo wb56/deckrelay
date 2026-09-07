@@ -103,6 +103,7 @@ from party_player.saved_queue_service import SavedQueueService
 from party_player.settings_service import SettingsService
 from party_player.transition_controller import TransitionController, TransitionState
 from party_player.session_service import PartySessionService
+from party_player.selection_preview import SelectionPreview
 
 
 T = TypeVar("T")
@@ -5890,6 +5891,36 @@ class MainController:
             "cover",
             operation_id,
             executor=self._cover_executor,
+        )
+
+    def request_automatic_selection_preview(
+        self,
+        count: int,
+        completed: Callable[[SelectionPreview], None],
+        failed: Callable[[str], None],
+    ) -> bool:
+        """Calculate the existing state-neutral preview away from the Tk thread."""
+
+        def worker() -> None:
+            try:
+                preview = self._queue_service.preview_automatic_selection(count)
+            except Exception:
+                self._logger.exception("Automatik-Vorschau konnte nicht berechnet werden")
+                message = "Die Vorschau konnte nicht berechnet werden. Bitte erneut versuchen."
+                if not self._closed:
+                    self._publish_gui_callback(
+                        lambda: failed(message), "automatic-selection-preview"
+                    )
+                return
+            if not self._closed:
+                self._publish_gui_callback(
+                    lambda: completed(preview), "automatic-selection-preview"
+                )
+
+        return self._start_worker(
+            worker,
+            "automatic-selection-preview",
+            "automatic-selection-preview",
         )
 
     def _start_worker(

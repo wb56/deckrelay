@@ -16,6 +16,7 @@ from party_player.repository import PartyPlayerRepository
 from party_player.track_selection import SelectionDecision, TrackSelectionService
 from party_player.file_availability import FileAvailabilityChecker, FileAvailabilityService
 from party_player.automatic_selection import AutomaticSelectionService
+from party_player.selection_preview import SelectionPreview
 from party_player.structured_logging import log_queue_event
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.selection_source import (
@@ -154,6 +155,12 @@ class QueueService:
     def set_performance_monitor(self, performance: PerformanceMonitor) -> None:
         """Share the controller monitor for detailed queue-operation timings."""
         self._performance = performance
+
+    def preview_automatic_selection(self, count: int) -> SelectionPreview:
+        """Delegate to the existing state-neutral automatic preview."""
+        if self._automatic_selection is None:
+            raise RuntimeError("Automatische Titelauswahl ist nicht verfügbar")
+        return self._automatic_selection.preview(self._selection_service, count)
 
     def add(
         self,
