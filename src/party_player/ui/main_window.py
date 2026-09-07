@@ -91,6 +91,10 @@ from party_player.ui.overlay_presentation import (
 from party_player.overlay import OverlayRecord, OverlayRuntime, OverlayStatus
 from party_player.overlay_service import OverlayCatalogSnapshot, OverlayService
 from party_player.controllers.overlay_controller import OverlayController
+from party_player.controllers.selection_rule_settings_controller import (
+    SelectionRuleSettingsController,
+)
+from party_player.ui.selection_rule_settings_dialog import SelectionRuleSettingsDialog
 from party_player.ui.dirty_row_scheduler import DirtyRowScheduler, RenderBatchStatistics
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.presentation import (
@@ -1227,6 +1231,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         ) = None
         self._external_program_dialog: ExternalProgramsDialog | None = None
         self._external_program_binding: tuple[object, ...] | None = None
+        self._selection_rule_settings_controller: SelectionRuleSettingsController | None = None
+        self._selection_rule_settings_dialog: SelectionRuleSettingsDialog | None = None
         self._backup_restore_controller: BackupRestoreController | None = None
         self._database_backup_dialog_generation = 0
         self._database_operation_generation: int | None = None
@@ -2292,6 +2298,11 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         ).pack(side="left", padx=(10, 0))
         ctk.CTkButton(
             options_group,
+            text="Automatische Titelauswahl…",
+            command=self._show_selection_rule_settings,
+        ).grid(row=9, column=0, columnspan=3, padx=12, pady=(6, 0), sticky="ew")
+        ctk.CTkButton(
+            options_group,
             text="System / Externe Programme…",
             command=self._show_external_program_settings,
         ).grid(row=10, column=0, columnspan=3, padx=12, pady=(6, 10), sticky="ew")
@@ -2866,6 +2877,23 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             can_change_ffmpeg,
             capability_snapshots,
         )
+
+    def bind_selection_rule_settings(self, controller: SelectionRuleSettingsController) -> None:
+        self._selection_rule_settings_controller = controller
+
+    def _show_selection_rule_settings(self) -> None:
+        controller = self._selection_rule_settings_controller
+        if controller is None:
+            return
+        current = self._selection_rule_settings_dialog
+        if current is not None:
+            try:
+                if current.winfo_exists():
+                    current.focus_force()
+                    return
+            except (RuntimeError, TclError):
+                pass
+        self._selection_rule_settings_dialog = SelectionRuleSettingsDialog(self, controller)
 
     def _show_external_program_settings(self) -> None:
         if self._external_program_binding is None:
