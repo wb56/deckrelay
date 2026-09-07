@@ -11,6 +11,8 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Die beiden konfigurierbaren Soft-Regeln für Abspielhäufigkeit und Titelbewertung
+  können über einen responsiven Einstellungsdialog verständlich bearbeitet werden.
 - Die beiden bestehenden Soft-Regeln für Abspielhäufigkeit und Titelbewertung
   besitzen nun eine persistierbare, begrenzte und rückwärtskompatible Konfiguration.
 - Eine begrenzte, zustandsneutrale Mehrschritt-Vorschau verwendet die bestehende

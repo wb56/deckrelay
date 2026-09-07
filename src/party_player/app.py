@@ -22,6 +22,9 @@ from party_player.controllers.main_controller import MainController
 from party_player.controllers.cue_point_controller import CuePointController
 from party_player.controllers.loudness_controller import LoudnessController
 from party_player.controllers.overlay_controller import OverlayController
+from party_player.controllers.selection_rule_settings_controller import (
+    SelectionRuleSettingsController,
+)
 from party_player.ui.compact_deck_actions import bind_compact_decks
 from party_player.core.logging_config import configure_logging
 from party_player.core.paths import AppPaths
@@ -258,11 +261,12 @@ class PartyPlayerApplication:
                 approved_removable_roots=settings.emergency_approved_removable_roots(),
             ),
         )
+        selection_rule_settings = SelectionRuleSettingsRepository(database)
         automatic_selection = AutomaticSelectionService(
             tracks,
             AutomaticSelectionHistory(database),
             emergency_playlist=emergency_playlist,
-            rule_settings=SelectionRuleSettingsRepository(database),
+            rule_settings=selection_rule_settings,
         )
         saved_queue_repository = SavedQueueRepository(database)
         equalizer_resolver = EqualizerResolver(
@@ -320,6 +324,9 @@ class PartyPlayerApplication:
             presentation_workspace=settings.presentation_workspace(),
             save_presentation_preference=settings.set_presentation_preference,
             save_presentation_workspace=settings.set_presentation_workspace,
+        )
+        window.bind_selection_rule_settings(
+            SelectionRuleSettingsController(selection_rule_settings)
         )
         if pending_setup_reason is not None or (
             startup_decision is not None and startup_decision.requires_setup

@@ -69,6 +69,42 @@ class SelectionRuleSettingsRepository:
         )
 
     def set(self, setting: SoftRuleSetting) -> None:
+        self._validate(setting)
+        current = self.load()
+        self.save(
+            SelectionScoringSettings(
+                play_count=setting if setting.rule_id == PLAY_COUNT_RULE_ID else current.play_count,
+                rating=setting if setting.rule_id == RATING_RULE_ID else current.rating,
+            )
+        )
+
+    def save(self, settings: SelectionScoringSettings) -> None:
+        """Validate and persist one complete settings form atomically."""
+        values = (settings.play_count, settings.rating)
+        if {setting.rule_id for setting in values} != {PLAY_COUNT_RULE_ID, RATING_RULE_ID}:
+            raise ValueError("Auswahlregeln sind unvollständig oder doppelt")
+        for setting in values:
+            self._validate(setting)
+        with self._database.connect() as connection:
+            for setting in values:
+                connection.execute(
+                    """INSERT INTO selection_rule_settings
+                       (rule_id, config_version, enabled, weight)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(rule_id) DO UPDATE SET
+                           config_version=excluded.config_version,
+                           enabled=excluded.enabled,
+                           weight=excluded.weight,
+                           updated_at=CURRENT_TIMESTAMP""",
+                    (
+                        setting.rule_id,
+                        setting.config_version,
+                        int(setting.enabled),
+                        setting.weight,
+                    ),
+                )
+
+    def _validate(self, setting: SoftRuleSetting) -> None:
         if setting.rule_id not in self._LIMITS:
             raise ValueError("Unbekannte Auswahlregel")
         if setting.config_version != CONFIG_VERSION:
@@ -78,20 +114,3 @@ class SelectionRuleSettingsRepository:
         minimum, maximum = self._LIMITS[setting.rule_id]
         if not math.isfinite(setting.weight) or not minimum <= setting.weight <= maximum:
             raise ValueError(f"Gewichtung muss zwischen {minimum:g} und {maximum:g} liegen")
-        with self._database.connect() as connection:
-            connection.execute(
-                """INSERT INTO selection_rule_settings
-                   (rule_id, config_version, enabled, weight)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(rule_id) DO UPDATE SET
-                       config_version=excluded.config_version,
-                       enabled=excluded.enabled,
-                       weight=excluded.weight,
-                       updated_at=CURRENT_TIMESTAMP""",
-                (
-                    setting.rule_id,
-                    setting.config_version,
-                    int(setting.enabled),
-                    setting.weight,
-                ),
-            )
