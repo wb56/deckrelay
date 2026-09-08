@@ -1,5 +1,6 @@
 """Display-independent lifecycle tests for the catalog-maintenance dialog."""
 
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -15,6 +16,7 @@ from party_player.catalog_maintenance import (
 )
 from party_player.metadata_rules import MetadataFieldKey
 from party_player.metadata_analysis_service import TempoBatchProgress
+from party_player.track_suitability import TrackSuitabilityStatus
 from party_player.ui.catalog_maintenance_dialog import (
     CatalogAnalysisActions,
     CatalogMaintenanceDialog,
@@ -262,6 +264,97 @@ def test_reset_filters_clears_inputs_selection_and_reloads() -> None:
     assert dialog._page == 1
     assert dialog._filter_bpm_from.value == dialog._filter_bpm_to.value == ""
     assert dialog.reloads == 1
+
+
+def test_catalog_selection_actions_share_one_selection_with_suitability(
+    monkeypatch: Any,
+) -> None:
+    class Choice:
+        def get(self) -> str:
+            return "Für Automatik und Wünsche geeignet"
+
+    class Service:
+        def __init__(self) -> None:
+            self.persisted: tuple[int, ...] = ()
+
+        def suitability_selection(self, selection: SelectionDescription) -> tuple[int, ...]:
+            if selection.all_matches:
+                return tuple(
+                    track_id for track_id in range(1, 77) if track_id not in selection.excluded_ids
+                )
+            return tuple(sorted(selection.included_ids))
+
+        def set_suitability(
+            self, track_ids: tuple[int, ...], _status: TrackSuitabilityStatus
+        ) -> int:
+            self.persisted = track_ids
+            return len(track_ids)
+
+    class Dialog:
+        _filter = MaintenanceFilter(text="visible")
+        _selection = SelectionDescription.for_filter(_filter)
+        _current = SimpleNamespace(
+            total=76,
+            rows=tuple(SimpleNamespace(track_id=track_id) for track_id in range(1, 13)),
+        )
+        _selection_label = _Widget()
+        _suitability_apply_button = _Widget()
+        _result = _Widget()
+        _suitability = Choice()
+        _running = False
+        _service = Service()
+
+        def _active(self) -> bool:
+            return True
+
+        def _show_page(self, _page: object) -> None:
+            pass
+
+        def _update_selection(self) -> None:
+            CatalogMaintenanceDialog._update_selection(cast(Any, self))
+
+        def _task(self, work: Any, done: Any) -> None:
+            done(work())
+
+        def _confirm_suitability_change(self, value: object) -> None:
+            CatalogMaintenanceDialog._confirm_suitability_change(cast(Any, self), value)
+
+        def _suitability_changed(self, value: object) -> None:
+            CatalogMaintenanceDialog._suitability_changed(cast(Any, self), value)
+
+        def _load_counts_and_page(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "party_player.ui.catalog_maintenance_dialog.ask_silent_yes_no",
+        lambda *_args: True,
+    )
+    dialog = Dialog()
+
+    CatalogMaintenanceDialog._toggle(cast(Any, dialog), 0)
+    assert dialog._selection.included_ids == frozenset({1})
+    assert dialog._selection_label.options["text"] == "1 ausgewählt"
+
+    CatalogMaintenanceDialog._select_page(cast(Any, dialog))
+    assert dialog._selection.included_ids == frozenset(range(1, 13))
+    assert dialog._selection_label.options["text"] == "12 ausgewählt"
+
+    CatalogMaintenanceDialog._select_all(cast(Any, dialog))
+    assert dialog._selection.all_matches
+    assert dialog._selection.filter == dialog._filter
+    assert dialog._selection_label.options["text"] == "76 ausgewählt · 0 ausgeschlossen"
+
+    CatalogMaintenanceDialog._toggle(cast(Any, dialog), 0)
+    assert dialog._selection.excluded_ids == frozenset({1})
+    assert dialog._selection_label.options["text"] == "75 ausgewählt · 1 ausgeschlossen"
+
+    CatalogMaintenanceDialog._prepare_suitability_change(cast(Any, dialog))
+    assert dialog._service.persisted == tuple(range(2, 77))
+
+    CatalogMaintenanceDialog._clear_selection(cast(Any, dialog))
+    assert not dialog._selection.all_matches
+    assert dialog._selection.included_ids == frozenset()
+    assert dialog._selection_label.options["text"] == "0 ausgewählt"
 
 
 def test_preview_success_updates_state_and_summary() -> None:

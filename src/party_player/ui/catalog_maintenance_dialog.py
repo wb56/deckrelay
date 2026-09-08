@@ -1072,7 +1072,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._update_selection()
 
     def _select_all(self) -> None:
-        self._selection = self._selection.select_all_matches()
+        self._selection = SelectionDescription.for_filter(self._filter).select_all_matches()
         self._update_selection()
         if self._current:
             self._show_page(self._current)
@@ -1086,9 +1086,10 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
     def _prepare_suitability_change(self) -> None:
         if self._running:
             return
+        selection = self._selection
         self._suitability_apply_button.configure(state="disabled")
         self._task(
-            lambda: self._service.suitability_selection(self._selection),
+            lambda: self._service.suitability_selection(selection),
             self._confirm_suitability_change,
         )
 
@@ -1128,14 +1129,13 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._load_counts_and_page()
 
     def _update_selection(self) -> None:
-        text = (
-            "Alle Treffer"
-            if self._selection.all_matches
-            else str(len(self._selection.included_ids))
-        )
-        self._selection_label.configure(
-            text=f"{text} ausgewählt · {len(self._selection.excluded_ids)} ausgeschlossen"
-        )
+        if self._selection.all_matches:
+            total = self._current.total if self._current is not None else 0
+            selected = max(0, total - len(self._selection.excluded_ids))
+            text = f"{selected} ausgewählt · {len(self._selection.excluded_ids)} ausgeschlossen"
+        else:
+            text = f"{len(self._selection.included_ids)} ausgewählt"
+        self._selection_label.configure(text=text)
 
     def _change_page(self, delta: int) -> None:
         self._page = max(1, self._page + delta)

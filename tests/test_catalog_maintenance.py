@@ -253,20 +253,23 @@ def test_repository_restricts_cross_page_selection_with_new_filter_in_sql(
 def test_all_visible_suitability_change_uses_current_filter_and_all_statuses(
     temporary_database: Database,
 ) -> None:
-    soul_one = _track(temporary_database, "Soul One", artist="Band")
-    soul_two = _track(temporary_database, "Soul Two", artist="Band")
+    soul_ids = tuple(
+        _track(temporary_database, f"Soul {number:02d}", artist="Band") for number in range(76)
+    )
     rock = _track(temporary_database, "Rock", artist="Band")
     service = CatalogMaintenanceService(temporary_database)
     selection = SelectionDescription.for_filter(MaintenanceFilter(text="Soul")).select_all_matches()
 
     selected = service.suitability_selection(selection)
-    assert set(selected) == {soul_one, soul_two}
+    assert selected == soul_ids
     for status in TrackSuitabilityStatus:
-        assert service.set_suitability(selected, status) == 2
-        stored = TrackSuitabilityRepository(temporary_database).get_many((soul_one, soul_two, rock))
-        assert stored[soul_one].status is status
-        assert stored[soul_two].status is status
+        assert service.set_suitability(selected, status) == 76
+        stored = TrackSuitabilityRepository(temporary_database).get_many((*soul_ids, rock))
+        assert all(stored[track_id].status is status for track_id in soul_ids)
         assert stored[rock].status is TrackSuitabilityStatus.UNKNOWN
+
+    without_first = selection.deselect(soul_ids[0])
+    assert service.suitability_selection(without_first) == soul_ids[1:]
 
 
 def test_preview_execute_records_reversible_changes_and_rejects_reuse(
