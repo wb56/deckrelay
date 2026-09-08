@@ -44,6 +44,7 @@ from party_player.ui.responsive_dialog import (
     release_dialog,
 )
 from party_player.ui.tooltip import Tooltip
+from party_player.track_suitability import TrackSuitabilityStatus
 
 
 Submit = Callable[
@@ -110,6 +111,28 @@ SUGGESTION_STATUS_LABELS = {
     "ACCEPTED": "Übernommen",
     "REJECTED": "Abgelehnt",
     "SUPERSEDED": "Abgelöst",
+}
+SUITABILITY_LABELS = {
+    TrackSuitabilityStatus.SUITABLE: "Für Automatik und Wünsche geeignet",
+    TrackSuitabilityStatus.MANUAL_ONLY: "Nur manuell und in Playlists",
+    TrackSuitabilityStatus.UNSUITABLE: "Ungeeignet",
+    TrackSuitabilityStatus.UNKNOWN: "Noch nicht geprüft",
+}
+SUITABILITY_EXPLANATIONS = {
+    TrackSuitabilityStatus.SUITABLE: (
+        "Die ausgewählten Titel dürfen automatisch geplant und als Gastwunsch gespielt werden."
+    ),
+    TrackSuitabilityStatus.MANUAL_ONLY: (
+        "Die ausgewählten Titel bleiben auf manuelle Queue-Einträge und Playlists beschränkt."
+    ),
+    TrackSuitabilityStatus.UNSUITABLE: (
+        "Die ausgewählten Titel werden grundsätzlich ausgeschlossen, solange keine "
+        "ausdrückliche Einzelausnahme vorliegt."
+    ),
+    TrackSuitabilityStatus.UNKNOWN: (
+        "Die ausgewählten Titel gelten als noch nicht geprüft und werden weder automatisch "
+        "noch als Gastwunsch ausgewählt."
+    ),
 }
 
 
@@ -435,13 +458,31 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         ctk.CTkButton(selection, text="Seite abwählen", command=self._deselect_page).pack(
             side="left", padx=3
         )
-        ctk.CTkButton(selection, text="Alle Treffer auswählen", command=self._select_all).pack(
+        ctk.CTkButton(selection, text="Alle sichtbaren auswählen", command=self._select_all).pack(
+            side="left", padx=3
+        )
+        ctk.CTkButton(selection, text="Auswahl aufheben", command=self._clear_selection).pack(
             side="left", padx=3
         )
         self._selection_label = ctk.CTkLabel(selection, text="0 ausgewählt")
         self._selection_label.pack(side="left", padx=10)
+        suitability = ctk.CTkFrame(body)
+        suitability.grid(row=3, column=0, pady=6, sticky="ew")
+        suitability.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(suitability, text="Eignung der Auswahl:").grid(
+            row=0, column=0, padx=6, pady=5, sticky="w"
+        )
+        self._suitability = ctk.CTkOptionMenu(suitability, values=list(SUITABILITY_LABELS.values()))
+        self._suitability.set(SUITABILITY_LABELS[TrackSuitabilityStatus.SUITABLE])
+        self._suitability.grid(row=0, column=1, padx=6, pady=5, sticky="ew")
+        self._suitability_apply_button = ctk.CTkButton(
+            suitability,
+            text="Eignung anwenden…",
+            command=self._prepare_suitability_change,
+        )
+        self._suitability_apply_button.grid(row=0, column=2, padx=6, pady=5)
         action = ctk.CTkFrame(body)
-        action.grid(row=3, column=0, pady=6, sticky="ew")
+        action.grid(row=4, column=0, pady=6, sticky="ew")
         action.grid_columnconfigure(2, weight=1)
         action.grid_columnconfigure(3, weight=1)
         self._field = ctk.CTkOptionMenu(
@@ -474,7 +515,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             row=1, column=3, padx=3, pady=3, sticky="ew"
         )
         self._result = ctk.CTkLabel(body, text="", justify="left", anchor="w", wraplength=900)
-        self._result.grid(row=4, column=0, padx=6, pady=8, sticky="ew")
+        self._result.grid(row=5, column=0, padx=6, pady=8, sticky="ew")
         ctk.CTkButton(self, text="Schließen", command=self._close).grid(
             row=2, column=0, padx=14, pady=10, sticky="e"
         )
@@ -839,6 +880,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
                     f"{row.current_value}"
                     f"{' → Vorschlag: ' + row.suggestion if row.suggestion else ''}"
                     f"{' · ' + row.warning if row.warning else ''}"
+                    f" · Eignung: {SUITABILITY_LABELS[row.suitability_status]}"
                 )
             )
             tooltip.set_text(
@@ -1035,6 +1077,56 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         if self._current:
             self._show_page(self._current)
 
+    def _clear_selection(self) -> None:
+        self._selection = SelectionDescription.for_filter(self._filter)
+        self._update_selection()
+        if self._current:
+            self._show_page(self._current)
+
+    def _prepare_suitability_change(self) -> None:
+        if self._running:
+            return
+        self._suitability_apply_button.configure(state="disabled")
+        self._task(
+            lambda: self._service.suitability_selection(self._selection),
+            self._confirm_suitability_change,
+        )
+
+    def _confirm_suitability_change(self, value: object) -> None:
+        if not self._active():
+            return
+        track_ids = cast(tuple[int, ...], value)
+        status = next(
+            item for item, label in SUITABILITY_LABELS.items() if label == self._suitability.get()
+        )
+        if not track_ids:
+            self._suitability_apply_button.configure(state="normal")
+            self._result.configure(text="Bitte mindestens einen Titel auswählen.")
+            return
+        explanation = SUITABILITY_EXPLANATIONS[status]
+        confirmed = ask_silent_yes_no(
+            self,
+            "Eignung für ausgewählte Titel ändern?",
+            f"Betroffene Titel: {len(track_ids)}\n\n{explanation}\n\nÄnderung jetzt speichern?",
+        )
+        if not confirmed:
+            self._suitability_apply_button.configure(state="normal")
+            return
+        self._running = True
+        self._task(
+            lambda: self._service.set_suitability(track_ids, status),
+            self._suitability_changed,
+        )
+
+    def _suitability_changed(self, value: object) -> None:
+        if not self._active():
+            return
+        changed = int(cast(int, value))
+        self._running = False
+        self._suitability_apply_button.configure(state="normal")
+        self._result.configure(text=f"Eignung für {changed} Titel gespeichert.")
+        self._load_counts_and_page()
+
     def _update_selection(self) -> None:
         text = (
             "Alle Treffer"
@@ -1169,6 +1261,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._cancel_button.configure(state="disabled")
             if hasattr(self, "_tempo_start"):
                 self._tempo_start.configure(state="normal")
+            if hasattr(self, "_suitability_apply_button"):
+                self._suitability_apply_button.configure(state="normal")
             self._result.configure(text=f"Fehler: {error}")
 
     def _active(self) -> bool:

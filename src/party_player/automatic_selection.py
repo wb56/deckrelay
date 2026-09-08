@@ -1,5 +1,6 @@
 """Deterministic, history-aware automatic catalog selection."""
 
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -23,6 +24,7 @@ from party_player.selection_decision import (
     RuleKind,
     RuleOutcome,
     ExecutableSelectionRule,
+    ExclusionReasonSummary,
     SelectionCandidate,
     SelectionContext,
     SelectionOutcome,
@@ -208,6 +210,7 @@ class AutomaticSelectionService:
         )
         preview_id = uuid.uuid4().hex
         steps: list[SelectionPreviewStep] = []
+        completion_rationale: SelectionRationale | None = None
         completion = SelectionPreviewCompletion.REQUESTED_DEPTH_REACHED
         for position in range(1, count + 1):
             selected = preview_selector._run_isolated(
@@ -216,6 +219,7 @@ class AutomaticSelectionService:
             rationale = preview_selector.last_rationale
             if selected is None or rationale is None:
                 completion = SelectionPreviewCompletion.NO_SAFE_CANDIDATE
+                completion_rationale = rationale
                 break
             source_entry = QueueEntry(
                 -selected.id,
@@ -251,6 +255,7 @@ class AutomaticSelectionService:
             achieved_depth=len(steps),
             steps=tuple(steps),
             completion_reason=completion,
+            completion_rationale=completion_rationale,
         )
 
     def _load_rule_settings(self) -> SelectionScoringSettings:
@@ -284,6 +289,7 @@ class AutomaticSelectionService:
             ),
         )
         candidates = self._tracks.automatic_candidates()
+        terminal_exclusions: dict[int, CandidateEvaluation] = {}
         for stage, relaxed_codes in stages:
             highest_score: float | None = None
             top: list[tuple[Track, CandidateEvaluation]] = []
@@ -300,16 +306,18 @@ class AutomaticSelectionService:
                 recent_evaluation = recent_rule.evaluate_rule(rule_input, context)
                 if recent_evaluation.result_code is RuleOutcome.EXCLUDE:
                     evaluated_count += 1
+                    excluded_evaluation = CandidateEvaluation(
+                        candidate=rule_input.candidate,
+                        accepted=False,
+                        code=recent_evaluation.reason_code,
+                        terminal_status=recent_evaluation.terminal_status,
+                        reason=recent_evaluation.reason,
+                        rules=(recent_evaluation,),
+                    )
+                    terminal_exclusions[track.id] = excluded_evaluation
                     self._append_summary(
                         summaries,
-                        CandidateEvaluation(
-                            candidate=rule_input.candidate,
-                            accepted=False,
-                            code=recent_evaluation.reason_code,
-                            terminal_status=recent_evaluation.terminal_status,
-                            reason=recent_evaluation.reason,
-                            rules=(recent_evaluation,),
-                        ),
+                        excluded_evaluation,
                     )
                     continue
                 decision, rationale = rules.evaluate_with_rationale(
@@ -335,6 +343,10 @@ class AutomaticSelectionService:
                         candidate_evaluation,
                     )
                 self._append_summary(summaries, candidate_evaluation)
+                if decision.accepted:
+                    terminal_exclusions.pop(track.id, None)
+                else:
+                    terminal_exclusions[track.id] = candidate_evaluation
                 if decision.accepted:
                     if highest_score is None or candidate_evaluation.total_score > highest_score:
                         highest_score = candidate_evaluation.total_score
@@ -373,6 +385,7 @@ class AutomaticSelectionService:
             context_id=context_id,
             summaries=summaries,
             evaluated_count=evaluated_count,
+            terminal_exclusions=terminal_exclusions,
         )
 
     def select_emergency(self, rules: TrackSelectionService) -> Track | None:
@@ -383,6 +396,7 @@ class AutomaticSelectionService:
                     context_id=uuid.uuid4().hex,
                     summaries=[],
                     evaluated_count=0,
+                    terminal_exclusions={},
                 )
             )
 
@@ -403,6 +417,7 @@ class AutomaticSelectionService:
         context_id: str,
         summaries: list[CandidateEvaluation],
         evaluated_count: int,
+        terminal_exclusions: dict[int, CandidateEvaluation],
     ) -> Track | None:
         if self._emergency_playlist is None:
             self.last_relaxation_stage = "NO_SAFE_CANDIDATE"
@@ -414,6 +429,7 @@ class AutomaticSelectionService:
                 evaluated_count,
                 self.last_relaxation_stage,
                 "NONE",
+                terminal_exclusions=terminal_exclusions,
             )
             self._log_decision(self.last_rationale, reason_code="NO_SAFE_CANDIDATE")
             return None
@@ -439,6 +455,11 @@ class AutomaticSelectionService:
             )
             evaluated_count += 1
             self._append_summary(summaries, rationale.evaluated_candidates[0])
+            evaluated = rationale.evaluated_candidates[0]
+            if decision.accepted:
+                terminal_exclusions.pop(track.id, None)
+            else:
+                terminal_exclusions[track.id] = evaluated
             if decision.accepted:
                 self.last_relaxation_stage = "EMERGENCY_PLAYLIST"
                 self.last_rationale = self._rationale(
@@ -466,6 +487,7 @@ class AutomaticSelectionService:
             evaluated_count,
             self.last_relaxation_stage,
             "NONE",
+            terminal_exclusions=terminal_exclusions,
         )
         self._log_decision(self.last_rationale, reason_code="NO_SAFE_CANDIDATE")
         return None
@@ -489,6 +511,7 @@ class AutomaticSelectionService:
         tie_break_method: str,
         selected_evaluation: CandidateEvaluation | None = None,
         tie_candidate_count: int = 0,
+        terminal_exclusions: dict[int, CandidateEvaluation] | None = None,
     ) -> SelectionRationale:
         if selected_evaluation is not None and selected_evaluation not in summaries:
             if len(summaries) >= AutomaticSelectionService._RATIONALE_CANDIDATE_LIMIT:
@@ -571,6 +594,22 @@ class AutomaticSelectionService:
             ),
             None,
         )
+        reason_counts = Counter(
+            evaluation.code
+            for evaluation in (terminal_exclusions or {}).values()
+            if evaluation.code
+        )
+        ordered_reasons = sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
+        if len(ordered_reasons) > 5:
+            displayed_reasons = ordered_reasons[:4]
+            displayed_reasons.append(
+                ("OTHER_EXCLUSIONS", sum(count for _code, count in ordered_reasons[4:]))
+            )
+        else:
+            displayed_reasons = ordered_reasons
+        exclusion_summary = tuple(
+            ExclusionReasonSummary(reason_code, count) for reason_code, count in displayed_reasons
+        )
         return SelectionRationale(
             context_id=context_id,
             outcome=outcome,
@@ -586,6 +625,8 @@ class AutomaticSelectionService:
                 if selected_summary is not None
                 else outcome.value
             ),
+            excluded_candidate_count=sum(item.count for item in exclusion_summary),
+            exclusion_summary=exclusion_summary,
         )
 
     def _log_decision(self, rationale: SelectionRationale, *, reason_code: str) -> None:

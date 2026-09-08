@@ -6721,6 +6721,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             main_controller.metadata_editor_service,
             submit_editor_task,
             self._metadata_analysis,
+            main_controller.track_suitability_repository,
         )
 
         def refresh_changed_track(view_model: TrackEditorViewModel) -> None:

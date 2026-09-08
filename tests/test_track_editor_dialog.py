@@ -213,6 +213,7 @@ def test_technical_audio_errors_are_mapped_to_understandable_states() -> None:
 class _EditorController:
     def __init__(self) -> None:
         self.events: list[str] = []
+        self.suitability_saves = 0
 
     def automatic_suggestion(self, _model: object) -> object:
         from party_player.controllers.track_editor_controller import TrackEditorChanges
@@ -221,6 +222,10 @@ class _EditorController:
 
     def record_event(self, operation: str) -> None:
         self.events.append(operation)
+
+    def save_suitability_async(self, *_args: object) -> bool:
+        self.suitability_saves += 1
+        return True
 
 
 class _AdoptionDialogDouble:
@@ -279,6 +284,7 @@ def test_window_close_matches_cancel_and_releases_preview_resources() -> None:
     assert dialog.grab_released
     assert dialog.destroyed
     assert dialog.closed_callbacks == 1
+    assert dialog._editor_controller.suitability_saves == 0
 
 
 def test_finish_is_idempotent_for_late_close_callbacks() -> None:

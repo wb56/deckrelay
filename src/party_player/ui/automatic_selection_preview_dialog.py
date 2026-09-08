@@ -83,6 +83,16 @@ _SOURCE_TEXT = {
     "PLAYLIST": "Playlist oder Verzeichnis",
 }
 
+_EXCLUSION_TEXT = {
+    "SUITABILITY_APPROVAL_REQUIRED": "sind noch nicht für die automatische Auswahl freigegeben",
+    "UNSUITABLE_TRACK": "sind als ungeeignet markiert",
+    "BLOCKED_TRACK": "sind ausdrücklich gesperrt",
+    "RESTRICTED_TRACK": "benötigen eine ausdrückliche Operatorfreigabe",
+    "BLOCKED_ARTIST": "haben einen gesperrten Interpreten",
+    "SHORT_TRACK_MANUAL_ONLY": "sind nur für die manuelle Auswahl geeignet",
+    "OTHER_EXCLUSIONS": "wurden aus weiteren Sicherheitsgründen ausgeschlossen",
+}
+
 
 def preview_dialog_dimensions(
     compact: bool,
@@ -107,6 +117,22 @@ def preview_completion_text(preview: SelectionPreview) -> str:
             "Kein sicher geeigneter weiterer Kandidat verfügbar."
         )
     return f"{preview.achieved_depth} Titel wie angefordert vorausberechnet."
+
+
+def preview_exclusion_text(preview: SelectionPreview) -> str:
+    rationale = preview.completion_rationale
+    if rationale is None or rationale.excluded_candidate_count == 0:
+        return "Keine geeigneten Titel gefunden."
+    lines = [
+        "Keine geeigneten Titel gefunden.",
+        f"{rationale.excluded_candidate_count} Titel geprüft.",
+    ]
+    for item in rationale.exclusion_summary:
+        explanation = _EXCLUSION_TEXT.get(
+            item.reason_code, "wurden aus einem Sicherheitsgrund ausgeschlossen"
+        )
+        lines.append(f"{item.count} Titel {explanation}.")
+    return "\n".join(lines)
 
 
 def _shorten(text: str, maximum: int) -> str:
@@ -326,7 +352,7 @@ class AutomaticSelectionPreviewDialog(ctk.CTkToplevel):  # type: ignore[misc]
             first = present_preview_step(preview.steps[0])
             self._detail_text.configure(text=first.detail)
         else:
-            self._detail_text.configure(text="Keine geeigneten Titel gefunden.")
+            self._detail_text.configure(text=preview_exclusion_text(preview))
 
     def _accept_error(self, generation: int, message: str) -> None:
         if not self._request_state.finish(generation):

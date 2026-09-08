@@ -44,7 +44,16 @@ from party_player.metadata_analysis_service import (
 )
 from party_player.metadata_analysis_contracts import TempoAnalysisScope
 from party_player.ui.tooltip import Tooltip
+from party_player.track_suitability import TrackSuitabilityStatus
 from party_player.ui.help_content import tempo_analysis_help_text
+
+
+SUITABILITY_LABELS = {
+    TrackSuitabilityStatus.SUITABLE: "Für Automatik und Wünsche geeignet",
+    TrackSuitabilityStatus.MANUAL_ONLY: "Nur manuell und in Playlists",
+    TrackSuitabilityStatus.UNSUITABLE: "Ungeeignet",
+    TrackSuitabilityStatus.UNKNOWN: "Noch nicht geprüft",
+}
 
 
 DialogKind = Literal["info", "error", "yes_no", "yes_no_cancel"]
@@ -360,6 +369,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._metadata_removals: dict[MetadataFieldKey, ValueRemovalMode] = {}
         self._metadata_suggestion_actions: dict[int, StagedSuggestionAction] = {}
         self._pending_metadata_changes: TrackMetadataChanges | None = None
+        self._pending_suitability_status = self._view_model.suitability_status
         self._metadata_tooltips: list[Tooltip] = []
         self._metadata_scroll_after_id: str | None = None
         self._tempo_poll_after_id: str | None = None
@@ -384,7 +394,10 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._build_steps: list[Callable[[], None]] = [
             self._build_header,
             self._build_tab_container,
-            *(lambda name=name: self._tabs.add(name) for name in ("Cue", "Lautheit", "Metadaten")),
+            *(
+                lambda name=name: self._tabs.add(name)
+                for name in ("Cue", "Lautheit", "Metadaten", "Eignung")
+            ),
             self._build_cue_fields,
             self._build_reset_buttons,
             self._build_sources,
@@ -607,6 +620,43 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
         if name == "Lautheit":
             self._lazy_tabs_built.add(name)
             self._build_loudness_tab()
+            return
+        if name == "Eignung":
+            self._lazy_tabs_built.add(name)
+            self._build_suitability_tab()
+
+    def _build_suitability_tab(self) -> None:
+        tab = self._tabs.tab("Eignung")
+        tab.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            tab,
+            text=(
+                "Die Eignung steuert, ob dieser Titel automatisch oder als Gastwunsch "
+                "ausgewählt werden darf. Harte Sperren bleiben unabhängig davon wirksam."
+            ),
+            justify="left",
+            anchor="w",
+            wraplength=650,
+        ).grid(row=0, column=0, padx=24, pady=(32, 12), sticky="ew")
+        self._suitability = ctk.StringVar(
+            value=SUITABILITY_LABELS[self._view_model.suitability_status]
+        )
+        ctk.CTkOptionMenu(
+            tab,
+            variable=self._suitability,
+            values=list(SUITABILITY_LABELS.values()),
+        ).grid(row=1, column=0, padx=24, pady=8, sticky="ew")
+        ctk.CTkLabel(
+            tab,
+            text=(
+                "Noch nicht geprüft: keine Automatik oder Wünsche.\n"
+                "Nur manuell und in Playlists: bewusste Operatorauswahl.\n"
+                "Ungeeignet: grundsätzlich gesperrt."
+            ),
+            justify="left",
+            anchor="w",
+            text_color="#9fb3c8",
+        ).grid(row=2, column=0, padx=24, pady=8, sticky="ew")
 
     def _build_loudness_tab(self) -> None:
         tab = self._tabs.tab("Lautheit")
@@ -1777,6 +1827,16 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._saving = True
             self._save_had_changes = changed
             self._pending_metadata_changes = metadata_changes
+            suitability_value = getattr(self, "_suitability", None)
+            self._pending_suitability_status = (
+                self._view_model.suitability_status
+                if suitability_value is None
+                else next(
+                    status
+                    for status, label in SUITABILITY_LABELS.items()
+                    if label == suitability_value.get()
+                )
+            )
             self._save_button.configure(state="disabled", text="Speichert …")
             self._editor_controller.save_async(
                 self._view_model,
@@ -1805,7 +1865,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             )
             if accepted:
                 return
-        CuePointDialog._finish_successful_save(self)
+        CuePointDialog._save_suitability(self)
 
     def _metadata_save_completed(self, result: MetadataSaveResult) -> None:
         if not self._is_active():
@@ -1814,6 +1874,27 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._view_model, result.view_model
         )
         self._save_had_changes = self._save_had_changes or result.revision_changed
+        CuePointDialog._save_suitability(self)
+
+    def _save_suitability(self) -> None:
+        status = self._pending_suitability_status
+        if status is self._view_model.suitability_status:
+            CuePointDialog._finish_successful_save(self)
+            return
+        accepted = self._editor_controller.save_suitability_async(
+            self._view_model,
+            status,
+            self._suitability_save_completed,
+            self._save_failed,
+        )
+        if not accepted and self._saving:
+            self._save_failed(RuntimeError("Eignung konnte nicht gespeichert werden"))
+
+    def _suitability_save_completed(self, view_model: TrackEditorViewModel) -> None:
+        if not self._is_active():
+            return
+        self._view_model = view_model
+        self._save_had_changes = True
         CuePointDialog._finish_successful_save(self)
 
     def _finish_successful_save(self) -> None:
@@ -1821,6 +1902,7 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._on_saved(self._view_model)
         self._editor_controller.record_event("track_editor_save_total")
         self._pending_metadata_changes = None
+        self._pending_suitability_status = self._view_model.suitability_status
         self._metadata_confirmations.clear()
         self._metadata_removals.clear()
         self._metadata_suggestion_actions.clear()

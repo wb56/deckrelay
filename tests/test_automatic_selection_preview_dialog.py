@@ -29,6 +29,7 @@ from party_player.ui.automatic_selection_preview_dialog import (
     PreviewRequestState,
     present_preview_step,
     preview_completion_text,
+    preview_exclusion_text,
     preview_depth,
     preview_dialog_dimensions,
 )
@@ -273,6 +274,37 @@ def test_no_safe_candidate_replaces_initial_empty_preview_text() -> None:
     AutomaticSelectionPreviewDialog._accept_preview(cast(Any, dialog), generation, empty)
 
     assert dialog._detail_text.values["text"] == "Keine geeigneten Titel gefunden."
+
+
+def test_no_safe_candidate_presents_bounded_reason_summary() -> None:
+    from party_player.selection_decision import ExclusionReasonSummary
+
+    source = _preview(depth=5, completion=SelectionPreviewCompletion.NO_SAFE_CANDIDATE)
+    rationale = source.steps[0].rationale
+    summarized = SelectionPreview(
+        source.preview_id,
+        source.created_at,
+        5,
+        0,
+        (),
+        SelectionPreviewCompletion.NO_SAFE_CANDIDATE,
+        completion_rationale=SelectionRationale(
+            context_id=rationale.context_id,
+            outcome=SelectionOutcome.REJECTED,
+            selected_candidate=None,
+            evaluated_candidates=(),
+            relaxation_stage="NO_SAFE_CANDIDATE",
+            tie_break_method="NONE",
+            excluded_candidate_count=76,
+            exclusion_summary=(ExclusionReasonSummary("SUITABILITY_APPROVAL_REQUIRED", 76),),
+        ),
+    )
+
+    text = preview_exclusion_text(summarized)
+
+    assert "76 Titel geprüft" in text
+    assert "76 Titel sind noch nicht" in text
+    assert "selection." not in text
 
 
 def test_closed_dialog_ignores_late_worker_error_without_widget_access() -> None:

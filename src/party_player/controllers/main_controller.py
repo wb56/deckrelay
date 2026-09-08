@@ -99,6 +99,7 @@ from party_player.queue_origin import derive_queue_origin
 from party_player.services.library_service import LibraryService
 from party_player.metadata_editor import MetadataEditorService
 from party_player.catalog_maintenance import CatalogMaintenanceService
+from party_player.track_suitability import TrackSuitabilityRepository
 from party_player.saved_queue_service import SavedQueueService
 from party_player.settings_service import SettingsService
 from party_player.transition_controller import TransitionController, TransitionState
@@ -332,6 +333,7 @@ class MainController:
         self._library_service = library_service
         self._metadata_editor = MetadataEditorService(library_service.database)
         self._catalog_maintenance = CatalogMaintenanceService(library_service.database)
+        self._track_suitability = TrackSuitabilityRepository(library_service.database)
         self._queue_service = queue_service
         self._queue = QueueController(queue_service)
         self.deck_a = deck_a
@@ -1882,6 +1884,10 @@ class MainController:
     @property
     def catalog_maintenance_service(self) -> CatalogMaintenanceService:
         return self._catalog_maintenance
+
+    @property
+    def track_suitability_repository(self) -> TrackSuitabilityRepository:
+        return self._track_suitability
 
     def library_track(self, track_id: int) -> Track | None:
         """Load one catalog track for an existing worker-backed UI request."""

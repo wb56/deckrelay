@@ -30,6 +30,7 @@ from party_player.metadata_rules import (
 from party_player.database.connection import Database
 from party_player.database.migrations import LATEST_SCHEMA_VERSION
 from party_player.database.migrations import migrate
+from party_player.track_suitability import TrackSuitabilityRepository, TrackSuitabilityStatus
 
 
 def _track(database: Database, title: str, **values: object) -> int:
@@ -247,6 +248,25 @@ def test_repository_restricts_cross_page_selection_with_new_filter_in_sql(
     restricted = repository.restrict_selection(selection, MaintenanceFilter(text="Soul"))
 
     assert restricted == ((soul, 0),)
+
+
+def test_all_visible_suitability_change_uses_current_filter_and_all_statuses(
+    temporary_database: Database,
+) -> None:
+    soul_one = _track(temporary_database, "Soul One", artist="Band")
+    soul_two = _track(temporary_database, "Soul Two", artist="Band")
+    rock = _track(temporary_database, "Rock", artist="Band")
+    service = CatalogMaintenanceService(temporary_database)
+    selection = SelectionDescription.for_filter(MaintenanceFilter(text="Soul")).select_all_matches()
+
+    selected = service.suitability_selection(selection)
+    assert set(selected) == {soul_one, soul_two}
+    for status in TrackSuitabilityStatus:
+        assert service.set_suitability(selected, status) == 2
+        stored = TrackSuitabilityRepository(temporary_database).get_many((soul_one, soul_two, rock))
+        assert stored[soul_one].status is status
+        assert stored[soul_two].status is status
+        assert stored[rock].status is TrackSuitabilityStatus.UNKNOWN
 
 
 def test_preview_execute_records_reversible_changes_and_rejects_reuse(

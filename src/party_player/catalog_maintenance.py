@@ -36,6 +36,10 @@ from party_player.metadata_persistence import (
     serialize_metadata_value,
 )
 from party_player.metadata_rules import normalize_metadata_value
+from party_player.track_suitability import (
+    TrackSuitabilityRepository,
+    TrackSuitabilityStatus,
+)
 
 
 BATCH_CHUNK_SIZE = 250
@@ -258,6 +262,7 @@ class MaintenanceRow:
     confidence: float | None
     changed_at: str
     warning: str
+    suitability_status: TrackSuitabilityStatus = TrackSuitabilityStatus.UNKNOWN
 
 
 _RECORDING_KIND_LABELS = {
@@ -401,7 +406,8 @@ class CatalogMaintenanceRepository:
         return """FROM tracks t
             LEFT JOIN track_metadata_field_state s ON s.track_id=t.id
             LEFT JOIN track_metadata_suggestions p ON p.track_id=t.id AND p.status='PENDING'
-            LEFT JOIN metadata_analysis_runs a ON a.track_id=t.id AND a.status='FAILED'"""
+            LEFT JOIN metadata_analysis_runs a ON a.track_id=t.id AND a.status='FAILED'
+            LEFT JOIN track_suitability ts ON ts.track_id=t.id"""
 
     def counts(self) -> tuple[WorkQueueCount, ...]:
         with self._database.connect() as connection:
@@ -452,6 +458,7 @@ class CatalogMaintenanceRepository:
                     t.album, t.year, t.original_release_year, t.recording_type,
                     t.is_remastered, t.bpm, t.bpm_confidence, t.alternative_bpm,
                     t.genre, t.energy, t.danceability, t.language, t.rating, t.comment,
+                    COALESCE(ts.status,'UNKNOWN') suitability_status,
                     {field_expression} field_key,
                     COALESCE({state_alias}.source_type,{proposal_alias}.source_type,'') source_type,
                     COALESCE({state_alias}.review_status,{proposal_alias}.review_status,'MISSING') review_status,
@@ -506,6 +513,7 @@ class CatalogMaintenanceRepository:
                     float(row["confidence"]) if row["confidence"] is not None else None,
                     str(row["changed_at"]),
                     "Konflikt" if status is MetadataReviewStatus.CONFLICTING else "",
+                    TrackSuitabilityStatus(str(row["suitability_status"])),
                 )
             )
         result = tuple(result_items)
@@ -680,12 +688,25 @@ class CatalogMaintenanceService:
         self._database = database
         self.repository = CatalogMaintenanceRepository(database)
         self._editor = MetadataEditorService(database)
+        self._suitability = TrackSuitabilityRepository(database)
         self._previews: dict[str, MetadataBatchRequest] = {}
         self._diagnostics = MaintenanceDiagnostics()
 
     @property
     def diagnostics(self) -> MaintenanceDiagnostics:
         return self._diagnostics
+
+    def suitability_selection(self, selection: SelectionDescription) -> tuple[int, ...]:
+        return tuple(
+            track_id for track_id, _revision in self.repository.resolve_selection(selection)
+        )
+
+    def set_suitability(
+        self,
+        track_ids: tuple[int, ...],
+        status: TrackSuitabilityStatus,
+    ) -> int:
+        return self._suitability.set_many(track_ids, status)
 
     def preview(self, request: MetadataBatchRequest) -> BatchPreview:
         started = monotonic()

@@ -31,6 +31,10 @@ from party_player.metadata_analysis_service import MetadataAnalysisService, Temp
 from party_player.metadata_analysis_contracts import TempoAnalysisScope
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.analysis import AudioFileInfo
+from party_player.track_suitability import (
+    TrackSuitabilityRepository,
+    TrackSuitabilityStatus,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +55,7 @@ class TrackEditorViewModel:
     equalizer_source: str | None = None
     metadata: TrackMetadataEditorViewModel | None = None
     catalog_bpm: float | None = None
+    suitability_status: TrackSuitabilityStatus = TrackSuitabilityStatus.UNKNOWN
 
     @property
     def heading(self) -> str:
@@ -109,6 +114,7 @@ class TrackEditorController:
             | None
         ) = None,
         metadata_analysis: MetadataAnalysisService | None = None,
+        suitability_repository: TrackSuitabilityRepository | None = None,
     ) -> None:
         self._cue = cue_controller
         self._loudness = loudness_controller
@@ -117,6 +123,7 @@ class TrackEditorController:
         self._metadata = metadata_service
         self._background_submit = background_submit
         self._metadata_analysis = metadata_analysis
+        self._suitability = suitability_repository
 
     def load_tempo_analysis_async(
         self,
@@ -280,6 +287,11 @@ class TrackEditorController:
             equalizer_preset_name=equalizer_name,
             equalizer_source=equalizer_source,
             catalog_bpm=track.bpm,
+            suitability_status=(
+                self._suitability.get(track.id).status
+                if self._suitability is not None
+                else TrackSuitabilityStatus.UNKNOWN
+            ),
         )
 
     def load_metadata_async(
@@ -325,19 +337,67 @@ class TrackEditorController:
         album = metadata.field(MetadataFieldKey.ALBUM).value
         original_year = metadata.field(MetadataFieldKey.ORIGINAL_RELEASE_YEAR).value
         return TrackEditorViewModel(
-            view_model.track_id,
-            str(title or ""),
-            str(artist or ""),
-            str(album or ""),
-            original_year if isinstance(original_year, int) else None,
-            view_model.file_path,
-            view_model.duration_seconds,
-            view_model.cue,
-            view_model.loudness,
-            view_model.equalizer_preset_key,
-            view_model.equalizer_preset_name,
-            view_model.equalizer_source,
-            metadata,
+            track_id=view_model.track_id,
+            title=str(title or ""),
+            artist=str(artist or ""),
+            album=str(album or ""),
+            original_release_year=(original_year if isinstance(original_year, int) else None),
+            file_path=view_model.file_path,
+            duration_seconds=view_model.duration_seconds,
+            cue=view_model.cue,
+            loudness=view_model.loudness,
+            equalizer_preset_key=view_model.equalizer_preset_key,
+            equalizer_preset_name=view_model.equalizer_preset_name,
+            equalizer_source=view_model.equalizer_source,
+            metadata=metadata,
+            catalog_bpm=view_model.catalog_bpm,
+            suitability_status=view_model.suitability_status,
+        )
+
+    def save_suitability_async(
+        self,
+        view_model: TrackEditorViewModel,
+        status: TrackSuitabilityStatus,
+        completed: Callable[[TrackEditorViewModel], None],
+        failed: Callable[[Exception], None],
+    ) -> bool:
+        if status is view_model.suitability_status:
+            return False
+        if self._suitability is None or self._background_submit is None:
+            failed(RuntimeError("Eignungsverwaltung ist nicht verfügbar"))
+            return False
+        suitability_repository = self._suitability
+
+        def save() -> TrackEditorViewModel:
+            suitability_repository.set(view_model.track_id, status)
+            return self.with_suitability(view_model, status)
+
+        return self._background_submit(
+            save,
+            lambda value: completed(cast(TrackEditorViewModel, value)),
+            failed,
+        )
+
+    @staticmethod
+    def with_suitability(
+        view_model: TrackEditorViewModel, status: TrackSuitabilityStatus
+    ) -> TrackEditorViewModel:
+        return TrackEditorViewModel(
+            track_id=view_model.track_id,
+            title=view_model.title,
+            artist=view_model.artist,
+            album=view_model.album,
+            original_release_year=view_model.original_release_year,
+            file_path=view_model.file_path,
+            duration_seconds=view_model.duration_seconds,
+            cue=view_model.cue,
+            loudness=view_model.loudness,
+            equalizer_preset_key=view_model.equalizer_preset_key,
+            equalizer_preset_name=view_model.equalizer_preset_name,
+            equalizer_source=view_model.equalizer_source,
+            metadata=view_model.metadata,
+            catalog_bpm=view_model.catalog_bpm,
+            suitability_status=status,
         )
 
     @staticmethod
@@ -485,6 +545,8 @@ class TrackEditorController:
             equalizer_preset_name=view_model.equalizer_preset_name,
             equalizer_source=view_model.equalizer_source,
             metadata=view_model.metadata,
+            catalog_bpm=view_model.catalog_bpm,
+            suitability_status=view_model.suitability_status,
         )
 
     def save_async(
@@ -540,6 +602,8 @@ class TrackEditorController:
                     equalizer_preset_name=view_model.equalizer_preset_name,
                     equalizer_source=view_model.equalizer_source,
                     metadata=view_model.metadata,
+                    catalog_bpm=view_model.catalog_bpm,
+                    suitability_status=view_model.suitability_status,
                 )
             )
 
