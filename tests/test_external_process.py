@@ -24,7 +24,8 @@ def test_runner_has_hard_timeout_and_returns_structured_result() -> None:
 
     assert result.timed_out
     assert not result.succeeded
-    assert monotonic() - started < 2.0
+    # Windows also waits for bounded task-tree termination after the hard timeout.
+    assert monotonic() - started < 3.0
 
 
 def test_runner_bounds_large_output() -> None:
