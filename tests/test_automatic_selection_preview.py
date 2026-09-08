@@ -13,6 +13,11 @@ from party_player.repetition_policy import PersistentRepetitionService
 from party_player.selection_preview import SelectionPreviewCompletion
 from party_player.selection_decision import CandidateDecisionCategory, SelectionOutcome
 from party_player.track_selection import RepetitionService, SelectionDecision, TrackSelectionService
+from party_player.track_suitability import (
+    TrackSuitability,
+    TrackSuitabilityService,
+    TrackSuitabilityStatus,
+)
 
 
 def _track(track_id: int, artist: str = "Artist") -> Track:
@@ -120,7 +125,7 @@ def test_preview_keeps_productive_last_state_and_builds_consistent_rationales() 
 
     assert selector.last_relaxation_stage == "SENTINEL"
     assert selector.last_rationale is None
-    assert preview.schema_version == 1
+    assert preview.schema_version == 2
     assert preview.requested_depth == preview.achieved_depth == 2
     for position, step in enumerate(preview.steps, 1):
         assert step.position == position
@@ -151,6 +156,37 @@ def test_preview_stops_without_a_safe_candidate() -> None:
     assert preview.steps == ()
     assert preview.achieved_depth == 0
     assert preview.completion_reason is SelectionPreviewCompletion.NO_SAFE_CANDIDATE
+
+
+def test_preview_summarizes_all_unapproved_candidates_once_and_approval_unlocks() -> None:
+    class SuitabilityRepository:
+        status = TrackSuitabilityStatus.UNKNOWN
+
+        def get(self, track_id: int) -> TrackSuitability:
+            return TrackSuitability(track_id, self.status)
+
+    repository = SuitabilityRepository()
+    tracks = tuple(_track(track_id, f"Artist {track_id}") for track_id in range(1, 77))
+    selector = AutomaticSelectionService(
+        _Tracks(tracks), _History({}, []), recent_track_limit=0, randomizer=random.Random(11)
+    )
+    rules = TrackSelectionService((TrackSuitabilityService(repository),))
+
+    rejected = selector.preview(rules, 5)
+
+    assert rejected.completion_reason is SelectionPreviewCompletion.NO_SAFE_CANDIDATE
+    assert rejected.completion_rationale is not None
+    assert rejected.completion_rationale.excluded_candidate_count == 76
+    assert len(rejected.completion_rationale.evaluated_candidates) == 50
+    assert [
+        (item.reason_code, item.count) for item in rejected.completion_rationale.exclusion_summary
+    ] == [("SUITABILITY_APPROVAL_REQUIRED", 76)]
+    assert "ignored-" not in repr(rejected.completion_rationale)
+
+    repository.status = TrackSuitabilityStatus.SUITABLE
+    approved = selector.preview(rules, 1)
+
+    assert approved.achieved_depth == 1
 
 
 def test_preview_exception_cannot_advance_productive_rng_or_last_state() -> None:

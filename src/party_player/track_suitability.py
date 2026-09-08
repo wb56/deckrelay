@@ -69,6 +69,68 @@ class TrackSuitabilityRepository:
             )
         return self.get(track_id)
 
+    def get_many(self, track_ids: tuple[int, ...]) -> dict[int, TrackSuitability]:
+        unique_ids = tuple(dict.fromkeys(track_ids))
+        if not unique_ids:
+            return {}
+        result: dict[int, TrackSuitability] = {}
+        for start in range(0, len(unique_ids), 900):
+            batch = unique_ids[start : start + 900]
+            placeholders = ",".join("?" for _ in batch)
+            with self._database.connect() as connection:
+                rows = connection.execute(
+                    f"SELECT track_id, status, reason FROM track_suitability "
+                    f"WHERE track_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+            for row in rows:
+                track_id = int(row["track_id"])
+                result[track_id] = TrackSuitability(
+                    track_id,
+                    TrackSuitabilityStatus(str(row["status"])),
+                    str(row["reason"]),
+                )
+        return {
+            track_id: result.get(
+                track_id, TrackSuitability(track_id, TrackSuitabilityStatus.UNKNOWN)
+            )
+            for track_id in unique_ids
+        }
+
+    def set_many(
+        self,
+        track_ids: tuple[int, ...],
+        status: TrackSuitabilityStatus,
+        reason: str = "",
+    ) -> int:
+        """Persist one explicit status for all tracks in one transaction."""
+        unique_ids = tuple(dict.fromkeys(track_ids))
+        if not unique_ids:
+            return 0
+        with self._database.transaction() as connection:
+            existing = 0
+            for start in range(0, len(unique_ids), 900):
+                batch = unique_ids[start : start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                existing += int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM tracks WHERE id IN ({placeholders})",
+                        batch,
+                    ).fetchone()[0]
+                )
+            if existing != len(unique_ids):
+                raise ValueError("Mindestens ein ausgewählter Titel existiert nicht mehr")
+            connection.executemany(
+                """INSERT INTO track_suitability (track_id, status, reason)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(track_id) DO UPDATE SET
+                       status = excluded.status,
+                       reason = excluded.reason,
+                       updated_at = CURRENT_TIMESTAMP""",
+                ((track_id, status.value, reason.strip()) for track_id in unique_ids),
+            )
+        return len(unique_ids)
+
 
 class TrackSuitabilityService:
     """Require explicit suitability for non-operator queue sources."""

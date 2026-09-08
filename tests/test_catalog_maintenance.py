@@ -30,6 +30,7 @@ from party_player.metadata_rules import (
 from party_player.database.connection import Database
 from party_player.database.migrations import LATEST_SCHEMA_VERSION
 from party_player.database.migrations import migrate
+from party_player.track_suitability import TrackSuitabilityRepository, TrackSuitabilityStatus
 
 
 def _track(database: Database, title: str, **values: object) -> int:
@@ -247,6 +248,28 @@ def test_repository_restricts_cross_page_selection_with_new_filter_in_sql(
     restricted = repository.restrict_selection(selection, MaintenanceFilter(text="Soul"))
 
     assert restricted == ((soul, 0),)
+
+
+def test_all_visible_suitability_change_uses_current_filter_and_all_statuses(
+    temporary_database: Database,
+) -> None:
+    soul_ids = tuple(
+        _track(temporary_database, f"Soul {number:02d}", artist="Band") for number in range(76)
+    )
+    rock = _track(temporary_database, "Rock", artist="Band")
+    service = CatalogMaintenanceService(temporary_database)
+    selection = SelectionDescription.for_filter(MaintenanceFilter(text="Soul")).select_all_matches()
+
+    selected = service.suitability_selection(selection)
+    assert selected == soul_ids
+    for status in TrackSuitabilityStatus:
+        assert service.set_suitability(selected, status) == 76
+        stored = TrackSuitabilityRepository(temporary_database).get_many((*soul_ids, rock))
+        assert all(stored[track_id].status is status for track_id in soul_ids)
+        assert stored[rock].status is TrackSuitabilityStatus.UNKNOWN
+
+    without_first = selection.deselect(soul_ids[0])
+    assert service.suitability_selection(without_first) == soul_ids[1:]
 
 
 def test_preview_execute_records_reversible_changes_and_rejects_reuse(

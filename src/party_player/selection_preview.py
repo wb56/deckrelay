@@ -34,4 +34,5 @@ class SelectionPreview:
         "Momentaufnahme: Queue-Eingriffe, Wünsche, Metadatenänderungen, Dateifehler "
         "oder zwischenzeitliche Wiedergaben können die spätere reale Folge verändern."
     )
-    schema_version: int = 1
+    schema_version: int = 2
+    completion_rationale: SelectionRationale | None = None

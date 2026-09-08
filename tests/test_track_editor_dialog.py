@@ -11,6 +11,7 @@ from party_player.controllers.track_editor_controller import TrackEditorControll
 from party_player.metadata_analysis_service import TempoAnalysisView
 from party_player.metadata_analysis_profiles import MetadataAnalysisProfile
 from party_player.analysis import AudioFileInfo
+from party_player.track_suitability import TrackSuitabilityStatus
 
 
 class _Controller:
@@ -213,6 +214,7 @@ def test_technical_audio_errors_are_mapped_to_understandable_states() -> None:
 class _EditorController:
     def __init__(self) -> None:
         self.events: list[str] = []
+        self.suitability_saves = 0
 
     def automatic_suggestion(self, _model: object) -> object:
         from party_player.controllers.track_editor_controller import TrackEditorChanges
@@ -221,6 +223,10 @@ class _EditorController:
 
     def record_event(self, operation: str) -> None:
         self.events.append(operation)
+
+    def save_suitability_async(self, *_args: object) -> bool:
+        self.suitability_saves += 1
+        return True
 
 
 class _AdoptionDialogDouble:
@@ -252,6 +258,7 @@ class _SaveCompletionDialogDouble:
         self._saving = True
         self._save_had_changes = True
         self._pending_metadata_changes = SimpleNamespace(empty=True)
+        self._pending_suitability_status = TrackSuitabilityStatus.UNKNOWN
         self._metadata_confirmations = {object()}
         self._metadata_removals = {object(): object()}
         self._metadata_suggestion_actions = {1: object()}
@@ -279,6 +286,7 @@ def test_window_close_matches_cancel_and_releases_preview_resources() -> None:
     assert dialog.grab_released
     assert dialog.destroyed
     assert dialog.closed_callbacks == 1
+    assert dialog._editor_controller.suitability_saves == 0
 
 
 def test_finish_is_idempotent_for_late_close_callbacks() -> None:
@@ -444,7 +452,11 @@ def test_discarding_analysis_is_only_staged_until_save() -> None:
 
 def test_successful_save_keeps_dialog_open_and_resets_staged_state() -> None:
     dialog = _SaveCompletionDialogDouble()
-    view_model = type("Model", (), {"cue": object()})()
+    view_model = type(
+        "Model",
+        (),
+        {"cue": object(), "suitability_status": TrackSuitabilityStatus.UNKNOWN},
+    )()
 
     CuePointDialog._save_completed(cast(Any, dialog), cast(Any, view_model))
 
@@ -534,10 +546,10 @@ def test_track_editor_exposes_only_implemented_tabs() -> None:
     tab_names = next(
         value
         for value in source
-        if isinstance(value, tuple) and value == ("Cue", "Lautheit", "Metadaten")
+        if isinstance(value, tuple) and value == ("Cue", "Lautheit", "Metadaten", "Eignung")
     )
 
-    assert tab_names == ("Cue", "Lautheit", "Metadaten")
+    assert tab_names == ("Cue", "Lautheit", "Metadaten", "Eignung")
 
 
 def test_metadata_tab_is_loaded_lazily_and_only_once() -> None:

@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Titeleignung kann im Titeleditor einzeln und in der Katalogpflege atomar für eine
+  gefilterte Auswahl verwaltet werden. Nicht geprüfte Titel bleiben sicher von der
+  Automatik ausgeschlossen; die Vorschau fasst Ablehnungsgründe verständlich zusammen.
 - Eine manuell berechnete, zustandsneutrale Automatikvorschau zeigt bis zu zehn
   nächste Titel mit verständlichen Auswahlgründen und Relaxationshinweisen an.
 - Die beiden konfigurierbaren Soft-Regeln für Abspielhäufigkeit und Titelbewertung

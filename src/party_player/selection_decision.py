@@ -214,6 +214,12 @@ class CandidateEvaluation:
 
 
 @dataclass(frozen=True, slots=True)
+class ExclusionReasonSummary:
+    reason_code: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
 class SelectionRationale:
     context_id: str
     outcome: SelectionOutcome
@@ -227,6 +233,8 @@ class SelectionRationale:
     decision_reason_code: str = ""
     source_resolution: SourceResolution | None = None
     schema_version: int = 2
+    excluded_candidate_count: int = 0
+    exclusion_summary: tuple[ExclusionReasonSummary, ...] = ()
 
     @property
     def rule_evaluations(self) -> tuple[RuleEvaluation, ...]:

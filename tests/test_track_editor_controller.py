@@ -14,6 +14,7 @@ from party_player.cue_points import ResolvedTrackBoundaries
 from party_player.models import Track
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.analysis import AudioFileInfo
+from party_player.track_suitability import TrackSuitability, TrackSuitabilityStatus
 
 
 def _state() -> CuePointEditorState:
@@ -96,6 +97,39 @@ def test_view_model_preserves_real_metadata_and_missing_values() -> None:
     assert model.cue.manual_cue_in is None
     assert model.loudness is None
     assert model.equalizer_preset_name is None
+
+
+def test_editor_loads_and_saves_individual_suitability() -> None:
+    class SuitabilityRepository:
+        def __init__(self) -> None:
+            self.status = TrackSuitabilityStatus.MANUAL_ONLY
+
+        def get(self, track_id: int) -> TrackSuitability:
+            return TrackSuitability(track_id, self.status)
+
+        def set(self, _track_id: int, status: TrackSuitabilityStatus) -> TrackSuitability:
+            self.status = status
+            return TrackSuitability(7, status)
+
+    def submit(task: Any, completed: Any, _failed: Any) -> bool:
+        completed(task())
+        return True
+
+    repository = SuitabilityRepository()
+    controller = TrackEditorController(
+        cast(Any, _CueController()),
+        background_submit=submit,
+        suitability_repository=cast(Any, repository),
+    )
+    model = controller.build_view_model(_track())
+    completed: list[object] = []
+
+    assert model.suitability_status is TrackSuitabilityStatus.MANUAL_ONLY
+    assert controller.save_suitability_async(
+        model, TrackSuitabilityStatus.SUITABLE, completed.append, pytest.fail
+    )
+    assert repository.status is TrackSuitabilityStatus.SUITABLE
+    assert completed[0].suitability_status is TrackSuitabilityStatus.SUITABLE
 
 
 def test_track_editor_runs_single_loudness_analysis_and_refreshes_state() -> None:
