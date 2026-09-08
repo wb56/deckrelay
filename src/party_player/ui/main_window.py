@@ -2298,16 +2298,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             width=130,
             command=self._edit_normalization_settings,
         ).pack(side="left", padx=(10, 0))
-        ctk.CTkButton(
-            options_group,
-            text="Automatische Titelauswahl…",
-            command=self._show_selection_rule_settings,
-        ).grid(row=9, column=0, columnspan=3, padx=12, pady=(6, 0), sticky="ew")
-        ctk.CTkButton(
-            options_group,
-            text="System / Externe Programme…",
-            command=self._show_external_program_settings,
-        ).grid(row=10, column=0, columnspan=3, padx=12, pady=(6, 10), sticky="ew")
+        self._build_program_option_action_buttons(options_group)
         self._audio_device_recovery_label = ctk.CTkLabel(
             options_group,
             text="Audioausgabe bereit",
@@ -2882,6 +2873,24 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
 
     def bind_selection_rule_settings(self, controller: SelectionRuleSettingsController) -> None:
         self._selection_rule_settings_controller = controller
+
+    def _build_program_option_action_buttons(self, options_group: Any) -> None:
+        self._selection_rule_settings_button = ctk.CTkButton(
+            options_group,
+            text="Automatische Titelauswahl…",
+            command=self._show_selection_rule_settings,
+        )
+        self._selection_rule_settings_button.grid(
+            row=10, column=0, columnspan=3, padx=12, pady=(6, 0), sticky="ew"
+        )
+        self._external_program_settings_button = ctk.CTkButton(
+            options_group,
+            text="System / Externe Programme…",
+            command=self._show_external_program_settings,
+        )
+        self._external_program_settings_button.grid(
+            row=11, column=0, columnspan=3, padx=12, pady=(6, 10), sticky="ew"
+        )
 
     def _show_selection_rule_settings(self) -> None:
         controller = self._selection_rule_settings_controller

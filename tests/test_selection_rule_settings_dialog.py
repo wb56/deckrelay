@@ -17,6 +17,8 @@ from party_player.ui.selection_rule_settings_dialog import (
     selection_rule_dialog_dimensions,
     validate_form,
 )
+from party_player.ui import main_window
+from party_player.ui.main_window import MainWindow
 
 
 class _Value:
@@ -53,6 +55,39 @@ class _Controller:
         if self.error is not None:
             raise self.error
         self.saved.append(settings)
+
+
+def test_visible_program_options_build_selection_settings_button(monkeypatch: Any) -> None:
+    created: list[Any] = []
+    opened: list[bool] = []
+
+    class Button:
+        def __init__(self, parent: object, *, text: str, command: Any) -> None:
+            self.parent = parent
+            self.text = text
+            self.command = command
+            self.grid_options: dict[str, object] = {}
+            created.append(self)
+
+        def grid(self, **options: object) -> None:
+            self.grid_options = options
+
+    monkeypatch.setattr(main_window.ctk, "CTkButton", Button)
+    window = object.__new__(MainWindow)
+    window._show_selection_rule_settings = lambda: opened.append(True)
+    window._show_external_program_settings = lambda: None
+    visible_options_group = object()
+
+    window._build_program_option_action_buttons(visible_options_group)
+
+    selection_button = window._selection_rule_settings_button
+    assert selection_button in created
+    assert selection_button.parent is visible_options_group
+    assert selection_button.text == "Automatische Titelauswahl…"
+    assert selection_button.grid_options["row"] == 10
+    assert window._external_program_settings_button.grid_options["row"] == 11
+    selection_button.command()
+    assert opened == [True]
 
 
 class _Dialog:

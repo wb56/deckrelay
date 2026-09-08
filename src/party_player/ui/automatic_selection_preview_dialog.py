@@ -325,6 +325,8 @@ class AutomaticSelectionPreviewDialog(ctk.CTkToplevel):  # type: ignore[misc]
         if preview.steps:
             first = present_preview_step(preview.steps[0])
             self._detail_text.configure(text=first.detail)
+        else:
+            self._detail_text.configure(text="Keine geeigneten Titel gefunden.")
 
     def _accept_error(self, generation: int, message: str) -> None:
         if not self._request_state.finish(generation):

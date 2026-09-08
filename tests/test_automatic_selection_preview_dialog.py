@@ -229,6 +229,7 @@ class _DialogDouble:
         self._calculate = _Widget()
         self._status = _Widget()
         self._created = _Widget()
+        self._detail_text = _Widget()
         self.cleared = 0
 
     def _clear_result(self) -> None:
@@ -254,6 +255,24 @@ def test_dialog_starts_once_and_error_clears_previous_success() -> None:
     assert dialog.cleared == 2
     assert dialog._created.values["text"] == "Keine aktuelle Vorschau"
     assert "Datenbank nicht erreichbar" in str(dialog._status.values["text"])
+
+
+def test_no_safe_candidate_replaces_initial_empty_preview_text() -> None:
+    source = _preview(depth=5, completion=SelectionPreviewCompletion.NO_SAFE_CANDIDATE)
+    empty = SelectionPreview(
+        source.preview_id,
+        source.created_at,
+        source.requested_depth,
+        0,
+        (),
+        source.completion_reason,
+    )
+    dialog = _DialogDouble()
+    generation = dialog._request_state.begin()
+
+    AutomaticSelectionPreviewDialog._accept_preview(cast(Any, dialog), generation, empty)
+
+    assert dialog._detail_text.values["text"] == "Keine geeigneten Titel gefunden."
 
 
 def test_closed_dialog_ignores_late_worker_error_without_widget_access() -> None:
