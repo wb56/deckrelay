@@ -11,6 +11,10 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Die Katalogpflege folgt einer workfloworientierten, responsiven Gliederung mit
+  maximierbarem Dialog, gewichteter Trefferliste und getrennten Bereichen für
+  Eignung, Metadaten-Stapelaktionen, Prüfung und Abschluss. Die erste Trefferseite
+  lädt unabhängig von der gebündelten Arbeitsvorratsstatistik.
 - Titeleignung kann im Titeleditor einzeln und in der Katalogpflege atomar für eine
   gefilterte Auswahl verwaltet werden. Nicht geprüfte Titel bleiben sicher von der
   Automatik ausgeschlossen; die Vorschau fasst Ablehnungsgründe verständlich zusammen.

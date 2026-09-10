@@ -398,6 +398,7 @@ class CatalogMaintenanceRepository:
 
     def __init__(self, database: Database) -> None:
         self._database = database
+        self.last_counts_duration_ms = 0.0
         self.last_query_duration_ms = 0.0
         self.last_result_count = 0
 
@@ -410,18 +411,22 @@ class CatalogMaintenanceRepository:
             LEFT JOIN track_suitability ts ON ts.track_id=t.id"""
 
     def counts(self) -> tuple[WorkQueueCount, ...]:
+        started = monotonic()
+        expressions = ",\n".join(
+            f"COUNT(DISTINCT CASE WHEN {predicate} THEN t.id END) AS count_{index}"
+            for index, predicate in enumerate(_QUEUE_PREDICATES.values())
+        )
         with self._database.connect() as connection:
-            return tuple(
-                WorkQueueCount(
-                    queue,
-                    int(
-                        connection.execute(
-                            f"SELECT COUNT(DISTINCT t.id) {self._from()} WHERE t.catalog_visible=1 AND ({predicate})"
-                        ).fetchone()[0]
-                    ),
-                )
-                for queue, predicate in _QUEUE_PREDICATES.items()
-            )
+            row = connection.execute(
+                f"SELECT {expressions} {self._from()} WHERE t.catalog_visible=1"
+            ).fetchone()
+        assert row is not None
+        result = tuple(
+            WorkQueueCount(queue, int(row[f"count_{index}"]))
+            for index, queue in enumerate(_QUEUE_PREDICATES)
+        )
+        self.last_counts_duration_ms = (monotonic() - started) * 1000.0
+        return result
 
     def page(
         self, filter_: MaintenanceFilter, page: int, page_size: int = PAGE_SIZE
@@ -436,7 +441,10 @@ class CatalogMaintenanceRepository:
         )
         if display_key is None:
             display_from = base
-            field_expression = "COALESCE(s.field_key,p.field_key,'')"
+            # The base joins can contain several state and suggestion rows per track.
+            # Without an explicit display field, selecting their non-aggregated values
+            # beside GROUP BY t.id can pair a field key with another field's payload.
+            field_expression = "''"
             state_alias, proposal_alias = "s", "p"
         else:
             safe_field = display_key.value

@@ -1,9 +1,13 @@
 """Responsive, worker-backed catalog-maintenance workspace."""
 
 from collections.abc import Callable
+import ctypes
 from dataclasses import dataclass
+import logging
 from threading import Event
+import sys
 from typing import Any, cast
+from tkinter import TclError
 
 import customtkinter as ctk  # type: ignore[import-untyped]
 
@@ -50,6 +54,7 @@ from party_player.track_suitability import TrackSuitabilityStatus
 Submit = Callable[
     [Callable[[], object], Callable[[object], None], Callable[[Exception], None]], bool
 ]
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +139,14 @@ SUITABILITY_EXPLANATIONS = {
         "noch als Gastwunsch ausgewählt."
     ),
 }
+WORKFLOW_SECTIONS = (
+    "1. Titel finden und Ergebnis eingrenzen",
+    "2. Titel auswählen",
+    "3. Aktion festlegen",
+    "4. Prüfen und ausführen",
+)
+CATALOG_DIALOG_PREFERRED_SIZE = (1180, 760)
+CATALOG_DIALOG_MINIMUM_SIZE = (760, 560)
 
 
 def high_risk_confirmation_text(preview: BatchPreview) -> str | None:
@@ -291,8 +304,28 @@ def _labeled_filter_entry(
     return frame, entry
 
 
+def _enable_windows_dialog_controls(dialog: Any) -> None:
+    """Restore native caption controls removed from transient Tk windows."""
+    if sys.platform != "win32":
+        return
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetParent(dialog.winfo_id())
+        style = user32.GetWindowLongW(hwnd, -16)
+        style |= 0x00010000 | 0x00020000 | 0x00040000 | 0x00080000
+        user32.SetWindowLongW(hwnd, -16, style)
+        extended_style = user32.GetWindowLongW(hwnd, -20)
+        extended_style = (extended_style & ~0x00000080) | 0x00040000
+        user32.SetWindowLongW(hwnd, -20, extended_style)
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
+    except (AttributeError, OSError, TclError):
+        pass
+
+
 class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
     """Keep catalog-wide reads and writes outside Tk callbacks."""
+
+    _deactivate_windows_window_header_manipulation = True
 
     def __init__(
         self,
@@ -323,39 +356,76 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._tempo_skipped = 0
         self.title("Katalogpflege")
         apply_responsive_dialog_geometry(
-            self, parent, preferred_size=(1180, 760), minimum_size=(760, 560)
+            self,
+            parent,
+            preferred_size=CATALOG_DIALOG_PREFERRED_SIZE,
+            minimum_size=CATALOG_DIALOG_MINIMUM_SIZE,
         )
+        self._clamp_window_to_screen()
         self.transient(parent)
+        self.resizable(True, True)
+        try:
+            self.wm_attributes("-toolwindow", False)
+        except TclError:
+            pass
         self.protocol("WM_DELETE_WINDOW", self._close)
         bind_dialog_escape(self, self._close)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         self._build()
+        self.deiconify()
+        _enable_windows_dialog_controls(self)
+        self.lift()
+        self.focus_force()
         self.grab_set()
+        self.after(50, self._present)
         self._load_counts_and_page()
 
     def _build(self) -> None:
+        def section(parent: Any, title: str) -> ctk.CTkFrame:
+            frame = ctk.CTkFrame(parent)
+            frame.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(frame, text=title, anchor="w").grid(
+                row=0, column=0, padx=8, pady=(6, 3), sticky="ew"
+            )
+            return frame
+
         filters = ctk.CTkFrame(self)
-        filters.grid(row=0, column=0, padx=12, pady=10, sticky="ew")
-        filters.grid_columnconfigure(1, weight=1)
+        self._filter_panel = filters
+        filters.grid(row=0, column=0, padx=12, pady=(8, 6), sticky="ew")
+        find = section(filters, WORKFLOW_SECTIONS[0])
+        find.grid(row=1, column=0, sticky="ew")
+        find.grid_columnconfigure(1, weight=1)
         self._queue = ctk.CTkOptionMenu(
-            filters,
+            find,
             values=["Alle Arbeitsvorräte", *WORK_QUEUE_LABELS.values()],
             command=lambda _v: self._apply_filter(),
         )
-        self._queue.grid(row=0, column=0, padx=5, pady=5)
-        self._search = ctk.CTkEntry(filters, placeholder_text="Titel oder Interpret")
-        self._search.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        ctk.CTkButton(filters, text="Filtern", command=self._apply_filter).grid(
-            row=0, column=2, padx=5, sticky="ew"
+        self._queue.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+        self._search = ctk.CTkEntry(find, placeholder_text="Titel oder Interpret")
+        self._search.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        self._counts = ctk.CTkLabel(
+            find, text="Arbeitsvorräte werden gezählt …", anchor="w", justify="left", wraplength=900
         )
-        ctk.CTkButton(filters, text="Filter zurücksetzen", command=self._reset_filters).grid(
-            row=0, column=3, padx=5, sticky="ew"
+        self._counts.grid(row=2, column=0, columnspan=4, padx=5, pady=(0, 5), sticky="ew")
+        self._filter_toggle = ctk.CTkButton(
+            filters,
+            text="Weitere Filter anzeigen ▾",
+            command=self._toggle_filter_details,
+            anchor="w",
         )
-        self._counts = ctk.CTkLabel(filters, text="Arbeitsvorräte werden gezählt …", anchor="w")
-        self._counts.grid(row=1, column=0, columnspan=4, padx=5, sticky="ew")
-        advanced = ctk.CTkFrame(filters, fg_color="transparent")
-        advanced.grid(row=2, column=0, columnspan=4, sticky="ew")
+        self._filter_toggle.grid(row=3, column=0, padx=3, pady=(2, 4), sticky="ew")
+        filter_wrapper = ctk.CTkFrame(filters, height=170)
+        self._filter_wrapper = filter_wrapper
+        filter_wrapper.grid(row=4, column=0, sticky="ew")
+        filter_wrapper.grid_propagate(False)
+        narrow = ctk.CTkScrollableFrame(filter_wrapper, height=150)
+        self._filter_details = narrow
+        self._filter_details_visible = False
+        narrow.pack(fill="both", expand=True)
+        filter_wrapper.grid_remove()
+        advanced = ctk.CTkFrame(narrow, fg_color="transparent")
+        advanced.grid(row=1, column=0, padx=3, pady=2, sticky="ew")
         for column in range(4):
             advanced.grid_columnconfigure(column, weight=1)
         self._filter_field = ctk.CTkOptionMenu(
@@ -407,20 +477,40 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         )
         bpm_to_frame.grid(row=3, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
         self._analysis_toggle = ctk.CTkButton(
-            filters,
+            narrow,
             text="Audioanalyse anzeigen ▾",
             command=self._toggle_analysis_panel,
             anchor="w",
         )
-        self._analysis_toggle.grid(row=3, column=0, columnspan=4, padx=3, pady=(5, 2), sticky="ew")
-        self._analysis_panel = ctk.CTkFrame(filters)
-        self._analysis_panel.grid(row=4, column=0, columnspan=4, padx=3, pady=3, sticky="ew")
+        self._analysis_toggle.grid(row=2, column=0, padx=3, pady=(5, 2), sticky="ew")
+        self._analysis_panel = ctk.CTkFrame(narrow)
+        self._analysis_panel.grid(row=3, column=0, padx=3, pady=3, sticky="ew")
         self._analysis_panel.grid_columnconfigure(1, weight=1)
         self._build_analysis_panel(self._analysis_panel)
         self._analysis_panel.grid_remove()
+        self._filter_details.grid_remove()
+        self._compact_filter_layout = False
+        self._filter_actions = ctk.CTkFrame(find, fg_color="transparent")
+        self._filter_actions.grid(row=1, column=2, columnspan=2, padx=2, pady=0, sticky="e")
+        self._filter_button = ctk.CTkButton(
+            self._filter_actions, text="Filtern", command=self._apply_filter
+        )
+        self._filter_button.pack(side="left", padx=3)
+        self._reset_filter_button = ctk.CTkButton(
+            self._filter_actions, text="Filter zurücksetzen", command=self._reset_filters
+        )
+        self._reset_filter_button.pack(side="left", padx=3)
+        self.bind("<Configure>", self._on_filter_resize, add="+")
 
-        body = ctk.CTkScrollableFrame(self)
-        body.grid(row=1, column=0, padx=12, sticky="nsew")
+        results = section(self, WORKFLOW_SECTIONS[1])
+        self._results_panel = results
+        results.grid(row=1, column=0, padx=12, pady=6, sticky="nsew")
+        results.configure(height=300)
+        results.grid_propagate(True)
+        results.grid_columnconfigure(0, weight=1)
+        results.grid_rowconfigure(1, weight=1, minsize=190)
+        body = ctk.CTkScrollableFrame(results, height=190)
+        body.grid(row=1, column=0, padx=4, pady=4, sticky="nsew")
         body.grid_columnconfigure(0, weight=1)
         self._rows = ctk.CTkFrame(body)
         self._rows.grid(row=0, column=0, sticky="ew")
@@ -440,8 +530,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             )
             label.grid(row=index, column=1, padx=4, pady=2, sticky="ew")
             self._row_widgets.append((chosen, label, Tooltip(label, "")))
-        nav = ctk.CTkFrame(body, fg_color="transparent")
-        nav.grid(row=1, column=0, pady=6)
+        nav = ctk.CTkFrame(results, fg_color="transparent")
+        nav.grid(row=2, column=0, pady=(2, 0))
         ctk.CTkButton(nav, text="◀", width=36, command=lambda: self._change_page(-1)).pack(
             side="left"
         )
@@ -450,15 +540,15 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         ctk.CTkButton(nav, text="▶", width=36, command=lambda: self._change_page(1)).pack(
             side="left"
         )
-        selection = ctk.CTkFrame(body)
-        selection.grid(row=2, column=0, pady=6, sticky="ew")
+        selection = ctk.CTkFrame(results)
+        selection.grid(row=3, column=0, pady=(2, 5), sticky="ew")
         ctk.CTkButton(selection, text="Seite auswählen", command=self._select_page).pack(
             side="left", padx=3
         )
         ctk.CTkButton(selection, text="Seite abwählen", command=self._deselect_page).pack(
             side="left", padx=3
         )
-        ctk.CTkButton(selection, text="Alle sichtbaren auswählen", command=self._select_all).pack(
+        ctk.CTkButton(selection, text="Alle gefilterten auswählen", command=self._select_all).pack(
             side="left", padx=3
         )
         ctk.CTkButton(selection, text="Auswahl aufheben", command=self._clear_selection).pack(
@@ -466,25 +556,34 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         )
         self._selection_label = ctk.CTkLabel(selection, text="0 ausgewählt")
         self._selection_label.pack(side="left", padx=10)
-        suitability = ctk.CTkFrame(body)
-        suitability.grid(row=3, column=0, pady=6, sticky="ew")
+        actions = section(self, WORKFLOW_SECTIONS[2])
+        actions.grid(row=2, column=0, padx=12, pady=6, sticky="ew")
+        actions.grid_columnconfigure(0, weight=1)
+        actions.grid_columnconfigure(1, weight=1)
+        suitability = ctk.CTkFrame(actions)
+        suitability.grid(row=1, column=0, padx=(4, 2), pady=3, sticky="ew")
         suitability.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(suitability, text="Eignung ändern", anchor="w").grid(
+            row=0, column=0, columnspan=3, padx=6, pady=(5, 0), sticky="w"
+        )
         ctk.CTkLabel(suitability, text="Eignung der Auswahl:").grid(
-            row=0, column=0, padx=6, pady=5, sticky="w"
+            row=1, column=0, padx=6, pady=5, sticky="w"
         )
         self._suitability = ctk.CTkOptionMenu(suitability, values=list(SUITABILITY_LABELS.values()))
         self._suitability.set(SUITABILITY_LABELS[TrackSuitabilityStatus.SUITABLE])
-        self._suitability.grid(row=0, column=1, padx=6, pady=5, sticky="ew")
+        self._suitability.grid(row=1, column=1, padx=6, pady=5, sticky="ew")
         self._suitability_apply_button = ctk.CTkButton(
             suitability,
             text="Eignung anwenden…",
             command=self._prepare_suitability_change,
         )
-        self._suitability_apply_button.grid(row=0, column=2, padx=6, pady=5)
-        action = ctk.CTkFrame(body)
-        action.grid(row=4, column=0, pady=6, sticky="ew")
+        self._suitability_apply_button.grid(row=1, column=2, padx=6, pady=5)
+        action = ctk.CTkFrame(actions)
+        action.grid(row=1, column=1, padx=(2, 4), pady=3, sticky="ew")
         action.grid_columnconfigure(2, weight=1)
-        action.grid_columnconfigure(3, weight=1)
+        ctk.CTkLabel(action, text="Metadaten bearbeiten", anchor="w").grid(
+            row=0, column=0, columnspan=3, padx=3, pady=(5, 0), sticky="w"
+        )
         self._field = ctk.CTkOptionMenu(
             action,
             values=[
@@ -493,32 +592,44 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
                 if key is not MetadataFieldKey.BPM_CONFIDENCE
             ],
         )
-        self._field.grid(row=0, column=0, padx=3, pady=3, sticky="ew")
-        self._action = ctk.CTkOptionMenu(action, values=list(BATCH_ACTION_LABELS.values()))
-        self._action.grid(row=0, column=1, padx=3, pady=3, sticky="ew")
-        self._value = ctk.CTkEntry(action, placeholder_text="Zielwert")
-        self._value.grid(row=0, column=2, padx=3, pady=3, sticky="ew")
-        ctk.CTkButton(action, text="Vorschau", command=self._make_preview).grid(
-            row=1, column=0, padx=3, pady=3, sticky="ew"
-        )
-        self._execute_button = ctk.CTkButton(action, text="Ausführen", command=self._execute)
-        self._execute_button.grid(row=1, column=1, padx=3, pady=3, sticky="ew")
-        self._cancel_button = ctk.CTkButton(
+        self._field.grid(row=1, column=0, padx=3, pady=3, sticky="ew")
+        self._action = ctk.CTkOptionMenu(
             action,
+            values=list(BATCH_ACTION_LABELS.values()),
+            command=lambda _value: self._action_changed(),
+        )
+        self._action.grid(row=1, column=1, padx=3, pady=3, sticky="ew")
+        self._value = ctk.CTkEntry(action, placeholder_text="Zielwert")
+        self._value.grid(row=1, column=2, padx=3, pady=3, sticky="ew")
+        checks = section(self, WORKFLOW_SECTIONS[3])
+        checks.grid(row=3, column=0, padx=12, pady=(3, 2), sticky="ew")
+        action_row = ctk.CTkFrame(checks, fg_color="transparent")
+        action_row.grid(row=1, column=0, columnspan=4, padx=3, pady=3, sticky="w")
+        ctk.CTkButton(action_row, text="Vorschau", command=self._make_preview).pack(
+            side="left", padx=(0, 6)
+        )
+        self._execute_button = ctk.CTkButton(action_row, text="Ausführen", command=self._execute)
+        self._execute_button.pack(side="left", padx=3)
+        self._cancel_button = ctk.CTkButton(
+            action_row,
             text="Abbrechen",
             state="disabled",
             fg_color="#7d3030",
             command=self._cancel_batch,
         )
-        self._cancel_button.grid(row=1, column=2, padx=3, pady=3, sticky="w")
-        ctk.CTkButton(action, text="Letzte Aktion rückgängig", command=self._undo).grid(
-            row=1, column=3, padx=3, pady=3, sticky="ew"
+        self._cancel_button.pack(side="left", padx=3)
+        ctk.CTkButton(action_row, text="Letzte Aktion rückgängig", command=self._undo).pack(
+            side="left", padx=3
         )
-        self._result = ctk.CTkLabel(body, text="", justify="left", anchor="w", wraplength=900)
-        self._result.grid(row=5, column=0, padx=6, pady=8, sticky="ew")
-        ctk.CTkButton(self, text="Schließen", command=self._close).grid(
-            row=2, column=0, padx=14, pady=10, sticky="e"
+        self._result = ctk.CTkLabel(checks, text="", justify="left", anchor="w", wraplength=900)
+        self._result.grid(row=2, column=0, columnspan=4, padx=6, pady=(3, 5), sticky="ew")
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=4, column=0, padx=12, pady=(0, 2), sticky="ew")
+        footer.grid_columnconfigure(0, weight=1)
+        ctk.CTkButton(footer, text="Schließen", command=self._close).grid(
+            row=0, column=1, padx=6, pady=2, sticky="e"
         )
+        self._action_changed()
 
     def _build_analysis_panel(self, panel: Any) -> None:
         actions = self._analysis_actions
@@ -646,6 +757,75 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         else:
             self._analysis_panel.grid()
             self._analysis_toggle.configure(text="Audioanalyse ausblenden ▴")
+
+    def _toggle_filter_details(self) -> None:
+        visible = getattr(
+            self,
+            "_filter_details_visible",
+            self._filter_details.winfo_ismapped(),
+        )
+        self._filter_details_visible = not visible
+        if not self._filter_details_visible:
+            self._filter_wrapper.grid_remove()
+            self._filter_toggle.configure(text="Weitere Filter anzeigen ▾")
+        else:
+            self._filter_wrapper.grid()
+            self._filter_toggle.configure(text="Weitere Filter ausblenden ▴")
+        if self._compact_filter_layout:
+            self._filter_panel.configure(height=275 if self._filter_details_visible else 105)
+            self._filter_wrapper.configure(height=170)
+            self._results_panel.configure(height=300)
+        self._refresh_filter_layout()
+
+    def _refresh_filter_layout(self) -> None:
+        self.update_idletasks()
+        self._filter_details.update_idletasks()
+        if self._compact_filter_layout:
+            LOGGER.info(
+                "Katalogpflege compact layout heights filter_details=%s filter_wrapper=%s "
+                "results=%s selection_area=%s",
+                self._filter_details.winfo_height(),
+                self._filter_wrapper.winfo_height(),
+                self._results_panel.winfo_height(),
+                self._results_panel.winfo_reqheight(),
+            )
+
+    def _clamp_window_to_screen(self) -> None:
+        self.update_idletasks()
+        geometry = self.geometry().split("+")
+        size = geometry[0].split("x")
+        if len(size) != 2 or len(geometry) < 3:
+            return
+        width = min(int(size[0]), self.winfo_screenwidth())
+        height = min(int(size[1]), self.winfo_screenheight())
+        x = max(0, min(int(geometry[1]), self.winfo_screenwidth() - width))
+        y = max(0, min(int(geometry[2]), self.winfo_screenheight() - height))
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(
+            min(CATALOG_DIALOG_MINIMUM_SIZE[0], width),
+            min(CATALOG_DIALOG_MINIMUM_SIZE[1], height),
+        )
+
+    def _on_filter_resize(self, _event: Any) -> None:
+        compact = self.winfo_width() < 980
+        if compact == self._compact_filter_layout:
+            return
+        self._compact_filter_layout = compact
+        if compact:
+            self._filter_panel.grid_propagate(False)
+            self._filter_panel.configure(height=275 if self._filter_details_visible else 105)
+            self._filter_wrapper.configure(height=170)
+            self._results_panel.configure(height=300)
+            self._filter_actions.grid_configure(row=2, column=0, columnspan=2, sticky="w")
+            self._counts.grid_configure(row=3, column=0, columnspan=4)
+        else:
+            self._filter_panel.grid_propagate(True)
+            self._filter_wrapper.grid_propagate(False)
+            self._filter_wrapper.configure(height=240)
+            self._results_panel.grid_propagate(True)
+            self._filter_actions.grid_configure(row=1, column=2, columnspan=2, sticky="e")
+            self._counts.grid_configure(row=2, column=0, columnspan=4)
+        self._refresh_filter_layout()
 
     def _run_analysis_action(self, action: Callable[[], None]) -> None:
         try:
@@ -832,28 +1012,56 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._submit(work, done, self._failed)
 
     def _load_counts_and_page(self) -> None:
-        self._load_generation += 1
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
         generation = self._load_generation
         self._counts.configure(text="Arbeitsvorräte werden gezählt …")
         self._page_label.configure(text="Treffer werden geladen …")
-        self._task(
-            lambda: (
-                self._service.repository.counts(),
-                self._service.repository.page(self._filter, self._page, 12),
-            ),
-            lambda value: self._loaded(value, generation),
+        self._load_task(
+            lambda: self._service.repository.page(self._filter, self._page, 12),
+            lambda value: self._page_loaded(value, generation),
+            generation,
         )
 
-    def _loaded(self, value: object, generation: int | None = None) -> None:
+    def _page_loaded(self, value: object, generation: int | None = None) -> None:
+        if not self._active():
+            return
+        if generation is None:
+            generation = self._load_generation
+        if generation != self._load_generation:
+            return
+        self._show_page(cast(MaintenancePage, value))
+        self._load_task(
+            self._service.repository.counts,
+            lambda counts: self._counts_loaded(counts, generation),
+            generation,
+        )
+
+    def _counts_loaded(self, value: object, generation: int | None = None) -> None:
         if not self._active() or (generation is not None and generation != self._load_generation):
             return
-        counts, page = cast(tuple[tuple[WorkQueueCount, ...], MaintenancePage], value)
+        counts = cast(tuple[WorkQueueCount, ...], value)
         self._counts.configure(
             text=" · ".join(
                 f"{WORK_QUEUE_LABELS[item.queue]}: {item.count}" for item in counts if item.count
             )
+            or "Keine offenen Arbeitsvorräte"
         )
-        self._show_page(page)
+
+    def _load_task(
+        self,
+        work: Callable[[], object],
+        done: Callable[[object], None],
+        generation: int,
+    ) -> None:
+        self._submit(
+            work,
+            done,
+            lambda error: self._load_failed(error, generation),
+        )
+
+    def _load_failed(self, error: Exception, generation: int) -> None:
+        if self._active() and generation == self._load_generation:
+            self._failed(error)
 
     def _show_page(self, page: MaintenancePage) -> None:
         self._current = page
@@ -1154,8 +1362,19 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         values = () if action not in _VALUE_ACTIONS else ((key, value),)
         return MetadataBatchRequest(self._selection, frozenset({key}), action, values)
 
+    def _action_changed(self) -> None:
+        action = next(
+            item for item, label in BATCH_ACTION_LABELS.items() if label == self._action.get()
+        )
+        self._value.configure(state="normal" if action in _VALUE_ACTIONS else "disabled")
+
     def _make_preview(self) -> None:
-        self._task(lambda: self._service.preview(self._request()), self._previewed)
+        try:
+            request = self._request()
+        except ValueError as error:
+            self._result.configure(text=f"Fehler: {error}")
+            return
+        self._task(lambda: self._service.preview(request), self._previewed)
 
     def _previewed(self, value: object) -> None:
         if not self._active():
@@ -1168,7 +1387,10 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
 
     def _execute(self) -> None:
         preview = self._preview
-        if self._running or preview is None:
+        if self._running:
+            return
+        if preview is None:
+            self._make_preview()
             return
         general_confirmed = ask_silent_yes_no(
             self,
@@ -1265,6 +1487,13 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
                 self._suitability_apply_button.configure(state="normal")
             self._result.configure(text=f"Fehler: {error}")
 
+    def _present(self) -> None:
+        if not self._active():
+            return
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
     def _active(self) -> bool:
         try:
             return not self._closed and bool(self.winfo_exists())
@@ -1277,6 +1506,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         cancel_event = getattr(self, "_cancel_event", None)
         if cancel_event is not None:
             cancel_event.set()
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
         for _check, _label, tooltip in getattr(self, "_row_widgets", ()):
             tooltip.close()
         tempo_after = getattr(self, "_tempo_poll_after", None)
