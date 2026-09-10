@@ -19,12 +19,253 @@ from party_player.metadata_analysis_service import TempoBatchProgress
 from party_player.track_suitability import TrackSuitabilityStatus
 from party_player.ui.catalog_maintenance_dialog import (
     CatalogAnalysisActions,
+    CATALOG_DIALOG_MINIMUM_SIZE,
+    CATALOG_DIALOG_PREFERRED_SIZE,
     CatalogMaintenanceDialog,
+    WORKFLOW_SECTIONS,
     ask_filter_selection_strategy,
     high_risk_confirmation_text,
     parse_bpm_filter,
     parse_batch_input,
 )
+
+
+def test_catalog_maintenance_layout_declares_workflow_and_resizable_geometry() -> None:
+    assert WORKFLOW_SECTIONS == (
+        "1. Titel finden und Ergebnis eingrenzen",
+        "2. Titel auswählen",
+        "3. Aktion festlegen",
+        "4. Prüfen und ausführen",
+    )
+    assert CATALOG_DIALOG_PREFERRED_SIZE == (1180, 760)
+    assert CATALOG_DIALOG_MINIMUM_SIZE == (760, 560)
+    assert all(
+        minimum < preferred
+        for minimum, preferred in zip(CATALOG_DIALOG_MINIMUM_SIZE, CATALOG_DIALOG_PREFERRED_SIZE)
+    )
+
+
+def test_metadata_target_value_is_enabled_only_for_value_actions() -> None:
+    class Action:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+    class Value:
+        def __init__(self) -> None:
+            self.options: dict[str, object] = {}
+
+        def configure(self, **options: object) -> None:
+            self.options.update(options)
+
+    class Dialog:
+        _action = Action("Wert setzen")
+        _value = Value()
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._action_changed(cast(Any, dialog))
+    assert dialog._value.options["state"] == "normal"
+
+    dialog._action.value = "Vorhandenen Wert bestätigen"
+    CatalogMaintenanceDialog._action_changed(cast(Any, dialog))
+    assert dialog._value.options["state"] == "disabled"
+
+
+def test_filter_details_toggle_uses_local_disclosure() -> None:
+    class Toggle:
+        def __init__(self) -> None:
+            self.options: dict[str, object] = {}
+
+        def configure(self, **options: object) -> None:
+            self.options.update(options)
+
+        def update_idletasks(self) -> None:
+            pass
+
+    class Details:
+        def __init__(self) -> None:
+            self.visible = True
+
+        def winfo_ismapped(self) -> bool:
+            return self.visible
+
+        def grid_remove(self) -> None:
+            self.visible = False
+
+        def grid(self) -> None:
+            self.visible = True
+
+        def update_idletasks(self) -> None:
+            pass
+
+    class Dialog:
+        _compact_filter_layout = False
+        _filter_details = Details()
+        _filter_wrapper = _filter_details
+        _filter_toggle = Toggle()
+
+        def _refresh_filter_layout(self) -> None:
+            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
+
+        def update_idletasks(self) -> None:
+            pass
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
+    assert not dialog._filter_details.visible
+    assert dialog._filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
+
+    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
+    assert dialog._filter_details.visible
+    assert dialog._filter_toggle.options["text"] == "Weitere Filter ausblenden ▴"
+
+
+def test_filter_details_callback_expands_and_collapses_container() -> None:
+    class Widget:
+        def __init__(self) -> None:
+            self.visible = False
+            self.options: dict[str, object] = {}
+
+        def winfo_ismapped(self) -> bool:
+            return self.visible
+
+        def grid(self) -> None:
+            self.visible = True
+
+        def grid_remove(self) -> None:
+            self.visible = False
+
+        def configure(self, **options: object) -> None:
+            self.options.update(options)
+
+        def update_idletasks(self) -> None:
+            pass
+
+    class Dialog:
+        _compact_filter_layout = False
+        _filter_details_visible = False
+        _filter_details = Widget()
+        _filter_wrapper = _filter_details
+        _filter_toggle = Widget()
+
+        def update_idletasks(self) -> None:
+            pass
+
+        def _refresh_filter_layout(self) -> None:
+            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
+    assert dialog._filter_details.visible
+    assert dialog._filter_toggle.options["text"] == "Weitere Filter ausblenden ▴"
+    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
+    assert not dialog._filter_details.visible
+    assert dialog._filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
+
+
+def test_filter_values_survive_disclosure_reflow() -> None:
+    class Entry:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def get(self) -> str:
+            return self.value
+
+        def update_idletasks(self) -> None:
+            pass
+
+    class Widget:
+        def __init__(self) -> None:
+            self.visible = False
+            self.options: dict[str, object] = {}
+
+        def winfo_ismapped(self) -> bool:
+            return self.visible
+
+        def grid(self) -> None:
+            self.visible = True
+
+        def grid_remove(self) -> None:
+            self.visible = False
+
+        def configure(self, **options: object) -> None:
+            self.options.update(options)
+
+        def update_idletasks(self) -> None:
+            pass
+
+    class Dialog:
+        _compact_filter_layout = False
+        _filter_details = Widget()
+        _filter_wrapper = _filter_details
+        _filter_toggle = Widget()
+        _search = Entry("Dance")
+        _filter_confidence = Entry("0.8")
+
+        def update_idletasks(self) -> None:
+            pass
+
+        def _refresh_filter_layout(self) -> None:
+            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
+    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
+    assert dialog._search.get() == "Dance"
+    assert dialog._filter_confidence.get() == "0.8"
+
+
+def test_compact_filter_layout_moves_actions_and_keeps_statistics_visible() -> None:
+    class Widget:
+        def __init__(self) -> None:
+            self.options: dict[str, object] = {}
+
+        def grid_configure(self, **options: object) -> None:
+            self.options.update(options)
+
+        def grid_propagate(self, value: bool) -> None:
+            self.options["grid_propagate"] = value
+
+        def configure(self, **options: object) -> None:
+            self.options.update(options)
+
+        def winfo_height(self) -> int:
+            return 100
+
+        def winfo_reqheight(self) -> int:
+            return 100
+
+        def update_idletasks(self) -> None:
+            pass
+
+    class Dialog:
+        _compact_filter_layout = False
+        _filter_details = Widget()
+        _filter_panel = Widget()
+        _filter_details_visible = False
+        _filter_wrapper = Widget()
+        _results_panel = Widget()
+        _filter_actions = Widget()
+        _counts = Widget()
+
+        def _load_counts_and_page(self) -> None:
+            raise AssertionError("resize must not start catalog loading")
+
+        def winfo_width(self) -> int:
+            return 800
+
+        def update_idletasks(self) -> None:
+            pass
+
+        def _refresh_filter_layout(self) -> None:
+            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+    assert dialog._filter_actions.options["row"] == 2
+    assert dialog._counts.options["row"] == 3
 
 
 def test_late_page_result_does_not_touch_destroyed_dialog() -> None:
@@ -35,7 +276,7 @@ def test_late_page_result_does_not_touch_destroyed_dialog() -> None:
         def _show_page(self, _page: object) -> None:
             raise AssertionError("destroyed widgets must not be accessed")
 
-    CatalogMaintenanceDialog._loaded(cast(Any, Dialog()), object())
+    CatalogMaintenanceDialog._page_loaded(cast(Any, Dialog()), object())
 
 
 def test_close_is_idempotent_and_releases_dialog(monkeypatch: Any) -> None:
@@ -61,6 +302,7 @@ def test_close_is_idempotent_and_releases_dialog(monkeypatch: Any) -> None:
     assert released == [dialog]
     assert dialog.destroyed == 1
     assert dialog._cancel_event.is_set()
+    assert dialog._load_generation == 1
 
 
 def _preview(key: MetadataFieldKey, selected: int = 3) -> BatchPreview:
@@ -130,6 +372,11 @@ def test_batch_input_validates_ranges_and_accepts_decimal_comma() -> None:
     assert parse_batch_input(MetadataFieldKey.BPM, BatchAction.SET, "123,5") == 123.5
 
 
+def test_empty_batch_value_uses_action_specific_message() -> None:
+    with pytest.raises(ValueError, match="^Bitte einen Zielwert eingeben\\.$"):
+        parse_batch_input(MetadataFieldKey.TITLE, BatchAction.SET, "  ")
+
+
 def test_bpm_filter_accepts_open_bounds_and_decimal_comma() -> None:
     assert parse_bpm_filter("", "128,5") == (None, 128.5)
     assert parse_bpm_filter("95", "") == (95.0, None)
@@ -154,7 +401,85 @@ def test_stale_page_result_is_ignored() -> None:
         def _show_page(self, _page: object) -> None:
             raise AssertionError("stale page must not be rendered")
 
-    CatalogMaintenanceDialog._loaded(cast(Any, Dialog()), object(), 3)
+    CatalogMaintenanceDialog._page_loaded(cast(Any, Dialog()), object(), 3)
+
+
+def test_page_is_submitted_before_independent_counts() -> None:
+    submitted: list[tuple[object, object, object]] = []
+
+    class Repository:
+        def page(self, *_args: object) -> object:
+            return object()
+
+        def counts(self) -> object:
+            return object()
+
+    class Dialog:
+        _load_generation = 0
+        _filter = MaintenanceFilter()
+        _page = 1
+        _counts = _Widget()
+        _page_label = _Widget()
+        _service = type("Service", (), {"repository": Repository()})()
+
+        def _load_task(self, work: object, done: object, generation: object) -> None:
+            submitted.append((work, done, generation))
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._load_counts_and_page(cast(Any, dialog))
+
+    assert len(submitted) == 1
+    assert submitted[0][0]() is not None  # type: ignore[operator]
+    assert dialog._counts.options["text"] == "Arbeitsvorräte werden gezählt …"
+
+
+def test_stale_statistics_and_load_errors_are_ignored() -> None:
+    class Dialog:
+        _load_generation = 4
+        _counts = _Widget()
+
+        def _active(self) -> bool:
+            return True
+
+        def _failed(self, _error: Exception) -> None:
+            raise AssertionError("stale errors must not be displayed")
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._counts_loaded(cast(Any, dialog), (), 3)
+    CatalogMaintenanceDialog._load_failed(cast(Any, dialog), RuntimeError("stale"), 3)
+
+    assert dialog._counts.options == {}
+
+
+def test_preview_validation_happens_before_worker_submission() -> None:
+    class Dialog:
+        _result = _Widget()
+
+        def _request(self) -> MetadataBatchRequest:
+            raise ValueError("Bitte einen Zielwert eingeben.")
+
+        def _task(self, *_args: object) -> None:
+            raise AssertionError("invalid actions must not reach a worker")
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._make_preview(cast(Any, dialog))
+
+    assert dialog._result.options["text"] == "Fehler: Bitte einen Zielwert eingeben."
+
+
+def test_execute_without_preview_performs_explicit_action_validation() -> None:
+    class Dialog:
+        _running = False
+        _preview = None
+        previews = 0
+
+        def _make_preview(self) -> None:
+            self.previews += 1
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._execute(cast(Any, dialog))
+
+    assert dialog.previews == 1
 
 
 def test_double_click_does_not_start_second_execution(monkeypatch: Any) -> None:
