@@ -772,9 +772,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._filter_wrapper.grid()
             self._filter_toggle.configure(text="Weitere Filter ausblenden ▴")
         if self._compact_filter_layout:
-            self._filter_panel.configure(
-                height=275 if self._filter_details_visible else 105
-            )
+            self._filter_panel.configure(height=275 if self._filter_details_visible else 105)
             self._filter_wrapper.configure(height=170)
             self._results_panel.configure(height=300)
         self._refresh_filter_layout()
@@ -815,9 +813,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._compact_filter_layout = compact
         if compact:
             self._filter_panel.grid_propagate(False)
-            self._filter_panel.configure(
-                height=275 if self._filter_details_visible else 105
-            )
+            self._filter_panel.configure(height=275 if self._filter_details_visible else 105)
             self._filter_wrapper.configure(height=170)
             self._results_panel.configure(height=300)
             self._filter_actions.grid_configure(row=2, column=0, columnspan=2, sticky="w")
