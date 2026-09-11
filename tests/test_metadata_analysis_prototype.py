@@ -306,6 +306,7 @@ def await_result(supervisor: MetadataAnalysisProcessSupervisor):
     raise AssertionError("Kein Analyseergebnis")
 
 
+@pytest.mark.real_formats
 @pytest.mark.skipif(
     FFMPEG is None or FFPROBE is None,
     reason="FFmpeg/FFprobe ist für Spawn-Prozesstests nicht installiert",

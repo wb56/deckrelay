@@ -8,8 +8,39 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  quality:
+  static:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project and pinned development tools
+        run: python -m pip install -e ".[dev]"
+
+      - name: Ruff
+        run: python -m ruff check src tests
+
+      - name: Black
+        run: python -m black --check src tests
+
+      - name: MyPy
+        run: python -m mypy src/party_player
+
+  tests:
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -22,24 +53,37 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install project and pinned development tools
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev]"
 
-      - name: Ruff
-        run: python -m ruff check src tests
+      - name: Pytest without real format tests
+        run: python -m pytest -q -ra -m "not real_formats" --durations=50
 
-      - name: Black
-        run: python -m black --check src tests
+  real-formats:
+    runs-on: windows-latest
+    timeout-minutes: 20
 
-      - name: MyPy
-        run: python -m mypy src/party_player
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project and pinned development tools
+        run: python -m pip install -e ".[dev]"
 
       - name: Install FFmpeg
         shell: pwsh
         run: choco install ffmpeg --version=9.0.1 --yes --no-progress
 
-      - name: Verify FFmpeg and real format tests
+      - name: Verify FFmpeg and run real format tests
         shell: pwsh
         run: |
           Get-Command ffmpeg -ErrorAction Stop
@@ -48,8 +92,26 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ffprobe -version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pytest -q tests/test_ffmpeg_format_integration.py
+          python -m pytest -q -ra -m real_formats --durations=50
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Pytest
-        run: python -m pytest -q
+  quality:
+    needs: [static, tests, real-formats]
+    if: always()
+    runs-on: windows-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Require all quality jobs to succeed
+        shell: pwsh
+        env:
+          STATIC_RESULT: ${{ needs.static.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+          REAL_FORMATS_RESULT: ${{ needs.real-formats.result }}
+        run: |
+          $results = @($env:STATIC_RESULT, $env:TESTS_RESULT, $env:REAL_FORMATS_RESULT)
+          $unsuccessful = $results.Where({ $_ -ne "success" })
+          if ($unsuccessful.Count -gt 0) {
+            Write-Error "Required quality job did not succeed: $($results -join ', ')"
+            exit 1
+          }

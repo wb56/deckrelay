@@ -11,6 +11,8 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Das Windows-Quality-Gate führt statische Prüfungen, die allgemeine Testsuite und
+  echte FFmpeg-Formattests parallel und ohne doppelte Testausführung aus.
 - Die automatische Auswahl lädt Genre, BPM, Energie und Stimmung nun gebündelt in
   einen unveränderlichen, qualitätsbewussten Metadatensnapshot, noch ohne die Auswahl
   oder ihre Bewertung zu verändern.
