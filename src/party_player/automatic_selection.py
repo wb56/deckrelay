@@ -49,6 +49,10 @@ from party_player.selection_rule_settings import (
     SelectionScoringSettings,
     SelectionRuleSettingsRepository,
 )
+from party_player.selection_metadata import (
+    SelectionMetadataCatalogSnapshot,
+    neutral_catalog_snapshot,
+)
 from party_player.enums import EmptyQueuePolicy
 
 
@@ -188,14 +192,15 @@ class AutomaticSelectionService:
     def select(self, rules: TrackSelectionService) -> Track | None:
         with self._selection_lock:
             settings = self._load_rule_settings()
-            return self._run_isolated(lambda: self._select(rules, settings))
+            candidates, metadata = self._load_catalog_snapshot()
+            return self._run_isolated(lambda: self._select(rules, settings, candidates, metadata))
 
     def preview(self, rules: TrackSelectionService, count: int) -> SelectionPreview:
         """Predict automatic choices without advancing any productive state."""
         if not 1 <= count <= self.MAX_PREVIEW_DEPTH:
             raise ValueError(f"Vorschautiefe muss zwischen 1 und {self.MAX_PREVIEW_DEPTH} liegen")
         with self._selection_lock:
-            candidates = tuple(self._tracks.automatic_candidates())
+            candidates, metadata = self._load_catalog_snapshot()
             history = self._history.preview_snapshot()
             preview_rules = rules.copy_for_preview()
             preview_random = random.Random()
@@ -214,7 +219,7 @@ class AutomaticSelectionService:
         completion = SelectionPreviewCompletion.REQUESTED_DEPTH_REACHED
         for position in range(1, count + 1):
             selected = preview_selector._run_isolated(
-                lambda: preview_selector._select(preview_rules, settings)
+                lambda: preview_selector._select(preview_rules, settings, candidates, metadata)
             )
             rationale = preview_selector.last_rationale
             if selected is None or rationale is None:
@@ -265,9 +270,31 @@ class AutomaticSelectionService:
             else DEFAULT_SELECTION_SCORING_SETTINGS
         )
 
+    def _load_catalog_snapshot(
+        self,
+    ) -> tuple[tuple[Track, ...], SelectionMetadataCatalogSnapshot]:
+        loader = getattr(self._tracks, "automatic_selection_snapshot", None)
+        if callable(loader):
+            loaded = loader()
+            if (
+                not isinstance(loaded, tuple)
+                or len(loaded) != 2
+                or not isinstance(loaded[1], SelectionMetadataCatalogSnapshot)
+            ):
+                raise TypeError("Ungültiger Auswahl-Katalogsnapshot")
+            candidates, metadata = loaded
+            return tuple(candidates), metadata
+        candidates = tuple(self._tracks.automatic_candidates())
+        return candidates, neutral_catalog_snapshot(candidates)
+
     def _select(
-        self, rules: TrackSelectionService, settings: SelectionScoringSettings
+        self,
+        rules: TrackSelectionService,
+        settings: SelectionScoringSettings,
+        candidates: tuple[Track, ...],
+        metadata: SelectionMetadataCatalogSnapshot,
     ) -> Track | None:
+        del metadata  # A1 loads one immutable moment but intentionally applies no rule.
         context_id = uuid.uuid4().hex
         summaries: list[CandidateEvaluation] = []
         evaluated_count = 0
@@ -288,7 +315,6 @@ class AutomaticSelectionService:
                 frozenset({"ARTIST_REPETITION", "TRACK_REPETITION", "RECENT_TRACK"}),
             ),
         )
-        candidates = self._tracks.automatic_candidates()
         terminal_exclusions: dict[int, CandidateEvaluation] = {}
         for stage, relaxed_codes in stages:
             highest_score: float | None = None
