@@ -13,10 +13,13 @@ from ffmpeg_test_tools import resolve_ffmpeg_test_tools
 
 
 FFMPEG, FFPROBE = resolve_ffmpeg_test_tools()
-pytestmark = pytest.mark.skipif(
-    FFMPEG is None or FFPROBE is None,
-    reason="FFmpeg/FFprobe ist für echte Formattests nicht installiert",
-)
+pytestmark = [
+    pytest.mark.real_formats,
+    pytest.mark.skipif(
+        FFMPEG is None or FFPROBE is None,
+        reason="FFmpeg/FFprobe ist für echte Formattests nicht installiert",
+    ),
+]
 
 
 def write_test_wave(path: Path) -> None:
