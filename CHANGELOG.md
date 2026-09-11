@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Die Vorbereitungsansicht bündelt Betriebszustand, Wiedergabe und Automatik,
+  Audio und Sicherheit, Jingles sowie Diagnose in einer gemeinsamen responsiven
+  Arbeitsfläche. Quellen-, Queue- und Automatikstatus bleiben getrennt sichtbar.
 - Die Katalogpflege folgt einer workfloworientierten, responsiven Gliederung mit
   maximierbarem Dialog, gewichteter Trefferliste und getrennten Bereichen für
   Eignung, Metadaten-Stapelaktionen, Prüfung und Abschluss. Die erste Trefferseite
