@@ -9,6 +9,7 @@ import pytest
 
 from party_player.automatic_selection import AutomaticSelectionService
 from party_player.models import Track
+from party_player.repositories.track_repository import TrackRepository
 from party_player.repetition_policy import PersistentRepetitionService
 from party_player.selection_preview import SelectionPreviewCompletion
 from party_player.selection_decision import CandidateDecisionCategory, SelectionOutcome
@@ -90,6 +91,61 @@ def test_preview_is_repeatable_and_does_not_change_real_selection() -> None:
     assert len({step.track_id for step in first.steps}) == 3
     assert tracks.calls == 3  # two snapshots plus the one real selection
     assert history.snapshot_calls == 2
+
+
+def test_complete_preview_loads_one_catalog_snapshot_and_preserves_sequence(
+    temporary_database,
+) -> None:
+    class CountingRepository(TrackRepository):
+        snapshot_calls = 0
+
+        def automatic_selection_snapshot(self):
+            self.snapshot_calls += 1
+            return super().automatic_selection_snapshot()
+
+    class LegacyTrackSource:
+        def __init__(self, repository: TrackRepository) -> None:
+            self.repository = repository
+
+        def automatic_candidates(self) -> list[Track]:
+            return self.repository.automatic_candidates()
+
+    with temporary_database.connect() as connection:
+        connection.executemany(
+            "INSERT INTO tracks(id,file_path,title,artist) VALUES (?,?,?,?)",
+            [
+                (1, "one.mp3", "One", "A"),
+                (2, "two.mp3", "Two", "B"),
+                (3, "three.mp3", "Three", "C"),
+            ],
+        )
+    repository = CountingRepository(temporary_database)
+    active = AutomaticSelectionService(
+        repository,
+        _History({}, []),
+        recent_track_limit=0,
+        randomizer=random.Random(41),
+    )
+    legacy = AutomaticSelectionService(
+        LegacyTrackSource(repository),
+        _History({}, []),
+        recent_track_limit=0,
+        randomizer=random.Random(41),
+    )
+
+    active_preview = active.preview(TrackSelectionService(), 3)
+    legacy_preview = legacy.preview(TrackSelectionService(), 3)
+
+    assert repository.snapshot_calls == 1
+    assert [step.track_id for step in active_preview.steps] == [
+        step.track_id for step in legacy_preview.steps
+    ]
+    assert [step.rationale.tie_break_method for step in active_preview.steps] == [
+        step.rationale.tie_break_method for step in legacy_preview.steps
+    ]
+    assert [
+        step.rationale.evaluated_candidates[0].total_score for step in active_preview.steps
+    ] == [step.rationale.evaluated_candidates[0].total_score for step in legacy_preview.steps]
 
 
 def test_preview_simulates_track_artist_and_play_count_without_mutating_rules() -> None:

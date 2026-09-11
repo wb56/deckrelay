@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Die automatische Auswahl lädt Genre, BPM, Energie und Stimmung nun gebündelt in
+  einen unveränderlichen, qualitätsbewussten Metadatensnapshot, noch ohne die Auswahl
+  oder ihre Bewertung zu verändern.
 - Die Vorbereitungsansicht bündelt Betriebszustand, Wiedergabe und Automatik,
   Audio und Sicherheit, Jingles sowie Diagnose in einer gemeinsamen responsiven
   Arbeitsfläche. Quellen-, Queue- und Automatikstatus bleiben getrennt sichtbar.

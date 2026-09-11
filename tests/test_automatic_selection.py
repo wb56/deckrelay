@@ -162,6 +162,62 @@ def test_one_fewer_play_always_outweighs_rating_difference(tmp_path: Path) -> No
     assert selected is not None and selected.id == 1
 
 
+def test_metadata_snapshot_is_behavior_neutral_and_does_not_change_rng_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class CountingRepository(TrackRepository):
+        snapshot_calls = 0
+
+        def automatic_selection_snapshot(self):
+            self.snapshot_calls += 1
+            return super().automatic_selection_snapshot()
+
+    class LegacyTrackSource:
+        def __init__(self, repository: TrackRepository) -> None:
+            self.repository = repository
+
+        def automatic_candidates(self) -> list[Track]:
+            return self.repository.automatic_candidates()
+
+    class CountingRandom(random.Random):
+        def __init__(self, seed: int) -> None:
+            super().__init__(seed)
+            self.choice_calls = 0
+
+        def choice(self, sequence):
+            self.choice_calls += 1
+            return super().choice(sequence)
+
+    database, _session_id = _database(tmp_path / "snapshot-neutral.db")
+    monkeypatch.setattr(
+        automatic_selection_module.uuid, "uuid4", lambda: SimpleNamespace(hex="same-context")
+    )
+    repository = CountingRepository(database)
+    active_random = CountingRandom(31)
+    legacy_random = CountingRandom(31)
+    active = AutomaticSelectionService(
+        repository,
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=active_random,
+    )
+    legacy = AutomaticSelectionService(
+        LegacyTrackSource(repository),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=legacy_random,
+    )
+
+    active_track = active.select(TrackSelectionService())
+    legacy_track = legacy.select(TrackSelectionService())
+
+    assert active_track is not None and legacy_track is not None
+    assert active_track.id == legacy_track.id
+    assert repository.snapshot_calls == 1
+    assert active_random.choice_calls == legacy_random.choice_calls
+    assert active.last_rationale == legacy.last_rationale
+
+
 def test_same_seed_and_input_produce_same_scored_selection(tmp_path: Path) -> None:
     database, _session_id = _database(tmp_path / "scored-seed.db")
     first = AutomaticSelectionService(
