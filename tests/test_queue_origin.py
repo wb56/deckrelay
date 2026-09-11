@@ -35,7 +35,7 @@ def test_different_entry_origins_are_reported_as_mixed_queue() -> None:
         ]
     )
 
-    assert origin.label == "gemischte Queue"
+    assert origin.label == "Gemischte Queue"
 
 
 def test_manual_and_empty_queue_have_neutral_truthful_labels() -> None:
@@ -43,6 +43,36 @@ def test_manual_and_empty_queue_have_neutral_truthful_labels() -> None:
         "manuell zusammengestellt"
     )
     assert derive_queue_origin([]).label == "Queue leer"
+
+
+def test_ambiguous_playlist_origin_is_not_guessed() -> None:
+    origin = derive_queue_origin([entry(1, QueueSource.PLAYLIST, "")])
+
+    assert origin.kind == "ambiguous"
+    assert origin.label == "Playlist/Verzeichnis · Herkunft unbekannt"
+
+
+def test_guest_requests_are_named_explicitly() -> None:
+    origin = derive_queue_origin([entry(1, QueueSource.GUEST_REQUEST, "")])
+
+    assert origin.kind == "guest_request"
+    assert origin.label == "Gastwünsche"
+
+
+def test_automatic_origin_names_catalog_selection() -> None:
+    origin = derive_queue_origin([entry(1, QueueSource.AUTOMATIC, "")])
+
+    assert origin.label == "Automatische Katalogauswahl"
+
+
+def test_unrecognized_source_without_detail_stays_explicitly_unknown() -> None:
+    unknown = entry(1, QueueSource.MANUAL, "")
+    object.__setattr__(unknown, "source", "legacy-unknown")
+
+    origin = derive_queue_origin([unknown])
+
+    assert origin.kind == "unknown"
+    assert origin.label == "Quelle nicht eindeutig"
 
 
 def test_completed_history_does_not_make_current_directory_queue_mixed() -> None:

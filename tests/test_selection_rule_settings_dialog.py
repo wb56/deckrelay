@@ -76,16 +76,18 @@ def test_visible_program_options_build_selection_settings_button(monkeypatch: An
     window = object.__new__(MainWindow)
     window._show_selection_rule_settings = lambda: opened.append(True)
     window._show_external_program_settings = lambda: None
-    visible_options_group = object()
+    playback_group = object()
+    system_group = object()
 
-    window._build_program_option_action_buttons(visible_options_group)
+    window._build_program_option_action_buttons(playback_group, system_group)
 
     selection_button = window._selection_rule_settings_button
     assert selection_button in created
-    assert selection_button.parent is visible_options_group
+    assert selection_button.parent is playback_group
     assert selection_button.text == "Automatische Titelauswahl…"
-    assert selection_button.grid_options["row"] == 10
-    assert window._external_program_settings_button.grid_options["row"] == 11
+    assert selection_button.grid_options["row"] == 5
+    assert window._external_program_settings_button.parent is system_group
+    assert window._external_program_settings_button.grid_options["row"] == 1
     selection_button.command()
     assert opened == [True]
 

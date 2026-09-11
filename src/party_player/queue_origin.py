@@ -28,7 +28,7 @@ def derive_queue_origin(entries: list[QueueEntry]) -> QueueOrigin:
         return QueueOrigin("empty", "Queue leer")
     origins = {entry_origin(entry) for entry in active_entries}
     if len(origins) != 1:
-        return QueueOrigin("mixed", "gemischte Queue")
+        return QueueOrigin("mixed", "Gemischte Queue")
     kind, name = origins.pop()
     if kind == "directory":
         return QueueOrigin(kind, f"Verzeichnis · {name}" if name else "Verzeichnis")
@@ -49,11 +49,13 @@ def entry_origin(entry: QueueEntry) -> tuple[str, str]:
     if normalized == "catalog":
         return "catalog", "Katalog"
     if entry.source is QueueSource.PLAYLIST:
-        return "playlist", ""
+        return "ambiguous", "Playlist/Verzeichnis · Herkunft unbekannt"
     if entry.source is QueueSource.GUEST_REQUEST:
-        return "manual", "manuell zusammengestellt"
+        return "guest_request", "Gastwünsche"
     if entry.source is QueueSource.EMERGENCY:
         return "emergency", "Notfallauswahl"
     if entry.source is QueueSource.AUTOMATIC:
-        return "automatic", "Automatische Auswahl"
-    return "manual", "manuell zusammengestellt"
+        return "automatic", "Automatische Katalogauswahl"
+    if entry.source is QueueSource.MANUAL:
+        return "manual", "manuell zusammengestellt"
+    return "unknown", "Quelle nicht eindeutig"
