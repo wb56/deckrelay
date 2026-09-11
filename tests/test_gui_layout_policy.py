@@ -3,7 +3,7 @@ from party_player.ui.main_window import (
     _center_panel_grid_options,
     _compact_mixer_visible,
     _compact_live_rows,
-    _compact_preparation_rows,
+    _compact_preparation_container_grid_options,
     _diagnostic_toggle_text,
     _automatic_help_text,
     _initial_catalog_pool_target,
@@ -13,10 +13,11 @@ from party_player.ui.main_window import (
     _presentation_header_grid_options,
     _queue_model_count,
     _queue_pool_size,
+    _workspace_content,
 )
 from party_player.ui.compact_deck_presentation import compact_deck_presentation
 from party_player.enums import DeckState
-from party_player.models import Deck, Track
+from party_player.models import Deck, QueueStats, Track
 from party_player.presentation import (
     GlobalStatusState,
     PresentationState,
@@ -78,6 +79,31 @@ class ConfigureDouble:
         self.values.update(values)
 
 
+class GridConfigureDouble:
+    def __init__(self) -> None:
+        self.grid_values: dict[str, object] = {}
+
+    def grid_configure(self, **values: object) -> None:
+        self.grid_values.update(values)
+
+
+class PreparationGridDouble(GridConfigureDouble):
+    def __init__(self) -> None:
+        super().__init__()
+        self.columns: dict[int, dict[str, object]] = {}
+
+    def grid_columnconfigure(self, column: int, **values: object) -> None:
+        self.columns[column] = values
+
+
+class TooltipDouble:
+    def __init__(self) -> None:
+        self.text = ""
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+
+
 def test_initial_catalog_pool_is_bounded_and_reuses_existing_rows() -> None:
     assert _initial_catalog_pool_target(50, 0) == 10
     assert _initial_catalog_pool_target(10, 0) == 10
@@ -136,11 +162,103 @@ def test_compact_jingle_disclosure_precedes_flexible_queue_rows() -> None:
     assert rows["queue_toolbar"] < rows["queue"]
 
 
-def test_compact_preparation_keeps_catalog_as_the_flexible_center_region() -> None:
-    rows = _compact_preparation_rows()
+def test_compact_preparation_uses_the_center_cell_without_horizontal_span() -> None:
+    options = _compact_preparation_container_grid_options()
 
-    assert rows["live_status"] < rows["search"] < rows["catalog"]
-    assert rows["catalog"] < rows["tools"] < rows["playlist"]
+    assert options == {
+        "row": 1,
+        "column": 1,
+        "padx": 8,
+        "pady": (4, 8),
+        "sticky": "nsew",
+    }
+
+
+def test_workspace_content_selects_preparation_in_both_presentations() -> None:
+    assert _workspace_content(ResolvedPresentation.LARGE, Workspace.PREPARATION) == "preparation"
+    assert _workspace_content(ResolvedPresentation.COMPACT, Workspace.PREPARATION) == "preparation"
+
+
+def test_workspace_content_keeps_both_live_presentations_unchanged() -> None:
+    assert _workspace_content(ResolvedPresentation.LARGE, Workspace.LIVE) == "large_live"
+    assert _workspace_content(ResolvedPresentation.COMPACT, Workspace.LIVE) == "compact_live"
+
+
+def test_preparation_groups_switch_between_large_and_compact_without_recreation() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_panel = PreparationGridDouble()
+    window._preparation_status_group = GridConfigureDouble()
+    window._preparation_mode_status = GridConfigureDouble()
+    window._preparation_source_status = GridConfigureDouble()
+    window._preparation_queue_status = GridConfigureDouble()
+    window._preparation_automatic_status = GridConfigureDouble()
+    window._preparation_playback_group = GridConfigureDouble()
+    window._preparation_safety_group = GridConfigureDouble()
+    window._overlay_panel = GridConfigureDouble()
+    window._preparation_diagnostic_group = GridConfigureDouble()
+
+    window._layout_preparation_content(compact=False)
+    assert window._preparation_playback_group.grid_values["column"] == 0
+    assert window._preparation_safety_group.grid_values["column"] == 1
+    assert window._preparation_status_group.grid_values["columnspan"] == 2
+
+    window._layout_preparation_content(compact=True)
+    groups = (
+        window._preparation_playback_group,
+        window._preparation_safety_group,
+        window._overlay_panel,
+        window._preparation_diagnostic_group,
+    )
+    assert [group.grid_values["row"] for group in groups] == [1, 2, 3, 4]
+    assert {group.grid_values["column"] for group in groups} == {0}
+    assert window._preparation_status_group.grid_values["columnspan"] == 1
+
+
+def test_resize_schedules_only_presentation_work() -> None:
+    window = object.__new__(MainWindow)
+    resize_calls: list[tuple[object, str]] = []
+    scheduled: list[object] = []
+    window._schedule_cursor_restore = lambda: None
+    window._schedule_window_geometry_save = lambda: None
+    window._presentation_coordinator = type(
+        "Coordinator",
+        (),
+        {"resize": lambda _self, size, reason: resize_calls.append((size, reason))},
+    )()
+    window._logical_client_size = lambda width, height: (width, height)
+    window._responsive_layout_pending = False
+    window.schedule = lambda _delay, callback: scheduled.append(callback)
+    event = type("Event", (), {"widget": window, "width": 1200, "height": 800})()
+
+    window._window_resized(event)
+
+    assert resize_calls == [((1200, 800), "configure")]
+    assert len(scheduled) == 1
+
+
+def test_preparation_source_queue_and_automatic_status_are_updated_separately() -> None:
+    window = object.__new__(MainWindow)
+    window._queue_source_button = ConfigureDouble()
+    window._queue_source_tooltip = TooltipDouble()
+    window._queue_stats = ConfigureDouble()
+    window._queue_stats_text = ""
+    window._queue_stats_tooltip = TooltipDouble()
+    window._automatic_status_label = ConfigureDouble()
+    window._preparation_source_status = ConfigureDouble()
+    window._preparation_queue_status = ConfigureDouble()
+    window._preparation_automatic_status = ConfigureDouble()
+    window._presentation_status = GlobalStatusState()
+    window._render_global_status = lambda: None
+    window._presentation_startup_guard = False
+    window._force_live_workspace = lambda _reason: None
+
+    window.show_queue_origin("Gastwünsche")
+    window.show_queue_stats(QueueStats(18, 3600.0, 12, 2400.0))
+    window.show_automatic_status("paused")
+
+    assert window._preparation_source_status.values["text"] == "Quelle: Gastwünsche"
+    assert window._preparation_queue_status.values["text"] == "Queue: 18 Titel"
+    assert window._preparation_automatic_status.values["text"] == "Automatik: pausiert"
 
 
 def test_ctrl_f_switches_compact_live_to_preparation_before_focusing() -> None:

@@ -194,6 +194,26 @@ def _mixer_container_grid_options(compact: bool) -> dict[str, object]:
     }
 
 
+def _compact_preparation_container_grid_options() -> dict[str, object]:
+    """Use the existing center cell for the locally scrollable preparation view."""
+    return {
+        "row": 1,
+        "column": 1,
+        "padx": 8,
+        "pady": (4, 8),
+        "sticky": "nsew",
+    }
+
+
+def _workspace_content(resolved: ResolvedPresentation, workspace: Workspace) -> str:
+    """Select presentation content without consulting or mutating domain state."""
+    if workspace is Workspace.PREPARATION:
+        return "preparation"
+    if resolved is ResolvedPresentation.COMPACT:
+        return "compact_live"
+    return "large_live"
+
+
 def _compact_mixer_visible(overlays_expanded: bool) -> bool:
     """Reserve the short compact footer for one disclosure at a time."""
     return not overlays_expanded
@@ -2148,6 +2168,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._mixer_container = mixer_container
         mixer_container.grid(row=2, column=0, columnspan=3, padx=16, pady=(8, 16), sticky="ew")
         mixer_container.grid_columnconfigure(0, weight=1)
+        mixer_container.grid_rowconfigure(1, weight=1)
         self._mixer_toggle = ctk.CTkButton(
             mixer_container,
             text="Mixer einblenden ▼",
@@ -2179,18 +2200,51 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
                 ),
             )
         )
-        self._mixer_panel = ctk.CTkFrame(mixer_container, fg_color="transparent")
-        self._mixer_panel.grid(row=1, column=0, sticky="ew")
+        self._mixer_panel = ctk.CTkScrollableFrame(
+            mixer_container, fg_color="transparent", corner_radius=0
+        )
+        self._mixer_panel.grid(row=1, column=0, sticky="nsew")
         mixer = self._mixer_panel
         mixer.grid_columnconfigure(0, weight=1, uniform="mixer_groups")
         mixer.grid_columnconfigure(1, weight=1, uniform="mixer_groups")
 
+        status_group = ctk.CTkFrame(mixer, corner_radius=8)
+        self._preparation_status_group = status_group
+        status_group.grid(row=0, column=0, columnspan=2, padx=12, pady=(4, 6), sticky="ew")
+        for column in range(4):
+            status_group.grid_columnconfigure(column, weight=1)
+        ctk.CTkLabel(
+            status_group,
+            text="BETRIEBSZUSTAND",
+            font=(theme.FONT_FAMILY, 13, "bold"),
+        ).grid(row=0, column=0, columnspan=4, padx=12, pady=(10, 4), sticky="w")
+        self._preparation_mode_status = ctk.CTkLabel(
+            status_group, text="Betriebsart: HALBAUTOMATISCH", anchor="w"
+        )
+        self._preparation_source_status = ctk.CTkLabel(status_group, text="Quelle: —", anchor="w")
+        self._preparation_queue_status = ctk.CTkLabel(
+            status_group, text="Queue: 0 Titel", anchor="w"
+        )
+        self._preparation_automatic_status = ctk.CTkLabel(
+            status_group, text="Automatik: bereit", anchor="w"
+        )
+        for column, widget in enumerate(
+            (
+                self._preparation_mode_status,
+                self._preparation_source_status,
+                self._preparation_queue_status,
+                self._preparation_automatic_status,
+            )
+        ):
+            widget.grid(row=1, column=column, padx=12, pady=(2, 10), sticky="ew")
+
         playback_group = ctk.CTkFrame(mixer, corner_radius=8)
-        playback_group.grid(row=0, column=0, padx=(12, 6), pady=(4, 6), sticky="nsew")
+        self._preparation_playback_group = playback_group
+        playback_group.grid(row=1, column=0, padx=(12, 6), pady=(4, 6), sticky="nsew")
         playback_group.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(
             playback_group,
-            text="WIEDERGABE UND MIXER",
+            text="WIEDERGABE UND AUTOMATIK",
             font=(theme.FONT_FAMILY, 13, "bold"),
         ).grid(row=0, column=0, columnspan=4, padx=12, pady=(10, 6), sticky="w")
         self._master = ctk.CTkSlider(playback_group, from_=0, to=1, command=self._master_changed)
@@ -2238,11 +2292,12 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         )
 
         options_group = ctk.CTkFrame(mixer, corner_radius=8)
-        options_group.grid(row=0, column=1, padx=(6, 12), pady=(4, 6), sticky="nsew")
+        self._preparation_safety_group = options_group
+        options_group.grid(row=1, column=1, padx=(6, 12), pady=(4, 6), sticky="nsew")
         options_group.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(
             options_group,
-            text="PROGRAMM- UND STARTOPTIONEN",
+            text="AUDIO UND SICHERHEIT",
             font=(theme.FONT_FAMILY, 13, "bold"),
         ).grid(row=0, column=0, columnspan=3, padx=12, pady=(10, 6), sticky="w")
         self._restore_session_switch = ctk.CTkSwitch(
@@ -2298,7 +2353,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             width=130,
             command=self._edit_normalization_settings,
         ).pack(side="left", padx=(10, 0))
-        self._build_program_option_action_buttons(options_group)
         self._audio_device_recovery_label = ctk.CTkLabel(
             options_group,
             text="Audioausgabe bereit",
@@ -2492,7 +2546,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             ).pack(side="left", padx=(0, 6), pady=6)
 
         diagnostic_group = ctk.CTkFrame(mixer, corner_radius=8)
-        diagnostic_group.grid(row=1, column=0, columnspan=2, padx=12, pady=6, sticky="ew")
+        self._preparation_diagnostic_group = diagnostic_group
+        diagnostic_group.grid(row=3, column=0, columnspan=2, padx=12, pady=6, sticky="ew")
         diagnostic_group.grid_columnconfigure(0, weight=1)
         self._diagnostic_expanded = False
         self._diagnostic_toggle = ctk.CTkButton(
@@ -2506,6 +2561,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         diagnostic_frame = ctk.CTkFrame(diagnostic_group, fg_color="transparent")
         self._diagnostic_frame = diagnostic_frame
         diagnostic_frame.grid(row=1, column=0, padx=12, pady=(2, 10), sticky="ew")
+        self._build_program_option_action_buttons(playback_group, diagnostic_group)
+        self._external_program_settings_button.grid_configure(row=1)
+        self._diagnostic_toggle.grid_configure(row=2)
+        diagnostic_frame.grid_configure(row=3)
         ctk.CTkLabel(
             diagnostic_frame,
             text=(
@@ -2874,22 +2933,26 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
     def bind_selection_rule_settings(self, controller: SelectionRuleSettingsController) -> None:
         self._selection_rule_settings_controller = controller
 
-    def _build_program_option_action_buttons(self, options_group: Any) -> None:
+    def _build_program_option_action_buttons(
+        self, playback_group: Any, system_group: Any | None = None
+    ) -> None:
+        if system_group is None:
+            system_group = playback_group
         self._selection_rule_settings_button = ctk.CTkButton(
-            options_group,
+            playback_group,
             text="Automatische Titelauswahl…",
             command=self._show_selection_rule_settings,
         )
         self._selection_rule_settings_button.grid(
-            row=10, column=0, columnspan=3, padx=12, pady=(6, 0), sticky="ew"
+            row=5, column=0, columnspan=4, padx=12, pady=(6, 10), sticky="ew"
         )
         self._external_program_settings_button = ctk.CTkButton(
-            options_group,
+            system_group,
             text="System / Externe Programme…",
             command=self._show_external_program_settings,
         )
         self._external_program_settings_button.grid(
-            row=11, column=0, columnspan=3, padx=12, pady=(6, 10), sticky="ew"
+            row=1, column=0, padx=12, pady=(4, 6), sticky="ew"
         )
 
     def _show_selection_rule_settings(self) -> None:
@@ -4859,7 +4922,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         if state.resolved is ResolvedPresentation.COMPACT:
             self._show_compact_layout(state.workspace)
         else:
-            self._show_large_layout()
+            self._show_large_layout(state.workspace)
 
     def _hide_center_content(self) -> None:
         for widget in (
@@ -4939,7 +5002,66 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         else:
             self._saved_toolbar.grid_remove()
 
-    def _show_large_layout(self) -> None:
+    def _layout_preparation_content(self, *, compact: bool) -> None:
+        """Arrange the single preparation widget tree for the active presentation."""
+        mixer = self._mixer_panel
+        if compact:
+            mixer.grid_columnconfigure(0, weight=1, uniform="")
+            mixer.grid_columnconfigure(1, weight=0, uniform="")
+            self._preparation_status_group.grid_configure(
+                row=0, column=0, columnspan=1, padx=8, pady=(4, 4), sticky="ew"
+            )
+            for row, widget in enumerate(
+                (
+                    self._preparation_mode_status,
+                    self._preparation_source_status,
+                    self._preparation_queue_status,
+                    self._preparation_automatic_status,
+                ),
+                start=1,
+            ):
+                widget.grid_configure(row=row, column=0, columnspan=4, pady=1)
+            self._preparation_playback_group.grid_configure(
+                row=1, column=0, columnspan=1, padx=8, pady=4, sticky="ew"
+            )
+            self._preparation_safety_group.grid_configure(
+                row=2, column=0, columnspan=1, padx=8, pady=4, sticky="ew"
+            )
+            self._overlay_panel.grid_configure(
+                row=3, column=0, columnspan=1, padx=8, pady=4, sticky="ew"
+            )
+            self._preparation_diagnostic_group.grid_configure(
+                row=4, column=0, columnspan=1, padx=8, pady=(4, 8), sticky="ew"
+            )
+            return
+        mixer.grid_columnconfigure(0, weight=1, uniform="mixer_groups")
+        mixer.grid_columnconfigure(1, weight=1, uniform="mixer_groups")
+        self._preparation_status_group.grid_configure(
+            row=0, column=0, columnspan=2, padx=12, pady=(4, 6), sticky="ew"
+        )
+        for column, widget in enumerate(
+            (
+                self._preparation_mode_status,
+                self._preparation_source_status,
+                self._preparation_queue_status,
+                self._preparation_automatic_status,
+            )
+        ):
+            widget.grid_configure(row=1, column=column, columnspan=1, pady=(2, 10))
+        self._preparation_playback_group.grid_configure(
+            row=1, column=0, columnspan=1, padx=(12, 6), pady=(4, 6), sticky="nsew"
+        )
+        self._preparation_safety_group.grid_configure(
+            row=1, column=1, columnspan=1, padx=(6, 12), pady=(4, 6), sticky="nsew"
+        )
+        self._overlay_panel.grid_configure(
+            row=2, column=0, columnspan=2, padx=12, pady=(6, 10), sticky="ew"
+        )
+        self._preparation_diagnostic_group.grid_configure(
+            row=3, column=0, columnspan=2, padx=12, pady=6, sticky="ew"
+        )
+
+    def _show_large_layout(self, workspace: Workspace = Workspace.LIVE) -> None:
         self._compact_layout_active = False
         self.grid_columnconfigure(0, weight=1, uniform="main")
         self.grid_columnconfigure(1, weight=2, uniform="main")
@@ -4957,10 +5079,27 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._hide_center_content()
         self._reset_center_rows()
         self._configure_catalog_search_layout(False)
+        if _workspace_content(ResolvedPresentation.LARGE, workspace) == "preparation":
+            self.deck_a.grid_remove()
+            self.deck_b.grid_remove()
+            self._center_panel.grid_remove()
+            self._mixer_container.grid(
+                row=1,
+                column=0,
+                columnspan=3,
+                padx=16,
+                pady=(8, 16),
+                sticky="nsew",
+            )
+            self._mixer_panel.grid()
+            self._mixer_toggle.configure(text="Vorbereitung ausblenden ▲")
+            self._layout_preparation_content(compact=False)
+            return
         self.deck_a.grid(row=1, column=0, padx=(16, 8), pady=8, sticky="nsew")
         self.deck_b.grid(row=1, column=2, padx=(8, 16), pady=8, sticky="nsew")
         self._center_panel.grid(**_center_panel_grid_options(False))
         self._mixer_container.grid(**_mixer_container_grid_options(False))
+        self._layout_preparation_content(compact=False)
         self._summary.grid(row=0, column=0, padx=12, pady=(12, 4), sticky="w")
         self._search_frame.grid(row=1, column=0, padx=12, pady=4, sticky="ew")
         self._catalog.grid(row=2, column=0, padx=12, pady=6, sticky="nsew")
@@ -4998,38 +5137,19 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._reset_center_rows()
         self.deck_a.grid_remove()
         self.deck_b.grid_remove()
-        if workspace is Workspace.PREPARATION or not _compact_mixer_visible(
-            self._compact_overlays_expanded
-        ):
-            self._mixer_container.grid_remove()
-        else:
-            self._mixer_container.grid(**_mixer_container_grid_options(True))
-        self._center_panel.grid(**_center_panel_grid_options(True))
-        if workspace is Workspace.PREPARATION:
-            rows = _compact_preparation_rows()
-            self._configure_catalog_search_layout(True)
-            self._center_panel.grid_rowconfigure(rows["catalog"], weight=1, minsize=120)
-            self._compact_preparation.grid(
-                row=rows["live_status"], column=0, padx=8, pady=(6, 2), sticky="ew"
-            )
-            self._search_frame.grid(row=rows["search"], column=0, padx=8, pady=2, sticky="ew")
-            self._summary.grid(row=rows["summary"], column=0, padx=10, pady=(1, 0), sticky="w")
-            self._catalog.grid(row=rows["catalog"], column=0, padx=8, pady=3, sticky="nsew")
-            self._compact_preparation_tools.grid(
-                row=rows["tools"], column=0, padx=8, pady=(2, 4), sticky="ew"
-            )
-            if self._directory_progress_visible:
-                self._directory_progress_frame.grid(
-                    row=rows["progress"], column=0, padx=8, pady=(0, 3), sticky="ew"
-                )
-            if self._compact_playlist_expanded:
-                self._saved_toolbar.grid(
-                    row=rows["playlist"], column=0, padx=8, pady=(0, 4), sticky="ew"
-                )
-            if schedule_reassertion:
-                self.schedule(50, self._ensure_compact_layout_exclusive)
-                self.schedule(250, self._ensure_compact_layout_exclusive)
+        if _workspace_content(ResolvedPresentation.COMPACT, workspace) == "preparation":
+            self._center_panel.grid_remove()
+            self._mixer_container.grid(**_compact_preparation_container_grid_options())
+            self._mixer_panel.grid()
+            self._mixer_toggle.configure(text="Vorbereitung ausblenden ▲")
+            self._layout_preparation_content(compact=True)
             return
+        if _compact_mixer_visible(self._compact_overlays_expanded):
+            self._mixer_container.grid(**_mixer_container_grid_options(True))
+            self._layout_preparation_content(compact=True)
+        else:
+            self._mixer_container.grid_remove()
+        self._center_panel.grid(**_center_panel_grid_options(True))
         rows = _compact_live_rows()
         self._compact_decks_frame.grid(
             row=rows["decks"], column=0, padx=8, pady=(6, 3), sticky="ew"
@@ -6106,11 +6226,13 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             f"Gesamtlaufzeit {_duration_text(stats.total_duration)} · "
             f"verbleibende Laufzeit {_duration_text(stats.remaining_duration)}"
         )
+        self._preparation_queue_status.configure(text=f"Queue: {stats.total_tracks} Titel")
 
     def show_queue_origin(self, text: str) -> None:
         self._queue_source_button.configure(text=f"Quelle: {_ellipsize(text, 28)} ▾")
         self._queue_source_tooltip.set_text(f"Aktive Queue-Quelle: {text}")
         self._presentation_status = replace(self._presentation_status, source=text)
+        self._preparation_source_status.configure(text=f"Quelle: {text}")
         self._render_global_status()
 
     def show_deck(self, deck: Deck) -> None:
@@ -6261,7 +6383,9 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             "semi_automatic": "HALBAUTOMATISCH",
             "automatic": "AUTOMATISCH",
         }
-        self._player_mode.set(labels.get(mode, "MANUELL"))
+        label = labels.get(mode, "MANUELL")
+        self._player_mode.set(label)
+        self._preparation_mode_status.configure(text=f"Betriebsart: {label}")
 
     def show_automatic_playback(self, active: bool) -> None:
         self._automatic_queue_active = active
@@ -6287,6 +6411,17 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         text, color = labels.get(state, ("Automatik bereit", theme.TEXT_MUTED))
         self._presentation_status = replace(self._presentation_status, automatic=text)
         self._render_global_status()
+        preparation_text = {
+            "ready": "bereit",
+            "running": "aktiv",
+            "transition": "Übergang läuft",
+            "paused": "pausiert",
+            "stopped": "nicht aktiv",
+            "completed": "abgeschlossen",
+        }.get(state, "bereit")
+        self._preparation_automatic_status.configure(
+            text=f"Automatik: {preparation_text}", text_color=color
+        )
         if detail:
             text = f"{text} · {detail}"
         self._automatic_status_label.configure(text=text, text_color=color)
