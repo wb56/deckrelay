@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import random
 import logging
+import inspect
 from threading import Lock
 from typing import Protocol
 import uuid
@@ -53,6 +54,7 @@ from party_player.selection_metadata import (
     SelectionMetadataCatalogSnapshot,
     neutral_catalog_snapshot,
 )
+from party_player.selection_sequence import SelectionSequenceContext
 from party_player.enums import EmptyQueuePolicy
 
 
@@ -190,18 +192,29 @@ class AutomaticSelectionService:
         self._logger = logging.getLogger(__name__)
 
     def select(self, rules: TrackSelectionService) -> Track | None:
-        with self._selection_lock:
+        def select_once() -> Track | None:
             settings = self._load_rule_settings()
-            candidates, metadata = self._load_catalog_snapshot()
-            return self._run_isolated(lambda: self._select(rules, settings, candidates, metadata))
+            history = self._history.preview_snapshot()
+            previous_track_id = self._previous_track_id(history)
+            candidates, metadata = self._load_catalog_snapshot(previous_track_id)
+            sequence = SelectionSequenceContext(
+                previous_track_id,
+                metadata.for_track(previous_track_id),
+                0,
+            )
+            return self._select(rules, settings, candidates, metadata, history, sequence)
+
+        with self._selection_lock:
+            return self._run_isolated(select_once)
 
     def preview(self, rules: TrackSelectionService, count: int) -> SelectionPreview:
         """Predict automatic choices without advancing any productive state."""
         if not 1 <= count <= self.MAX_PREVIEW_DEPTH:
             raise ValueError(f"Vorschautiefe muss zwischen 1 und {self.MAX_PREVIEW_DEPTH} liegen")
         with self._selection_lock:
-            candidates, metadata = self._load_catalog_snapshot()
             history = self._history.preview_snapshot()
+            previous_track_id = self._previous_track_id(history)
+            candidates, metadata = self._load_catalog_snapshot(previous_track_id)
             preview_rules = rules.copy_for_preview()
             preview_random = random.Random()
             preview_random.setstate(self._random.getstate())
@@ -218,8 +231,20 @@ class AutomaticSelectionService:
         completion_rationale: SelectionRationale | None = None
         completion = SelectionPreviewCompletion.REQUESTED_DEPTH_REACHED
         for position in range(1, count + 1):
+            sequence = SelectionSequenceContext(
+                previous_track_id,
+                metadata.for_track(previous_track_id),
+                position,
+            )
             selected = preview_selector._run_isolated(
-                lambda: preview_selector._select(preview_rules, settings, candidates, metadata)
+                lambda: preview_selector._select(
+                    preview_rules,
+                    settings,
+                    candidates,
+                    metadata,
+                    history,
+                    sequence,
+                )
             )
             rationale = preview_selector.last_rationale
             if selected is None or rationale is None:
@@ -253,6 +278,7 @@ class AutomaticSelectionService:
             )
             history.record_played(selected)
             preview_rules.record_preview_played(selected)
+            previous_track_id = selected.id
         return SelectionPreview(
             preview_id=preview_id,
             created_at=datetime.now(),
@@ -272,10 +298,16 @@ class AutomaticSelectionService:
 
     def _load_catalog_snapshot(
         self,
+        previous_track_id: int | None,
     ) -> tuple[tuple[Track, ...], SelectionMetadataCatalogSnapshot]:
         loader = getattr(self._tracks, "automatic_selection_snapshot", None)
         if callable(loader):
-            loaded = loader()
+            parameters = inspect.signature(loader).parameters
+            loaded = (
+                loader(previous_track_id=previous_track_id)
+                if "previous_track_id" in parameters
+                else loader()
+            )
             if (
                 not isinstance(loaded, tuple)
                 or len(loaded) != 2
@@ -287,23 +319,33 @@ class AutomaticSelectionService:
         candidates = tuple(self._tracks.automatic_candidates())
         return candidates, neutral_catalog_snapshot(candidates)
 
+    @staticmethod
+    def _previous_track_id(history: _AutomaticHistorySource | _PreviewHistory) -> int | None:
+        recent = history.recent_track_ids(1)
+        return next(iter(recent), None)
+
     def _select(
         self,
         rules: TrackSelectionService,
         settings: SelectionScoringSettings,
         candidates: tuple[Track, ...],
         metadata: SelectionMetadataCatalogSnapshot,
+        history: _AutomaticHistorySource | _PreviewHistory,
+        sequence: SelectionSequenceContext,
     ) -> Track | None:
         del metadata  # A1 loads one immutable moment but intentionally applies no rule.
         context_id = uuid.uuid4().hex
         summaries: list[CandidateEvaluation] = []
         evaluated_count = 0
-        recent = self._history.recent_track_ids(self.recent_track_limit)
+        recent = history.recent_track_ids(self.recent_track_limit)
         recent_rule = AutomaticRecentTrackRule(recent)
-        counts = self._history.play_counts()
+        counts = history.play_counts()
         soft_rules: list[ExecutableSelectionRule] = []
-        if settings.play_count.enabled:
-            soft_rules.append(PlayCountScoringRule(counts, settings.play_count.weight))
+        play_count_rule = (
+            PlayCountScoringRule(counts, settings.play_count.weight)
+            if settings.play_count.enabled
+            else None
+        )
         if settings.rating.enabled:
             soft_rules.append(RatingScoringRule(settings.rating.weight))
         scorer = CandidateScorer(tuple(soft_rules))
@@ -317,8 +359,7 @@ class AutomaticSelectionService:
         )
         terminal_exclusions: dict[int, CandidateEvaluation] = {}
         for stage, relaxed_codes in stages:
-            highest_score: float | None = None
-            top: list[tuple[Track, CandidateEvaluation]] = []
+            eligible: list[tuple[Track, CandidateEvaluation]] = []
             for track in candidates:
                 synthetic = QueueEntry(
                     -track.id,
@@ -327,7 +368,7 @@ class AutomaticSelectionService:
                     QueueStatus.WAITING,
                     source=QueueSource.AUTOMATIC,
                 )
-                context = SelectionContext(context_id, stage, relaxed_codes)
+                context = SelectionContext(context_id, stage, relaxed_codes, sequence)
                 rule_input = SelectionRuleInput.from_values(synthetic, track)
                 recent_evaluation = recent_rule.evaluate_rule(rule_input, context)
                 if recent_evaluation.result_code is RuleOutcome.EXCLUDE:
@@ -363,24 +404,48 @@ class AutomaticSelectionService:
                     rules=(recent_evaluation, *evaluated.rules),
                 )
                 if decision.accepted:
+                    if play_count_rule is not None:
+                        play_count_evaluation = play_count_rule.evaluate_rule(rule_input, context)
+                        candidate_evaluation = replace(
+                            candidate_evaluation,
+                            rules=(*candidate_evaluation.rules, play_count_evaluation),
+                        )
                     candidate_evaluation = scorer.evaluate(
                         rule_input,
                         context,
                         candidate_evaluation,
                     )
-                self._append_summary(summaries, candidate_evaluation)
                 if decision.accepted:
                     terminal_exclusions.pop(track.id, None)
                 else:
                     terminal_exclusions[track.id] = candidate_evaluation
                 if decision.accepted:
-                    if highest_score is None or candidate_evaluation.total_score > highest_score:
-                        highest_score = candidate_evaluation.total_score
-                        top = [(track, candidate_evaluation)]
-                    elif candidate_evaluation.total_score == highest_score:
-                        top.append((track, candidate_evaluation))
-            if not top:
+                    eligible.append((track, candidate_evaluation))
+                else:
+                    self._append_summary(summaries, candidate_evaluation)
+            if not eligible:
                 continue
+            primary_play_count = (
+                min(max(0, counts.get(track.id, 0)) for track, _evaluation in eligible)
+                if settings.play_count.enabled
+                else None
+            )
+            ranked: list[tuple[Track, CandidateEvaluation]] = []
+            for track, evaluation in eligible:
+                play_count = max(0, counts.get(track.id, 0))
+                in_primary_group = primary_play_count is None or play_count == primary_play_count
+                ranked_evaluation = replace(
+                    evaluation,
+                    play_count=play_count,
+                    primary_play_count=primary_play_count,
+                    in_primary_play_group=in_primary_group,
+                    secondary_score=evaluation.total_score,
+                )
+                ranked.append((track, ranked_evaluation))
+                self._append_summary(summaries, ranked_evaluation)
+            primary = [item for item in ranked if item[1].in_primary_play_group]
+            highest_secondary_score = max(item[1].secondary_score for item in primary)
+            top = [item for item in primary if item[1].secondary_score == highest_secondary_score]
             stable_top = sorted(top, key=lambda item: item[0].id)
             selected, selected_evaluation = (
                 stable_top[0] if len(stable_top) == 1 else self._random.choice(stable_top)
@@ -393,9 +458,12 @@ class AutomaticSelectionService:
                 summaries,
                 evaluated_count,
                 stage,
-                "HIGHEST_SOFT_SCORE_THEN_STABLE_ID_ORDER_THEN_INJECTED_RNG",
+                "PRIMARY_PLAY_COUNT_THEN_SECONDARY_SCORE_THEN_STABLE_ID_THEN_INJECTED_RNG",
                 selected_evaluation=selected_evaluation,
                 tie_candidate_count=len(stable_top),
+                primary_play_count=primary_play_count,
+                primary_candidate_count=len(primary),
+                sequence_step_index=sequence.step_index,
             )
             self._log_decision(self.last_rationale, reason_code="SELECTED")
             if stage != "STRICT":
@@ -538,6 +606,9 @@ class AutomaticSelectionService:
         selected_evaluation: CandidateEvaluation | None = None,
         tie_candidate_count: int = 0,
         terminal_exclusions: dict[int, CandidateEvaluation] | None = None,
+        primary_play_count: int | None = None,
+        primary_candidate_count: int = 0,
+        sequence_step_index: int = 0,
     ) -> SelectionRationale:
         if selected_evaluation is not None and selected_evaluation not in summaries:
             if len(summaries) >= AutomaticSelectionService._RATIONALE_CANDIDATE_LIMIT:
@@ -578,7 +649,7 @@ class AutomaticSelectionService:
                     reason = (
                         CandidateDecisionReason.SELECTED_RNG_TIE_BREAK
                         if tie_candidate_count > 1
-                        else CandidateDecisionReason.SELECTED_HIGHEST_SCORE
+                        else CandidateDecisionReason.SELECTED_HIGHEST_SECONDARY_SCORE
                     )
                 else:
                     reason = CandidateDecisionReason.SELECTED_STABLE_TIE_BREAK
@@ -592,8 +663,10 @@ class AutomaticSelectionService:
                 )
                 continue
             if item.accepted:
-                if selected_score is not None and item.total_score < selected_score:
-                    reason = CandidateDecisionReason.LOWER_TOTAL_SCORE
+                if not item.in_primary_play_group:
+                    reason = CandidateDecisionReason.HIGHER_PLAY_COUNT
+                elif selected_score is not None and item.secondary_score < selected_score:
+                    reason = CandidateDecisionReason.LOWER_SECONDARY_SCORE
                 elif "INJECTED_RNG" in tie_break_method:
                     reason = CandidateDecisionReason.RNG_TIE_BREAK_LOSS
                 else:
@@ -653,6 +726,13 @@ class AutomaticSelectionService:
             ),
             excluded_candidate_count=sum(item.count for item in exclusion_summary),
             exclusion_summary=exclusion_summary,
+            primary_play_count=primary_play_count,
+            primary_candidate_count=primary_candidate_count,
+            secondary_score=(
+                selected_evaluation.secondary_score if selected_evaluation is not None else None
+            ),
+            final_tie_candidate_count=tie_candidate_count,
+            sequence_step_index=sequence_step_index,
         )
 
     def _log_decision(self, rationale: SelectionRationale, *, reason_code: str) -> None:

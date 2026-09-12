@@ -234,6 +234,24 @@ def test_snapshot_uses_two_queries_for_candidates_and_one_when_empty(tmp_path: P
     assert len([item for item in statements if item.lstrip().upper().startswith("WITH")]) == 2
 
 
+def test_snapshot_includes_hidden_predecessor_metadata_without_making_it_candidate(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path / "predecessor.db")
+    with database.connect() as connection:
+        connection.executemany(
+            """INSERT INTO tracks(id,file_path,title,artist,catalog_visible)
+               VALUES (?,?,?,?,?)""",
+            [(1, "one.mp3", "One", "A", 1), (2, "two.mp3", "Two", "B", 0)],
+        )
+
+    tracks, catalog = TrackRepository(database).automatic_selection_snapshot(previous_track_id=2)
+
+    assert [track.id for track in tracks] == [1]
+    assert [item.track_id for item in catalog.metadata] == [1, 2]
+    assert catalog.for_track(2) is not None
+
+
 def test_track_removed_between_snapshot_queries_gets_neutral_metadata(tmp_path: Path) -> None:
     database = _database(tmp_path / "removed.db")
     with database.connect() as connection:

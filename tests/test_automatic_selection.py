@@ -38,6 +38,12 @@ from party_player.emergency_playlist import EmergencyMediaType, LocalEmergencyPl
 from party_player.emergency_storage import EmergencyDriveKind, EmergencyStoragePolicy
 from party_player.file_availability import FileAvailabilityService
 from party_player.selection_source import SelectionSourceClass, SourceResolutionReason
+from party_player.selection_rule_settings import (
+    PLAY_COUNT_RULE_ID,
+    RATING_RULE_ID,
+    SelectionScoringSettings,
+    SoftRuleSetting,
+)
 
 
 def _database(path: Path) -> tuple[Database, int]:
@@ -99,7 +105,7 @@ def test_selection_avoids_recent_and_prefers_lower_play_count(tmp_path: Path) ->
     assert selector.last_rationale.selected_candidate.track_id == selected.id
     assert (
         selector.last_rationale.tie_break_method
-        == "HIGHEST_SOFT_SCORE_THEN_STABLE_ID_ORDER_THEN_INJECTED_RNG"
+        == "PRIMARY_PLAY_COUNT_THEN_SECONDARY_SCORE_THEN_STABLE_ID_THEN_INJECTED_RNG"
     )
 
 
@@ -131,14 +137,14 @@ def test_rating_orders_candidates_only_when_play_counts_are_equal(tmp_path: Path
         "selection.rating",
     ]
     assert selected_evaluation.decision_category is CandidateDecisionCategory.SELECTED
-    assert selected_evaluation.decision_reason_code == "SELECTED_HIGHEST_SCORE"
+    assert selected_evaluation.decision_reason_code == "SELECTED_HIGHEST_SECONDARY_SCORE"
     lower = next(
         item
         for item in selector.last_rationale.evaluated_candidates
         if item.accepted and item.candidate.track_id == 1
     )
     assert lower.decision_category is CandidateDecisionCategory.ELIGIBLE_NOT_SELECTED
-    assert lower.decision_reason_code == "LOWER_TOTAL_SCORE"
+    assert lower.decision_reason_code == "LOWER_SECONDARY_SCORE"
 
 
 def test_one_fewer_play_always_outweighs_rating_difference(tmp_path: Path) -> None:
@@ -160,6 +166,107 @@ def test_one_fewer_play_always_outweighs_rating_difference(tmp_path: Path) -> No
     selected = selector.select(TrackSelectionService())
 
     assert selected is not None and selected.id == 1
+    assert selector.last_rationale is not None
+    assert selector.last_rationale.primary_play_count == 0
+    assert selector.last_rationale.primary_candidate_count == 1
+    higher_counts = [
+        item for item in selector.last_rationale.evaluated_candidates if item.play_count == 1
+    ]
+    assert higher_counts
+    assert all(not item.in_primary_play_group for item in higher_counts)
+    assert all(item.decision_reason_code == "HIGHER_PLAY_COUNT" for item in higher_counts)
+
+
+def test_disabled_play_count_rule_leaves_selection_to_secondary_score(tmp_path: Path) -> None:
+    database, session_id = _database(tmp_path / "disabled-play-rank.db")
+    repository = PartyPlayerRepository(database)
+    with database.connect() as connection:
+        connection.execute("UPDATE tracks SET rating = 1 WHERE id = 1")
+        connection.execute("UPDATE tracks SET rating = 5 WHERE id = 2")
+    _played(repository, session_id, 2, datetime(2026, 7, 27, 12, 0))
+    settings = SelectionScoringSettings(
+        SoftRuleSetting(PLAY_COUNT_RULE_ID, False, 10.0),
+        SoftRuleSetting(RATING_RULE_ID, True, 1.0),
+    )
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(3),
+        rule_settings=SimpleNamespace(load=lambda: settings),
+    )
+
+    selected = selector.select(TrackSelectionService())
+
+    assert selected is not None and selected.id == 2
+    assert selector.last_rationale is not None
+    assert selector.last_rationale.primary_play_count is None
+    assert selector.last_rationale.primary_candidate_count == 3
+
+
+def test_real_selection_context_uses_last_completed_history_track(tmp_path: Path) -> None:
+    database, session_id = _database(tmp_path / "sequence-context.db")
+    repository = PartyPlayerRepository(database)
+    _played(repository, session_id, 1, datetime(2026, 7, 27, 12, 0))
+    _played(repository, session_id, 2, datetime(2026, 7, 27, 12, 1))
+    observed = []
+
+    class ObserveContextRule:
+        def evaluate_rule(self, rule_input, context):
+            observed.append(context.sequence)
+            return automatic_selection_module.hard_rule_evaluation(
+                rule_id="test.observe_context",
+                rule_version=1,
+                context=context,
+                reason_code="OBSERVED",
+                reason="",
+            )
+
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(7),
+    )
+
+    assert selector.select(TrackSelectionService((ObserveContextRule(),))) is not None
+    assert observed
+    assert all(context is not None for context in observed)
+    assert all(context.previous_track_id == 2 for context in observed if context is not None)
+    assert all(context.step_index == 0 for context in observed if context is not None)
+    assert all(
+        context.previous_metadata is not None and context.previous_metadata.track_id == 2
+        for context in observed
+        if context is not None
+    )
+
+
+def test_real_selection_context_is_empty_without_completed_history(tmp_path: Path) -> None:
+    database, _session_id = _database(tmp_path / "empty-sequence-context.db")
+    observed = []
+
+    class ObserveContextRule:
+        def evaluate_rule(self, rule_input, context):
+            observed.append(context.sequence)
+            return automatic_selection_module.hard_rule_evaluation(
+                rule_id="test.observe_empty_context",
+                rule_version=1,
+                context=context,
+                reason_code="OBSERVED",
+                reason="",
+            )
+
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(8),
+    )
+
+    assert selector.select(TrackSelectionService((ObserveContextRule(),))) is not None
+    assert observed
+    assert all(context.previous_track_id is None for context in observed if context is not None)
+    assert all(context.previous_metadata is None for context in observed if context is not None)
 
 
 def test_metadata_snapshot_is_behavior_neutral_and_does_not_change_rng_calls(
@@ -288,6 +395,35 @@ def test_rng_runs_once_only_for_a_complete_score_tie(tmp_path: Path) -> None:
 
     assert selected is not None and selected.id == 1
     assert unique_random.choice_calls == 0
+
+
+def test_rng_receives_only_finalists_from_the_primary_play_group(tmp_path: Path) -> None:
+    class RecordingRandom(random.Random):
+        finalist_ids: tuple[int, ...] = ()
+
+        def choice(self, sequence):
+            self.finalist_ids = tuple(item[0].id for item in sequence)
+            return sequence[0]
+
+    database, session_id = _database(tmp_path / "primary-finalists.db")
+    _played(
+        PartyPlayerRepository(database),
+        session_id,
+        3,
+        datetime(2026, 7, 27, 12, 0),
+    )
+    randomizer = RecordingRandom()
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=randomizer,
+    )
+
+    assert selector.select(TrackSelectionService()) is not None
+    assert randomizer.finalist_ids == (1, 2)
+    assert selector.last_rationale is not None
+    assert selector.last_rationale.final_tie_candidate_count == 2
 
 
 def test_reading_rationale_does_not_consume_rng_or_change_selection(tmp_path: Path) -> None:
@@ -531,7 +667,7 @@ def test_failed_selection_clears_previous_rationale(tmp_path: Path, monkeypatch)
     def fail(_limit: int) -> set[int]:
         raise RuntimeError("history unavailable")
 
-    monkeypatch.setattr(history, "recent_track_ids", fail)
+    monkeypatch.setattr(history, "preview_snapshot", lambda: fail(1))
 
     with pytest.raises(RuntimeError, match="history unavailable"):
         selector.select(TrackSelectionService())

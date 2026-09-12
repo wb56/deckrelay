@@ -1,13 +1,16 @@
 """State-neutral multi-step automatic-selection preview tests."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 import random
+import sqlite3
 from threading import Event, Thread
 
 import pytest
 
-from party_player.automatic_selection import AutomaticSelectionService
+from party_player.automatic_selection import AutomaticSelectionHistory, AutomaticSelectionService
 from party_player.models import Track
 from party_player.repositories.track_repository import TrackRepository
 from party_player.repetition_policy import PersistentRepetitionService
@@ -90,7 +93,7 @@ def test_preview_is_repeatable_and_does_not_change_real_selection() -> None:
     assert first.steps[0].track_id == real.id == control.id
     assert len({step.track_id for step in first.steps}) == 3
     assert tracks.calls == 3  # two snapshots plus the one real selection
-    assert history.snapshot_calls == 2
+    assert history.snapshot_calls == 3
 
 
 def test_complete_preview_loads_one_catalog_snapshot_and_preserves_sequence(
@@ -167,6 +170,47 @@ def test_preview_simulates_track_artist_and_play_count_without_mutating_rules() 
     assert not repetition._recent_artists
 
 
+def test_preview_advances_only_its_immutable_sequence_context() -> None:
+    observed = []
+
+    class ObserveContextRule:
+        def evaluate_rule(self, rule_input, context):
+            observed.append(context.sequence)
+            from party_player.selection_decision import hard_rule_evaluation
+
+            return hard_rule_evaluation(
+                rule_id="test.observe_preview_context",
+                rule_version=1,
+                context=context,
+                reason_code="OBSERVED",
+                reason="",
+            )
+
+    history = _History({}, [3])
+    selector = AutomaticSelectionService(
+        _Tracks((_track(1, "A"), _track(2, "B"), _track(3, "C"))),
+        history,
+        recent_track_limit=0,
+        randomizer=random.Random(5),
+    )
+
+    preview = selector.preview(TrackSelectionService((ObserveContextRule(),)), 3)
+
+    by_step = {
+        step: next(
+            context for context in observed if context is not None and context.step_index == step
+        )
+        for step in (1, 2, 3)
+    }
+    assert by_step[1].previous_track_id == 3
+    assert by_step[2].previous_track_id == preview.steps[0].track_id
+    assert by_step[3].previous_track_id == preview.steps[1].track_id
+    assert all(context.previous_metadata is not None for context in by_step.values())
+    assert history.counts == {}
+    assert history.recent == [3]
+    assert selector.last_rationale is None
+
+
 def test_preview_keeps_productive_last_state_and_builds_consistent_rationales() -> None:
     selector = AutomaticSelectionService(
         _Tracks((_track(1, "A"), _track(2, "B"))),
@@ -212,6 +256,50 @@ def test_preview_stops_without_a_safe_candidate() -> None:
     assert preview.steps == ()
     assert preview.achieved_depth == 0
     assert preview.completion_reason is SelectionPreviewCompletion.NO_SAFE_CANDIDATE
+
+
+def test_real_selection_and_complete_preview_each_use_three_data_queries(
+    temporary_database,
+) -> None:
+    with temporary_database.connect() as connection:
+        connection.executemany(
+            "INSERT INTO tracks(id,file_path,title,artist) VALUES (?,?,?,?)",
+            [(1, "one.mp3", "One", "A"), (2, "two.mp3", "Two", "B")],
+        )
+    statements: list[str] = []
+    original_connect = temporary_database.connect
+
+    @contextmanager
+    def traced_connect() -> Iterator[sqlite3.Connection]:
+        with original_connect() as connection:
+            connection.set_trace_callback(statements.append)
+            yield connection
+
+    temporary_database.connect = traced_connect  # type: ignore[method-assign]
+    selector = AutomaticSelectionService(
+        TrackRepository(temporary_database),
+        AutomaticSelectionHistory(temporary_database),
+        recent_track_limit=0,
+        randomizer=random.Random(4),
+    )
+
+    assert selector.select(TrackSelectionService()) is not None
+    real_queries = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith(("SELECT", "WITH"))
+    ]
+    statements.clear()
+    preview = selector.preview(TrackSelectionService(), 2)
+    preview_queries = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith(("SELECT", "WITH"))
+    ]
+
+    assert preview.achieved_depth == 2
+    assert len(real_queries) == 3
+    assert len(preview_queries) == 3
 
 
 def test_preview_summarizes_all_unapproved_candidates_once_and_approval_unlocks() -> None:

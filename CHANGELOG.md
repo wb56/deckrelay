@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Die automatische Auswahl behandelt die geringste Abspielzahl nun als verbindliche
+  primäre Rangstufe und stellt einen unveränderlichen Vorgängerkontext für reale
+  Auswahl und Vorschau bereit.
 - Das Windows-Quality-Gate führt statische Prüfungen, die allgemeine Testsuite und
   echte FFmpeg-Formattests parallel und ohne doppelte Testausführung aus.
 - Die automatische Auswahl lädt Genre, BPM, Energie und Stimmung nun gebündelt in
