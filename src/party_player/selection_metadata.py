@@ -98,6 +98,12 @@ class SelectionMetadataCatalogSnapshot:
         if len(track_ids) != len(set(track_ids)):
             raise ValueError("Auswahlmetadaten dürfen einen Titel nur einmal enthalten")
 
+    def for_track(self, track_id: int | None) -> SelectionMetadataSnapshot | None:
+        """Return one immutable item without exposing a mutable lookup table."""
+        if track_id is None:
+            return None
+        return next((item for item in self.metadata if item.track_id == track_id), None)
+
 
 def selection_metadata_value(
     value: ValueT | None,

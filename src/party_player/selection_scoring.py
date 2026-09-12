@@ -154,4 +154,5 @@ class CandidateScorer:
             hard_evaluation,
             rules=(*hard_evaluation.rules, *evaluations),
             total_score=total_score,
+            secondary_score=total_score,
         )

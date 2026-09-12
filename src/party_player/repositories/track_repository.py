@@ -230,11 +230,26 @@ class TrackRepository:
 
     def automatic_selection_snapshot(
         self,
+        previous_track_id: int | None = None,
     ) -> tuple[tuple[Track, ...], SelectionMetadataCatalogSnapshot]:
-        """Load candidates and effective selection metadata in at most two queries."""
+        """Load candidates and optional predecessor metadata in at most two queries."""
+        context_track_id = previous_track_id if previous_track_id is not None else -1
+        selection_rows_cte = (
+            _AUTOMATIC_CANDIDATES_CTE
+            + """, selection_rows AS (
+                SELECT candidates.*, 1 AS is_candidate FROM candidates
+                UNION ALL
+                SELECT id, file_path, title, artist, album, duration_seconds,
+                       genre, year, original_release_year, bpm, bpm_confidence,
+                       alternative_bpm, energy, rating, 0 AS duplicate_rank,
+                       0 AS is_candidate
+                FROM tracks
+                WHERE id = ? AND NOT EXISTS (SELECT 1 FROM candidates WHERE id = ?)
+            )"""
+        )
         with self._database.connect() as connection:
             rows = connection.execute(
-                _AUTOMATIC_CANDIDATES_CTE
+                selection_rows_cte
                 + """
                 SELECT c.*,
                        main.source_type main_source, main.confidence main_confidence,
@@ -251,7 +266,7 @@ class TrackRepository:
                        energy_state.review_status energy_status,
                        mood.source_type mood_source, mood.confidence mood_confidence,
                        mood.review_status mood_status
-                FROM candidates c
+                FROM selection_rows c
                 LEFT JOIN track_metadata_field_state main
                   ON main.track_id=c.id AND main.field_key='main_genre'
                 LEFT JOIN track_metadata_field_state extra
@@ -264,24 +279,28 @@ class TrackRepository:
                   ON energy_state.track_id=c.id AND energy_state.field_key='energy'
                 LEFT JOIN track_metadata_field_state mood
                   ON mood.track_id=c.id AND mood.field_key='moods'
-                ORDER BY c.id"""
+                ORDER BY c.id""",
+                (context_track_id, context_track_id),
             ).fetchall()
             if not rows:
                 return (), SelectionMetadataCatalogSnapshot(())
             term_rows = connection.execute(
-                _AUTOMATIC_CANDIDATES_CTE
+                selection_rows_cte
                 + """
                 SELECT c.id track_id, term.term_type, term.display_name
-                FROM candidates c
+                FROM selection_rows c
                 LEFT JOIN track_metadata_terms assignment ON assignment.track_id=c.id
                 LEFT JOIN metadata_terms term ON term.id=assignment.term_id
                   AND term.term_type IN ('ADDITIONAL_GENRE','MOOD')
-                ORDER BY c.id, term.term_type, term.normalized_key"""
+                ORDER BY c.id, term.term_type, term.normalized_key""",
+                (context_track_id, context_track_id),
             ).fetchall()
 
-        tracks = tuple(self._track_from_selection_row(row) for row in rows)
+        tracks = tuple(
+            self._track_from_selection_row(row) for row in rows if bool(row["is_candidate"])
+        )
         terms: dict[int, dict[str, list[str]]] = {
-            track.id: {"ADDITIONAL_GENRE": [], "MOOD": []} for track in tracks
+            int(row["id"]): {"ADDITIONAL_GENRE": [], "MOOD": []} for row in rows
         }
         present_ids: set[int] = set()
         for row in term_rows:

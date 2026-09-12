@@ -11,6 +11,7 @@ from typing import Protocol
 
 from party_player.enums import QueueSource, QueueStatus
 from party_player.models import QueueEntry, Track
+from party_player.selection_sequence import SelectionSequenceContext
 from party_player.selection_source import SourceResolution
 
 
@@ -44,11 +45,14 @@ class CandidateDecisionCategory(StrEnum):
 class CandidateDecisionReason(StrEnum):
     SELECTED_QUEUE_PRIORITY = "SELECTED_QUEUE_PRIORITY"
     SELECTED_HIGHEST_SCORE = "SELECTED_HIGHEST_SCORE"
+    SELECTED_HIGHEST_SECONDARY_SCORE = "SELECTED_HIGHEST_SECONDARY_SCORE"
     SELECTED_STABLE_TIE_BREAK = "SELECTED_STABLE_TIE_BREAK"
     SELECTED_RNG_TIE_BREAK = "SELECTED_RNG_TIE_BREAK"
     SELECTED_EMERGENCY_ORDER = "SELECTED_EMERGENCY_ORDER"
     EXCLUDED_HARD_RULE = "EXCLUDED_HARD_RULE"
     LOWER_TOTAL_SCORE = "LOWER_TOTAL_SCORE"
+    HIGHER_PLAY_COUNT = "HIGHER_PLAY_COUNT"
+    LOWER_SECONDARY_SCORE = "LOWER_SECONDARY_SCORE"
     STABLE_TIE_BREAK_LOSS = "STABLE_TIE_BREAK_LOSS"
     RNG_TIE_BREAK_LOSS = "RNG_TIE_BREAK_LOSS"
     ELIGIBLE_PENDING_SELECTION = "ELIGIBLE_PENDING_SELECTION"
@@ -82,6 +86,7 @@ class SelectionContext:
     context_id: str
     relaxation_stage: str = "NONE"
     relaxed_codes: frozenset[str] = frozenset()
+    sequence: SelectionSequenceContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,10 +194,16 @@ class CandidateEvaluation:
     decision_category: CandidateDecisionCategory | None = None
     decision_reason_code: str = ""
     tie_break_method: str = "NONE"
+    play_count: int | None = None
+    primary_play_count: int | None = None
+    in_primary_play_group: bool = True
+    secondary_score: float = 0.0
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.total_score):
             raise ValueError("Gesamtscores müssen endlich sein")
+        if not math.isfinite(self.secondary_score):
+            raise ValueError("Sekundärscores müssen endlich sein")
         if self.decision_category is None:
             category = (
                 CandidateDecisionCategory.ELIGIBLE_NOT_SELECTED
@@ -232,9 +243,14 @@ class SelectionRationale:
     omitted_candidate_count: int = 0
     decision_reason_code: str = ""
     source_resolution: SourceResolution | None = None
-    schema_version: int = 2
+    schema_version: int = 3
     excluded_candidate_count: int = 0
     exclusion_summary: tuple[ExclusionReasonSummary, ...] = ()
+    primary_play_count: int | None = None
+    primary_candidate_count: int = 0
+    secondary_score: float | None = None
+    final_tie_candidate_count: int = 0
+    sequence_step_index: int = 0
 
     @property
     def rule_evaluations(self) -> tuple[RuleEvaluation, ...]:
