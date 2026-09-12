@@ -16,6 +16,12 @@ from party_player.repositories.track_repository import TrackRepository
 from party_player.repetition_policy import PersistentRepetitionService
 from party_player.selection_preview import SelectionPreviewCompletion
 from party_player.selection_decision import CandidateDecisionCategory, SelectionOutcome
+from party_player.selection_continuity import (
+    BPM_CONTINUITY_RULE_ID,
+    ENERGY_CONTINUITY_RULE_ID,
+    ContinuityRuleSetting,
+    SelectionContinuitySettings,
+)
 from party_player.track_selection import RepetitionService, SelectionDecision, TrackSelectionService
 from party_player.track_suitability import (
     TrackSuitability,
@@ -211,6 +217,61 @@ def test_preview_advances_only_its_immutable_sequence_context() -> None:
     assert selector.last_rationale is None
 
 
+def test_preview_continuity_uses_previous_preview_track_and_one_snapshot(
+    temporary_database,
+) -> None:
+    class CountingRepository(TrackRepository):
+        snapshot_calls = 0
+
+        def automatic_selection_snapshot(self, previous_track_id=None):
+            self.snapshot_calls += 1
+            return super().automatic_selection_snapshot(previous_track_id)
+
+    with temporary_database.connect() as connection:
+        connection.executemany(
+            """INSERT INTO tracks(id,file_path,title,artist,bpm,energy)
+               VALUES (?,?,?,?,?,?)""",
+            [
+                (1, "one.mp3", "One", "A", 100, 50),
+                (2, "two.mp3", "Two", "B", 110, 60),
+                (3, "three.mp3", "Three", "C", 100, 50),
+            ],
+        )
+        connection.executemany(
+            """INSERT INTO track_metadata_field_state
+               (track_id,field_key,source_type,confidence,review_status)
+               VALUES (?,?,'MANUAL_CONFIRMATION',NULL,'CONFIRMED_WITH_VALUE')""",
+            [(track_id, field) for track_id in (1, 2, 3) for field in ("bpm", "energy")],
+        )
+    repository = CountingRepository(temporary_database)
+    history = _History({3: 1}, [3])
+    selector = AutomaticSelectionService(
+        repository,
+        history,
+        recent_track_limit=0,
+        randomizer=random.Random(2),
+        continuity_settings=SelectionContinuitySettings(
+            ContinuityRuleSetting(True, 1.0),
+            ContinuityRuleSetting(True, 1.0),
+        ),
+    )
+
+    preview = selector.preview(TrackSelectionService(), 2)
+
+    assert [step.track_id for step in preview.steps] == [1, 2]
+    assert repository.snapshot_calls == 1
+    second_rules = {
+        rule.rule_id: rule
+        for rule in preview.steps[1].rationale.rule_evaluations
+        if rule.rule_id in {BPM_CONTINUITY_RULE_ID, ENERGY_CONTINUITY_RULE_ID}
+    }
+    assert dict(second_rules[BPM_CONTINUITY_RULE_ID].facts)["previous_value"] == 100.0
+    assert dict(second_rules[ENERGY_CONTINUITY_RULE_ID].facts)["previous_value"] == 50.0
+    assert history.counts == {3: 1}
+    assert history.recent == [3]
+    assert selector.last_rationale is None
+
+
 def test_preview_keeps_productive_last_state_and_builds_consistent_rationales() -> None:
     selector = AutomaticSelectionService(
         _Tracks((_track(1, "A"), _track(2, "B"))),
@@ -281,6 +342,10 @@ def test_real_selection_and_complete_preview_each_use_three_data_queries(
         AutomaticSelectionHistory(temporary_database),
         recent_track_limit=0,
         randomizer=random.Random(4),
+        continuity_settings=SelectionContinuitySettings(
+            ContinuityRuleSetting(True, 1.0),
+            ContinuityRuleSetting(True, 1.0),
+        ),
     )
 
     assert selector.select(TrackSelectionService()) is not None
