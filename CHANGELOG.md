@@ -11,6 +11,8 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Die automatische Auswahl unterstützt optional eine gewichtete BPM- und
+  Energiekontinuität innerhalb der primären Abspielranggruppe.
 - Die automatische Auswahl behandelt die geringste Abspielzahl nun als verbindliche
   primäre Rangstufe und stellt einen unveränderlichen Vorgängerkontext für reale
   Auswahl und Vorschau bereit.

@@ -38,6 +38,12 @@ from party_player.emergency_playlist import EmergencyMediaType, LocalEmergencyPl
 from party_player.emergency_storage import EmergencyDriveKind, EmergencyStoragePolicy
 from party_player.file_availability import FileAvailabilityService
 from party_player.selection_source import SelectionSourceClass, SourceResolutionReason
+from party_player.selection_continuity import (
+    BPM_CONTINUITY_RULE_ID,
+    ENERGY_CONTINUITY_RULE_ID,
+    ContinuityRuleSetting,
+    SelectionContinuitySettings,
+)
 from party_player.selection_rule_settings import (
     PLAY_COUNT_RULE_ID,
     RATING_RULE_ID,
@@ -175,6 +181,131 @@ def test_one_fewer_play_always_outweighs_rating_difference(tmp_path: Path) -> No
     assert higher_counts
     assert all(not item.in_primary_play_group for item in higher_counts)
     assert all(item.decision_reason_code == "HIGHER_PLAY_COUNT" for item in higher_counts)
+
+
+def test_continuity_scores_only_primary_play_group_and_cannot_overrule_it(
+    tmp_path: Path,
+) -> None:
+    database, session_id = _database(tmp_path / "continuity-primary.db")
+    repository = PartyPlayerRepository(database)
+    _played(repository, session_id, 3, datetime(2026, 7, 27, 11, 59))
+    _played(repository, session_id, 2, datetime(2026, 7, 27, 12, 0))
+    with database.connect() as connection:
+        connection.execute("UPDATE tracks SET bpm=70, energy=0 WHERE id=1")
+        connection.execute("UPDATE tracks SET bpm=100, energy=50 WHERE id=2")
+        connection.execute("UPDATE tracks SET bpm=100, energy=50 WHERE id=3")
+        connection.executemany(
+            """INSERT INTO track_metadata_field_state
+               (track_id,field_key,source_type,confidence,review_status)
+               VALUES (?,?,'MANUAL_CONFIRMATION',NULL,'CONFIRMED_WITH_VALUE')""",
+            [(track_id, field) for track_id in (1, 2, 3) for field in ("bpm", "energy")],
+        )
+    settings = SelectionContinuitySettings(
+        ContinuityRuleSetting(True, 2.0),
+        ContinuityRuleSetting(True, 2.0),
+    )
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(4),
+        continuity_settings=settings,
+    )
+
+    selected = selector.select(TrackSelectionService())
+
+    assert selected is not None and selected.id == 1
+    assert selector.last_rationale is not None
+    selected_evaluation = next(
+        item
+        for item in selector.last_rationale.evaluated_candidates
+        if item.candidate.track_id == 1
+    )
+    assert selected_evaluation.secondary_score == -4.0
+    assert [
+        rule.rule_id
+        for rule in selected_evaluation.rules
+        if rule.rule_id in {BPM_CONTINUITY_RULE_ID, ENERGY_CONTINUITY_RULE_ID}
+    ] == [BPM_CONTINUITY_RULE_ID, ENERGY_CONTINUITY_RULE_ID]
+    higher_play_groups = [
+        item for item in selector.last_rationale.evaluated_candidates if item.play_count == 1
+    ]
+    assert higher_play_groups
+    assert all(
+        not any(
+            rule.rule_id in {BPM_CONTINUITY_RULE_ID, ENERGY_CONTINUITY_RULE_ID}
+            for rule in item.rules
+        )
+        for item in higher_play_groups
+    )
+
+
+def test_bpm_and_energy_contributions_add_to_secondary_score(tmp_path: Path) -> None:
+    database, session_id = _database(tmp_path / "continuity-secondary.db")
+    _played(
+        PartyPlayerRepository(database),
+        session_id,
+        3,
+        datetime(2026, 7, 27, 12, 0),
+    )
+    with database.connect() as connection:
+        connection.execute("UPDATE tracks SET bpm=105, energy=60 WHERE id=1")
+        connection.execute("UPDATE tracks SET bpm=130, energy=100 WHERE id=2")
+        connection.execute("UPDATE tracks SET bpm=100, energy=50 WHERE id=3")
+        connection.executemany(
+            """INSERT INTO track_metadata_field_state
+               (track_id,field_key,source_type,confidence,review_status)
+               VALUES (?,?,'MANUAL_CONFIRMATION',NULL,'CONFIRMED_WITH_VALUE')""",
+            [(track_id, field) for track_id in (1, 2, 3) for field in ("bpm", "energy")],
+        )
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(9),
+        continuity_settings=SelectionContinuitySettings(
+            ContinuityRuleSetting(True, 1.0),
+            ContinuityRuleSetting(True, 1.0),
+        ),
+    )
+
+    selected = selector.select(TrackSelectionService())
+
+    assert selected is not None and selected.id == 1
+    assert selector.last_rationale is not None
+    assert selector.last_rationale.secondary_score == 2.0
+    selected_evaluation = next(
+        item
+        for item in selector.last_rationale.evaluated_candidates
+        if item.candidate.track_id == 1
+    )
+    contributions = [
+        rule.score_delta
+        for rule in selected_evaluation.rules
+        if rule.rule_id in {BPM_CONTINUITY_RULE_ID, ENERGY_CONTINUITY_RULE_ID}
+    ]
+    assert contributions == [1.0, 1.0]
+
+    class RejectBestContinuity:
+        def evaluate(self, _entry, track):
+            if track.id == 1:
+                return SelectionDecision.reject("BLOCKED_TRACK")
+            return SelectionDecision.allow()
+
+    hard_rule_selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(9),
+        continuity_settings=SelectionContinuitySettings(
+            ContinuityRuleSetting(True, 1.0),
+            ContinuityRuleSetting(True, 1.0),
+        ),
+    )
+
+    hard_rule_selected = hard_rule_selector.select(TrackSelectionService((RejectBestContinuity(),)))
+
+    assert hard_rule_selected is not None and hard_rule_selected.id == 2
 
 
 def test_disabled_play_count_rule_leaves_selection_to_secondary_score(tmp_path: Path) -> None:
@@ -323,6 +454,11 @@ def test_metadata_snapshot_is_behavior_neutral_and_does_not_change_rng_calls(
     assert repository.snapshot_calls == 1
     assert active_random.choice_calls == legacy_random.choice_calls
     assert active.last_rationale == legacy.last_rationale
+    assert active.last_rationale is not None
+    assert all(
+        rule.rule_id not in {BPM_CONTINUITY_RULE_ID, ENERGY_CONTINUITY_RULE_ID}
+        for rule in active.last_rationale.rule_evaluations
+    )
 
 
 def test_same_seed_and_input_produce_same_scored_selection(tmp_path: Path) -> None:

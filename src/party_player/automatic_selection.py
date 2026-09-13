@@ -55,6 +55,12 @@ from party_player.selection_metadata import (
     neutral_catalog_snapshot,
 )
 from party_player.selection_sequence import SelectionSequenceContext
+from party_player.selection_continuity import (
+    BpmContinuityRule,
+    DEFAULT_SELECTION_CONTINUITY_SETTINGS,
+    EnergyContinuityRule,
+    SelectionContinuitySettings,
+)
 from party_player.enums import EmptyQueuePolicy
 
 
@@ -179,6 +185,7 @@ class AutomaticSelectionService:
         randomizer: random.Random | None = None,
         emergency_playlist: LocalEmergencyPlaylistService | None = None,
         rule_settings: SelectionRuleSettingsRepository | None = None,
+        continuity_settings: SelectionContinuitySettings | None = None,
     ) -> None:
         self._tracks = tracks
         self._history = history
@@ -186,6 +193,7 @@ class AutomaticSelectionService:
         self._random = randomizer or random.Random()
         self._emergency_playlist = emergency_playlist
         self._rule_settings = rule_settings
+        self._continuity_settings = continuity_settings or DEFAULT_SELECTION_CONTINUITY_SETTINGS
         self.last_relaxation_stage = "NONE"
         self.last_rationale: SelectionRationale | None = None
         self._selection_lock = Lock()
@@ -225,6 +233,7 @@ class AutomaticSelectionService:
             recent_track_limit=self.recent_track_limit,
             randomizer=preview_random,
             emergency_playlist=None,
+            continuity_settings=self._continuity_settings,
         )
         preview_id = uuid.uuid4().hex
         steps: list[SelectionPreviewStep] = []
@@ -333,7 +342,6 @@ class AutomaticSelectionService:
         history: _AutomaticHistorySource | _PreviewHistory,
         sequence: SelectionSequenceContext,
     ) -> Track | None:
-        del metadata  # A1 loads one immutable moment but intentionally applies no rule.
         context_id = uuid.uuid4().hex
         summaries: list[CandidateEvaluation] = []
         evaluated_count = 0
@@ -349,6 +357,16 @@ class AutomaticSelectionService:
         if settings.rating.enabled:
             soft_rules.append(RatingScoringRule(settings.rating.weight))
         scorer = CandidateScorer(tuple(soft_rules))
+        continuity_rules: list[ExecutableSelectionRule] = []
+        if self._continuity_settings.bpm.enabled:
+            continuity_rules.append(
+                BpmContinuityRule(metadata, self._continuity_settings.bpm.weight)
+            )
+        if self._continuity_settings.energy.enabled:
+            continuity_rules.append(
+                EnergyContinuityRule(metadata, self._continuity_settings.energy.weight)
+            )
+        continuity_scorer = CandidateScorer(tuple(continuity_rules))
         stages: tuple[tuple[str, frozenset[str]], ...] = (
             ("STRICT", frozenset()),
             ("ARTIST_DISTANCE", frozenset({"ARTIST_REPETITION"})),
@@ -434,6 +452,25 @@ class AutomaticSelectionService:
             for track, evaluation in eligible:
                 play_count = max(0, counts.get(track.id, 0))
                 in_primary_group = primary_play_count is None or play_count == primary_play_count
+                if in_primary_group and continuity_rules:
+                    synthetic = QueueEntry(
+                        -track.id,
+                        track.id,
+                        0,
+                        QueueStatus.WAITING,
+                        source=QueueSource.AUTOMATIC,
+                    )
+                    ranked_context = SelectionContext(
+                        context_id,
+                        stage,
+                        relaxed_codes,
+                        sequence,
+                    )
+                    evaluation = continuity_scorer.evaluate(
+                        SelectionRuleInput.from_values(synthetic, track),
+                        ranked_context,
+                        evaluation,
+                    )
                 ranked_evaluation = replace(
                     evaluation,
                     play_count=play_count,

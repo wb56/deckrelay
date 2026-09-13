@@ -145,11 +145,12 @@ class CandidateScorer:
         if not hard_evaluation.accepted:
             return hard_evaluation
         evaluations = tuple(rule.evaluate_rule(rule_input, context) for rule in self._rules)
-        total_score = sum(
+        score_delta = sum(
             evaluation.score_delta
             for evaluation in evaluations
             if evaluation.result_code is RuleOutcome.SCORE_DELTA
         )
+        total_score = hard_evaluation.total_score + score_delta
         return replace(
             hard_evaluation,
             rules=(*hard_evaluation.rules, *evaluations),
