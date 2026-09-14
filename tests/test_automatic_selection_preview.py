@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import random
 import sqlite3
@@ -12,6 +12,7 @@ import pytest
 
 from party_player.automatic_selection import AutomaticSelectionHistory, AutomaticSelectionService
 from party_player.models import Track
+from party_player.metadata_rules import MetadataReviewStatus, MetadataSource
 from party_player.repositories.track_repository import TrackRepository
 from party_player.repetition_policy import PersistentRepetitionService
 from party_player.selection_preview import SelectionPreviewCompletion
@@ -19,8 +20,16 @@ from party_player.selection_decision import CandidateDecisionCategory, Selection
 from party_player.selection_continuity import (
     BPM_CONTINUITY_RULE_ID,
     ENERGY_CONTINUITY_RULE_ID,
+    GENRE_DIVERSITY_RULE_ID,
+    MOOD_CONTINUITY_RULE_ID,
     ContinuityRuleSetting,
     SelectionContinuitySettings,
+)
+from party_player.selection_metadata import (
+    SelectionMetadataCatalogSnapshot,
+    missing_metadata_snapshot,
+    selection_metadata_terms,
+    selection_metadata_value,
 )
 from party_player.track_selection import RepetitionService, SelectionDecision, TrackSelectionService
 from party_player.track_suitability import (
@@ -272,6 +281,83 @@ def test_preview_continuity_uses_previous_preview_track_and_one_snapshot(
     assert selector.last_rationale is None
 
 
+def test_preview_genre_and_mood_use_previous_preview_track_and_one_snapshot() -> None:
+    def metadata(
+        track_id: int,
+        main_genre: str,
+        additional_genre: str,
+        mood: str,
+    ):
+        return replace(
+            missing_metadata_snapshot(track_id),
+            main_genre=selection_metadata_value(
+                main_genre,
+                source=MetadataSource.MANUAL_CONFIRMATION,
+                confidence=None,
+                review_status=MetadataReviewStatus.CONFIRMED_WITH_VALUE,
+            ),
+            additional_genres=selection_metadata_terms(
+                (additional_genre,),
+                source=MetadataSource.MANUAL_CONFIRMATION,
+                confidence=None,
+                review_status=MetadataReviewStatus.CONFIRMED_WITH_VALUE,
+            ),
+            moods=selection_metadata_terms(
+                (mood,),
+                source=MetadataSource.MANUAL_CONFIRMATION,
+                confidence=None,
+                review_status=MetadataReviewStatus.CONFIRMED_WITH_VALUE,
+            ),
+        )
+
+    @dataclass
+    class SnapshotTracks:
+        calls: int = 0
+
+        def automatic_selection_snapshot(self, previous_track_id=None):
+            self.calls += 1
+            return (
+                (_track(1, "A"), _track(2, "B"), _track(3, "C")),
+                SelectionMetadataCatalogSnapshot(
+                    (
+                        metadata(1, "Rock", "rock", "ruhig"),
+                        metadata(2, "House", "dance", "energetisch"),
+                        metadata(3, "Jazz", "jazz", "ruhig"),
+                    )
+                ),
+            )
+
+    tracks = SnapshotTracks()
+    history = _History({3: 1}, [3])
+    selector = AutomaticSelectionService(
+        tracks,
+        history,
+        recent_track_limit=0,
+        randomizer=random.Random(2),
+        continuity_settings=SelectionContinuitySettings(
+            genre=ContinuityRuleSetting(True, 1.0),
+            mood=ContinuityRuleSetting(True, 1.0),
+        ),
+    )
+
+    preview = selector.preview(TrackSelectionService(), 2)
+
+    assert [step.track_id for step in preview.steps] == [1, 2]
+    assert tracks.calls == 1
+    second_rules = {
+        rule.rule_id: rule
+        for rule in preview.steps[1].rationale.rule_evaluations
+        if rule.rule_id in {GENRE_DIVERSITY_RULE_ID, MOOD_CONTINUITY_RULE_ID}
+    }
+    genre_facts = dict(second_rules[GENRE_DIVERSITY_RULE_ID].facts)
+    assert genre_facts["previous_main_genre"] == "rock"
+    assert genre_facts["candidate_main_genre"] == "house"
+    assert second_rules[MOOD_CONTINUITY_RULE_ID].reason_code == "NO_MOOD_OVERLAP"
+    assert history.counts == {3: 1}
+    assert history.recent == [3]
+    assert selector.last_rationale is None
+
+
 def test_preview_keeps_productive_last_state_and_builds_consistent_rationales() -> None:
     selector = AutomaticSelectionService(
         _Tracks((_track(1, "A"), _track(2, "B"))),
@@ -343,8 +429,10 @@ def test_real_selection_and_complete_preview_each_use_three_data_queries(
         recent_track_limit=0,
         randomizer=random.Random(4),
         continuity_settings=SelectionContinuitySettings(
-            ContinuityRuleSetting(True, 1.0),
-            ContinuityRuleSetting(True, 1.0),
+            bpm=ContinuityRuleSetting(True, 1.0),
+            energy=ContinuityRuleSetting(True, 1.0),
+            genre=ContinuityRuleSetting(True, 1.0),
+            mood=ContinuityRuleSetting(True, 1.0),
         ),
     )
 

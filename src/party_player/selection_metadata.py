@@ -143,7 +143,7 @@ def selection_metadata_terms(
     seen: set[str] = set()
     for value in values:
         text = " ".join(value.split())
-        identity = text.casefold()
+        identity = normalize_selection_term(value)
         if text and identity not in seen:
             seen.add(identity)
             normalized.append(text)
@@ -163,6 +163,11 @@ def selection_metadata_terms(
         review_status,
         disposition,
     )
+
+
+def normalize_selection_term(value: str) -> str:
+    """Return the shared conservative identity for genre and mood terms."""
+    return " ".join(value.split()).casefold()
 
 
 def neutral_catalog_snapshot(tracks: tuple[Track, ...]) -> SelectionMetadataCatalogSnapshot:

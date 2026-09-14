@@ -14,6 +14,7 @@ from party_player.metadata_rules import MetadataReviewStatus, MetadataSource
 from party_player.repositories.track_repository import TrackRepository
 from party_player.selection_metadata import (
     SelectionMetadataDisposition,
+    normalize_selection_term,
     selection_metadata_terms,
     selection_metadata_value,
 )
@@ -127,6 +128,7 @@ def test_terms_are_normalized_deduplicated_and_immutable() -> None:
     )
 
     assert terms.values == ("Deep House", "Ruhig")
+    assert normalize_selection_term("  Classic   ROCK ") == "classic rock"
     with pytest.raises(FrozenInstanceError):
         terms.values = ()  # type: ignore[misc]
 

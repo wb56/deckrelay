@@ -41,6 +41,8 @@ from party_player.selection_source import SelectionSourceClass, SourceResolution
 from party_player.selection_continuity import (
     BPM_CONTINUITY_RULE_ID,
     ENERGY_CONTINUITY_RULE_ID,
+    GENRE_DIVERSITY_RULE_ID,
+    MOOD_CONTINUITY_RULE_ID,
     ContinuityRuleSetting,
     SelectionContinuitySettings,
 )
@@ -308,6 +310,98 @@ def test_bpm_and_energy_contributions_add_to_secondary_score(tmp_path: Path) -> 
     assert hard_rule_selected is not None and hard_rule_selected.id == 2
 
 
+def test_all_metadata_and_rating_contributions_add_without_overriding_hard_rules(
+    tmp_path: Path,
+) -> None:
+    database, session_id = _database(tmp_path / "all-continuity-secondary.db")
+    _played(PartyPlayerRepository(database), session_id, 3, datetime(2026, 7, 27, 12, 0))
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE tracks SET genre='Rock', bpm=105, energy=60, rating=4 WHERE id=1"
+        )
+        connection.execute(
+            "UPDATE tracks SET genre='House', bpm=130, energy=100, rating=3 WHERE id=2"
+        )
+        connection.execute(
+            "UPDATE tracks SET genre='Jazz', bpm=100, energy=50, rating=3 WHERE id=3"
+        )
+        connection.executemany(
+            """INSERT INTO track_metadata_field_state
+               (track_id,field_key,source_type,confidence,review_status)
+               VALUES (?,?,'MANUAL_CONFIRMATION',NULL,'CONFIRMED_WITH_VALUE')""",
+            [
+                (track_id, field)
+                for track_id in (1, 2, 3)
+                for field in ("main_genre", "additional_genres", "bpm", "energy", "moods")
+            ],
+        )
+        connection.executemany(
+            """INSERT INTO metadata_terms
+               (id,term_type,normalized_key,display_name)
+               VALUES (?,?,?,?)""",
+            [
+                (1, "ADDITIONAL_GENRE", "rock", "Rock"),
+                (2, "ADDITIONAL_GENRE", "house", "House"),
+                (3, "ADDITIONAL_GENRE", "jazz", "Jazz"),
+                (4, "MOOD", "ruhig", "Ruhig"),
+                (5, "MOOD", "energetisch", "Energetisch"),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO track_metadata_terms(track_id,term_id) VALUES (?,?)",
+            [(1, 1), (1, 4), (2, 2), (2, 5), (3, 3), (3, 4)],
+        )
+    settings = SelectionContinuitySettings(
+        bpm=ContinuityRuleSetting(True, 1.0),
+        energy=ContinuityRuleSetting(True, 1.0),
+        genre=ContinuityRuleSetting(True, 1.0),
+        mood=ContinuityRuleSetting(True, 1.0),
+    )
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(9),
+        continuity_settings=settings,
+    )
+
+    selected = selector.select(TrackSelectionService())
+
+    assert selected is not None and selected.id == 1
+    assert selector.last_rationale is not None
+    selected_evaluation = next(
+        item
+        for item in selector.last_rationale.evaluated_candidates
+        if item.candidate.track_id == 1
+    )
+    assert selected_evaluation.secondary_score == 4.0
+    contributions = {rule.rule_id: rule.score_delta for rule in selected_evaluation.rules}
+    assert contributions[BPM_CONTINUITY_RULE_ID] == 1.0
+    assert contributions[ENERGY_CONTINUITY_RULE_ID] == 1.0
+    assert contributions[GENRE_DIVERSITY_RULE_ID] == 0.0
+    assert contributions[MOOD_CONTINUITY_RULE_ID] == 1.0
+
+    class RejectBestMetadata:
+        def evaluate(self, _entry, track):
+            return (
+                SelectionDecision.reject("BLOCKED_TRACK")
+                if track.id == 1
+                else SelectionDecision.allow()
+            )
+
+    blocked_selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(9),
+        continuity_settings=settings,
+    )
+
+    blocked = blocked_selector.select(TrackSelectionService((RejectBestMetadata(),)))
+
+    assert blocked is not None and blocked.id == 2
+
+
 def test_disabled_play_count_rule_leaves_selection_to_secondary_score(tmp_path: Path) -> None:
     database, session_id = _database(tmp_path / "disabled-play-rank.db")
     repository = PartyPlayerRepository(database)
@@ -456,7 +550,13 @@ def test_metadata_snapshot_is_behavior_neutral_and_does_not_change_rng_calls(
     assert active.last_rationale == legacy.last_rationale
     assert active.last_rationale is not None
     assert all(
-        rule.rule_id not in {BPM_CONTINUITY_RULE_ID, ENERGY_CONTINUITY_RULE_ID}
+        rule.rule_id
+        not in {
+            BPM_CONTINUITY_RULE_ID,
+            ENERGY_CONTINUITY_RULE_ID,
+            GENRE_DIVERSITY_RULE_ID,
+            MOOD_CONTINUITY_RULE_ID,
+        }
         for rule in active.last_rationale.rule_evaluations
     )
 
