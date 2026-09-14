@@ -59,6 +59,8 @@ from party_player.selection_continuity import (
     BpmContinuityRule,
     DEFAULT_SELECTION_CONTINUITY_SETTINGS,
     EnergyContinuityRule,
+    GenreDiversityRule,
+    MoodContinuityRule,
     SelectionContinuitySettings,
 )
 from party_player.enums import EmptyQueuePolicy
@@ -365,6 +367,14 @@ class AutomaticSelectionService:
         if self._continuity_settings.energy.enabled:
             continuity_rules.append(
                 EnergyContinuityRule(metadata, self._continuity_settings.energy.weight)
+            )
+        if self._continuity_settings.genre.enabled:
+            continuity_rules.append(
+                GenreDiversityRule(metadata, self._continuity_settings.genre.weight)
+            )
+        if self._continuity_settings.mood.enabled:
+            continuity_rules.append(
+                MoodContinuityRule(metadata, self._continuity_settings.mood.weight)
             )
         continuity_scorer = CandidateScorer(tuple(continuity_rules))
         stages: tuple[tuple[str, frozenset[str]], ...] = (
