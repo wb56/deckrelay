@@ -57,7 +57,7 @@ from party_player.selection_metadata import (
 from party_player.selection_sequence import SelectionSequenceContext
 from party_player.selection_continuity import (
     BpmContinuityRule,
-    DEFAULT_SELECTION_CONTINUITY_SETTINGS,
+    ContinuityRuleSetting,
     EnergyContinuityRule,
     GenreDiversityRule,
     MoodContinuityRule,
@@ -195,7 +195,7 @@ class AutomaticSelectionService:
         self._random = randomizer or random.Random()
         self._emergency_playlist = emergency_playlist
         self._rule_settings = rule_settings
-        self._continuity_settings = continuity_settings or DEFAULT_SELECTION_CONTINUITY_SETTINGS
+        self._continuity_settings = continuity_settings
         self.last_relaxation_stage = "NONE"
         self.last_rationale: SelectionRationale | None = None
         self._selection_lock = Lock()
@@ -335,6 +335,26 @@ class AutomaticSelectionService:
         recent = history.recent_track_ids(1)
         return next(iter(recent), None)
 
+    def _resolved_continuity_settings(
+        self, settings: SelectionScoringSettings
+    ) -> SelectionContinuitySettings:
+        if self._continuity_settings is not None:
+            return self._continuity_settings
+        return SelectionContinuitySettings(
+            bpm=ContinuityRuleSetting(
+                settings.bpm_continuity.enabled, settings.bpm_continuity.weight
+            ),
+            energy=ContinuityRuleSetting(
+                settings.energy_continuity.enabled, settings.energy_continuity.weight
+            ),
+            genre=ContinuityRuleSetting(
+                settings.genre_diversity.enabled, settings.genre_diversity.weight
+            ),
+            mood=ContinuityRuleSetting(
+                settings.mood_continuity.enabled, settings.mood_continuity.weight
+            ),
+        )
+
     def _select(
         self,
         rules: TrackSelectionService,
@@ -360,22 +380,17 @@ class AutomaticSelectionService:
             soft_rules.append(RatingScoringRule(settings.rating.weight))
         scorer = CandidateScorer(tuple(soft_rules))
         continuity_rules: list[ExecutableSelectionRule] = []
-        if self._continuity_settings.bpm.enabled:
+        continuity_settings = self._resolved_continuity_settings(settings)
+        if continuity_settings.bpm.enabled:
+            continuity_rules.append(BpmContinuityRule(metadata, continuity_settings.bpm.weight))
+        if continuity_settings.energy.enabled:
             continuity_rules.append(
-                BpmContinuityRule(metadata, self._continuity_settings.bpm.weight)
+                EnergyContinuityRule(metadata, continuity_settings.energy.weight)
             )
-        if self._continuity_settings.energy.enabled:
-            continuity_rules.append(
-                EnergyContinuityRule(metadata, self._continuity_settings.energy.weight)
-            )
-        if self._continuity_settings.genre.enabled:
-            continuity_rules.append(
-                GenreDiversityRule(metadata, self._continuity_settings.genre.weight)
-            )
-        if self._continuity_settings.mood.enabled:
-            continuity_rules.append(
-                MoodContinuityRule(metadata, self._continuity_settings.mood.weight)
-            )
+        if continuity_settings.genre.enabled:
+            continuity_rules.append(GenreDiversityRule(metadata, continuity_settings.genre.weight))
+        if continuity_settings.mood.enabled:
+            continuity_rules.append(MoodContinuityRule(metadata, continuity_settings.mood.weight))
         continuity_scorer = CandidateScorer(tuple(continuity_rules))
         stages: tuple[tuple[str, frozenset[str]], ...] = (
             ("STRICT", frozenset()),

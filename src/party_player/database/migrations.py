@@ -4,7 +4,7 @@ import sqlite3
 
 from party_player.database.connection import Database
 
-LATEST_SCHEMA_VERSION = 42
+LATEST_SCHEMA_VERSION = 43
 
 
 def migrate(database: Database) -> None:
@@ -191,6 +191,10 @@ def migrate(database: Database) -> None:
         if version < 42:
             _migrate_to_v42(connection)
             _set_version(connection, 42)
+            version = 42
+        if version < 43:
+            _migrate_to_v43(connection)
+            _set_version(connection, 43)
 
 
 def _migrate_to_v1(connection: sqlite3.Connection) -> None:
@@ -1738,4 +1742,18 @@ def _migrate_to_v42(connection: sqlite3.Connection) -> None:
             (rule_id, config_version, enabled, weight)
             VALUES ('selection.rating', 1, 1, 1.0);
         """
+    )
+
+
+def _migrate_to_v43(connection: sqlite3.Connection) -> None:
+    """Seed disabled metadata-continuity settings without changing existing rows."""
+    connection.executemany(
+        """INSERT OR IGNORE INTO selection_rule_settings
+           (rule_id, config_version, enabled, weight) VALUES (?, 1, 0, 1.0)""",
+        (
+            ("selection.genre_diversity",),
+            ("selection.bpm_continuity",),
+            ("selection.energy_continuity",),
+            ("selection.mood_continuity",),
+        ),
     )

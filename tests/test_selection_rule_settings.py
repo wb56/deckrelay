@@ -3,12 +3,15 @@
 from datetime import datetime, timedelta
 from pathlib import Path
 import random
+import sqlite3
+from typing import Any
 
 import pytest
 
 from party_player.automatic_selection import AutomaticSelectionHistory, AutomaticSelectionService
 from party_player.database.connection import Database
 from party_player.database.migrations import LATEST_SCHEMA_VERSION, migrate
+from party_player.database import migrations
 from party_player.enums import CompletionStatus
 from party_player.models import Track
 from party_player.repository import PartyPlayerRepository
@@ -17,8 +20,15 @@ from party_player.selection_rule_settings import (
     DEFAULT_SELECTION_SCORING_SETTINGS,
     PLAY_COUNT_RULE_ID,
     RATING_RULE_ID,
+    SelectionScoringSettings,
     SelectionRuleSettingsRepository,
     SoftRuleSetting,
+)
+from party_player.selection_continuity import (
+    BPM_CONTINUITY_RULE_ID,
+    ENERGY_CONTINUITY_RULE_ID,
+    GENRE_DIVERSITY_RULE_ID,
+    MOOD_CONTINUITY_RULE_ID,
 )
 from party_player.track_selection import SelectionDecision, TrackSelectionService
 from party_player.selection_decision import RuleOutcome
@@ -52,12 +62,19 @@ def _record_play(database: Database, session_id: int, track_id: int) -> None:
     )
 
 
-def test_v42_migration_seeds_compatible_defaults_and_is_idempotent(tmp_path: Path) -> None:
+def test_v43_migration_adds_disabled_metadata_rules_without_overwriting(tmp_path: Path) -> None:
     database = Database(tmp_path / "upgrade.db")
     migrate(database)
     with database.connect() as connection:
-        connection.execute("UPDATE schema_version SET version = 41")
-        connection.execute("DROP TABLE selection_rule_settings")
+        connection.execute("UPDATE schema_version SET version = 42")
+        connection.execute(
+            "UPDATE selection_rule_settings SET enabled=0, weight=25 WHERE rule_id=?",
+            (PLAY_COUNT_RULE_ID,),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO selection_rule_settings VALUES (?, 1, 1, 2, CURRENT_TIMESTAMP)",
+            (GENRE_DIVERSITY_RULE_ID,),
+        )
 
     migrate(database)
     migrate(database)
@@ -68,11 +85,54 @@ def test_v42_migration_seeds_compatible_defaults_and_is_idempotent(tmp_path: Pat
             """SELECT rule_id, config_version, enabled, weight
                FROM selection_rule_settings ORDER BY rule_id"""
         ).fetchall()
-    assert version == LATEST_SCHEMA_VERSION == 42
+    assert version == LATEST_SCHEMA_VERSION == 43
     assert [tuple(row) for row in rows] == [
-        (PLAY_COUNT_RULE_ID, 1, 1, 10.0),
+        (BPM_CONTINUITY_RULE_ID, 1, 0, 1.0),
+        (ENERGY_CONTINUITY_RULE_ID, 1, 0, 1.0),
+        (GENRE_DIVERSITY_RULE_ID, 1, 1, 2.0),
+        (MOOD_CONTINUITY_RULE_ID, 1, 0, 1.0),
+        (PLAY_COUNT_RULE_ID, 1, 0, 25.0),
         (RATING_RULE_ID, 1, 1, 1.0),
     ]
+
+
+def test_v43_migration_rolls_back_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(tmp_path / "rollback.db")
+    migrate(database)
+    new_ids = (
+        GENRE_DIVERSITY_RULE_ID,
+        BPM_CONTINUITY_RULE_ID,
+        ENERGY_CONTINUITY_RULE_ID,
+        MOOD_CONTINUITY_RULE_ID,
+    )
+    with database.connect() as connection:
+        connection.execute("UPDATE schema_version SET version = 42")
+        connection.executemany(
+            "DELETE FROM selection_rule_settings WHERE rule_id=?",
+            ((rule_id,) for rule_id in new_ids),
+        )
+
+    def fail(connection: Any) -> None:
+        connection.execute(
+            "INSERT INTO selection_rule_settings (rule_id, config_version, enabled, weight) "
+            "VALUES (?, 1, 0, 1)",
+            (GENRE_DIVERSITY_RULE_ID,),
+        )
+        raise sqlite3.OperationalError("simulated")
+
+    monkeypatch.setattr(migrations, "_migrate_to_v43", fail)
+    with pytest.raises(sqlite3.OperationalError):
+        migrate(database)
+    with database.connect() as connection:
+        version = connection.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+        count = connection.execute(
+            "SELECT COUNT(*) FROM selection_rule_settings WHERE rule_id IN (?, ?, ?, ?)",
+            new_ids,
+        ).fetchone()[0]
+    assert version == 42
+    assert count == 0
 
 
 def test_repository_validates_writes_and_falls_back_per_damaged_row(tmp_path: Path) -> None:
@@ -112,6 +172,64 @@ def test_repository_validates_writes_and_falls_back_per_damaged_row(tmp_path: Pa
             "DELETE FROM selection_rule_settings WHERE rule_id=?", (PLAY_COUNT_RULE_ID,)
         )
     assert repository.load() == DEFAULT_SELECTION_SCORING_SETTINGS
+
+
+def test_repository_saves_all_six_rules_atomically(tmp_path: Path) -> None:
+    database, _ = _database(tmp_path / "atomic.db")
+    repository = SelectionRuleSettingsRepository(database)
+    changed = SelectionScoringSettings(
+        SoftRuleSetting(PLAY_COUNT_RULE_ID, False, 20.0),
+        SoftRuleSetting(RATING_RULE_ID, False, 0.5),
+        SoftRuleSetting(GENRE_DIVERSITY_RULE_ID, True, 0.5),
+        SoftRuleSetting(BPM_CONTINUITY_RULE_ID, True, 1.0),
+        SoftRuleSetting(ENERGY_CONTINUITY_RULE_ID, True, 2.0),
+        SoftRuleSetting(MOOD_CONTINUITY_RULE_ID, True, 1.0),
+    )
+
+    repository.save(changed)
+
+    assert repository.load() == changed
+    with database.connect() as connection:
+        connection.execute(
+            f"""CREATE TRIGGER reject_energy BEFORE UPDATE ON selection_rule_settings
+                WHEN NEW.rule_id = '{ENERGY_CONTINUITY_RULE_ID}' BEGIN
+                SELECT RAISE(ABORT, 'stop'); END"""
+        )
+    attempted = SelectionScoringSettings(
+        SoftRuleSetting(PLAY_COUNT_RULE_ID, True, 20.0),
+        SoftRuleSetting(RATING_RULE_ID, True, 0.5),
+        SoftRuleSetting(GENRE_DIVERSITY_RULE_ID, False, 0.5),
+        SoftRuleSetting(BPM_CONTINUITY_RULE_ID, False, 1.0),
+        SoftRuleSetting(ENERGY_CONTINUITY_RULE_ID, False, 2.0),
+        SoftRuleSetting(MOOD_CONTINUITY_RULE_ID, False, 1.0),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        repository.save(attempted)
+    assert repository.load() == changed
+
+
+def test_repository_loads_all_rules_with_one_select(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database, _ = _database(tmp_path / "one-select.db")
+    statements: list[str] = []
+    open_connection = database._open_connection
+
+    def traced_connection() -> sqlite3.Connection:
+        connection = open_connection()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(database, "_open_connection", traced_connection)
+
+    assert SelectionRuleSettingsRepository(database).load() == DEFAULT_SELECTION_SCORING_SETTINGS
+    selects = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT")
+        and "selection_rule_settings" in statement
+    ]
+    assert len(selects) == 1
 
 
 def test_defaults_preserve_play_count_dominance_and_rules_can_be_disabled(
@@ -184,6 +302,30 @@ def test_settings_load_once_for_real_selection_and_once_for_entire_preview(
     preview = selector.preview(TrackSelectionService(), 2)
     assert preview.achieved_depth == 2
     assert settings.calls == 2
+
+
+def test_persisted_continuity_setting_is_used_without_extra_settings_load(tmp_path: Path) -> None:
+    database, session_id = _database(tmp_path / "persisted-continuity.db")
+    _record_play(database, session_id, 2)
+    repository = SelectionRuleSettingsRepository(database)
+    repository.set(SoftRuleSetting(GENRE_DIVERSITY_RULE_ID, True, 2.0))
+    selector = AutomaticSelectionService(
+        TrackRepository(database),
+        AutomaticSelectionHistory(database),
+        recent_track_limit=0,
+        randomizer=random.Random(1),
+        rule_settings=repository,
+    )
+
+    assert selector.select(TrackSelectionService()) is not None
+    assert selector.last_rationale is not None
+    results = [
+        result
+        for result in selector.last_rationale.rule_evaluations
+        if result.rule_id == GENRE_DIVERSITY_RULE_ID
+    ]
+    assert results
+    assert all(dict(result.facts)["weight"] == 2.0 for result in results)
 
 
 def test_soft_settings_cannot_override_a_hard_exclusion(tmp_path: Path) -> None:

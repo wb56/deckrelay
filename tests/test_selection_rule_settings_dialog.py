@@ -10,12 +10,21 @@ from party_player.selection_rule_settings import (
     SelectionScoringSettings,
     SoftRuleSetting,
 )
+from party_player.selection_continuity import (
+    BPM_CONTINUITY_RULE_ID,
+    ENERGY_CONTINUITY_RULE_ID,
+    GENRE_DIVERSITY_RULE_ID,
+    MOOD_CONTINUITY_RULE_ID,
+)
 from party_player.ui.selection_rule_settings_dialog import (
+    STRENGTH_WEIGHTS,
     SelectionRuleFormValues,
     SelectionRuleSettingsDialog,
     form_values,
     selection_rule_dialog_dimensions,
+    strength_for_weight,
     validate_form,
+    weight_for_strength,
 )
 from party_player.ui import main_window
 from party_player.ui.main_window import MainWindow
@@ -99,6 +108,14 @@ class _Dialog:
         self._play_weight = _Value("10")
         self._rating_enabled = _Value(True)
         self._rating_weight = _Value("1")
+        self._genre_enabled = _Value(False)
+        self._bpm_enabled = _Value(False)
+        self._energy_enabled = _Value(False)
+        self._mood_enabled = _Value(False)
+        self._genre_strength = _Value("Normal")
+        self._bpm_strength = _Value("Normal")
+        self._energy_strength = _Value("Normal")
+        self._mood_strength = _Value("Normal")
         self._play_entry = _Widget()
         self._rating_entry = _Widget()
         self._play_effect = _Widget()
@@ -106,6 +123,8 @@ class _Dialog:
         self._play_error = _Widget()
         self._rating_error = _Widget()
         self._message = _Widget()
+        self._transition_error = _Widget()
+        self._transition_menus = (_Widget(), _Widget(), _Widget(), _Widget())
         self.closed = False
 
     def _current_values(self) -> SelectionRuleFormValues:
@@ -114,6 +133,14 @@ class _Dialog:
             str(self._play_weight.get()),
             bool(self._rating_enabled.get()),
             str(self._rating_weight.get()),
+            bool(self._genre_enabled.get()),
+            str(self._genre_strength.get()),
+            bool(self._bpm_enabled.get()),
+            str(self._bpm_strength.get()),
+            bool(self._energy_enabled.get()),
+            str(self._energy_strength.get()),
+            bool(self._mood_enabled.get()),
+            str(self._mood_strength.get()),
         )
 
     def _set_values(self, values: SelectionRuleFormValues) -> None:
@@ -121,6 +148,14 @@ class _Dialog:
         self._play_weight.set(values.play_count_weight)
         self._rating_enabled.set(values.rating_enabled)
         self._rating_weight.set(values.rating_weight)
+        self._genre_enabled.set(values.genre_enabled)
+        self._genre_strength.set(values.genre_strength)
+        self._bpm_enabled.set(values.bpm_enabled)
+        self._bpm_strength.set(values.bpm_strength)
+        self._energy_enabled.set(values.energy_enabled)
+        self._energy_strength.set(values.energy_strength)
+        self._mood_enabled.set(values.mood_enabled)
+        self._mood_strength.set(values.mood_strength)
         SelectionRuleSettingsDialog._refresh_enabled_state(cast(Any, self))
 
     def _refresh_effects(self) -> None:
@@ -162,8 +197,8 @@ def test_disabled_rules_make_only_their_weight_fields_inactive() -> None:
 
 
 def test_large_and_compact_dialog_sizes_remain_locally_scrollable_targets() -> None:
-    assert selection_rule_dialog_dimensions(False) == ((720, 690), (500, 430))
-    assert selection_rule_dialog_dimensions(True) == ((620, 620), (480, 420))
+    assert selection_rule_dialog_dimensions(False) == ((940, 740), (700, 500))
+    assert selection_rule_dialog_dimensions(True) == ((680, 660), (500, 430))
 
 
 @pytest.mark.parametrize(
@@ -186,6 +221,12 @@ def test_save_persists_all_values_together_and_cancel_does_not_save() -> None:
     cancelled = _Dialog(controller)
     saved._play_enabled.set(False)
     saved._rating_weight.set("0,5")
+    saved._genre_enabled.set(True)
+    saved._genre_strength.set("Niedrig")
+    saved._bpm_enabled.set(True)
+    saved._bpm_strength.set("Normal")
+    saved._energy_enabled.set(True)
+    saved._energy_strength.set("Hoch")
 
     SelectionRuleSettingsDialog._save(cast(Any, saved))
     cancelled._close()
@@ -194,6 +235,10 @@ def test_save_persists_all_values_together_and_cancel_does_not_save() -> None:
     settings = controller.saved[0]
     assert not settings.play_count.enabled
     assert settings.rating.weight == 0.5
+    assert settings.genre_diversity == SoftRuleSetting(GENRE_DIVERSITY_RULE_ID, True, 0.5)
+    assert settings.bpm_continuity == SoftRuleSetting(BPM_CONTINUITY_RULE_ID, True, 1.0)
+    assert settings.energy_continuity == SoftRuleSetting(ENERGY_CONTINUITY_RULE_ID, True, 2.0)
+    assert settings.mood_continuity == SoftRuleSetting(MOOD_CONTINUITY_RULE_ID, False, 1.0)
     assert saved.closed and cancelled.closed
 
 
@@ -218,3 +263,28 @@ def test_storage_error_keeps_dialog_open_and_previous_values_untouched() -> None
     assert not dialog.closed
     assert controller.saved == []
     assert "bisherigen Einstellungen bleiben erhalten" in dialog._message.text
+
+
+def test_transition_strengths_are_discrete_and_disabled_by_default() -> None:
+    values = form_values(SelectionScoringSettings())
+
+    assert STRENGTH_WEIGHTS == {"Niedrig": 0.5, "Normal": 1.0, "Hoch": 2.0}
+    assert not values.genre_enabled and values.genre_strength == "Normal"
+    assert not values.bpm_enabled and values.bpm_strength == "Normal"
+    assert not values.energy_enabled and values.energy_strength == "Normal"
+    assert not values.mood_enabled and values.mood_strength == "Normal"
+
+
+def test_valid_custom_persisted_weight_is_preserved_without_free_form_editor() -> None:
+    assert strength_for_weight(0.75) == "0.75"
+    assert weight_for_strength("0,75") == 0.75
+    values = form_values(
+        SelectionScoringSettings(
+            genre_diversity=SoftRuleSetting(GENRE_DIVERSITY_RULE_ID, True, 0.75)
+        )
+    )
+
+    result = validate_form(values)
+
+    assert result.settings is not None
+    assert result.settings.genre_diversity.weight == 0.75

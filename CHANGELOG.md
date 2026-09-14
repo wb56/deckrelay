@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Genre-, BPM-, Energie- und Stimmungsregeln können jetzt dauerhaft aktiviert und
+  in drei Stärken eingestellt werden; die Automatikvorschau trennt primäre
+  Abspielgruppe, sekundäre Bewertung und Gleichstand.
 - Die automatische Auswahl unterstützt optional Genre-Abwechslung und
   Stimmungsanschluss innerhalb der primären Abspielranggruppe.
 - Die automatische Auswahl unterstützt optional eine gewichtete BPM- und

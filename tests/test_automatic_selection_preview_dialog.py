@@ -1,6 +1,7 @@
 """Focused tests for the state-neutral automatic-preview GUI boundary."""
 
 from datetime import datetime
+from dataclasses import replace
 from threading import Thread, get_ident
 from typing import Any, cast
 
@@ -75,6 +76,10 @@ def _preview(
         total_score=10.0,
         decision_category=CandidateDecisionCategory.SELECTED,
         decision_reason_code=CandidateDecisionReason.SELECTED_HIGHEST_SCORE.value,
+        play_count=0,
+        primary_play_count=0,
+        in_primary_play_group=True,
+        secondary_score=10.0,
     )
     excluded = CandidateEvaluation(
         SelectionCandidate(-8, 8, QueueSource.AUTOMATIC, 0, 0, "Alternative", "Andere"),
@@ -94,6 +99,10 @@ def _preview(
         "STABLE",
         evaluated_candidate_count=2,
         decision_reason_code=CandidateDecisionReason.SELECTED_HIGHEST_SCORE.value,
+        primary_play_count=0,
+        primary_candidate_count=1,
+        secondary_score=10.0,
+        final_tie_candidate_count=1,
     )
     steps = (
         SelectionPreviewStep(
@@ -131,12 +140,73 @@ def test_successful_preview_has_readable_summary_and_bounded_details() -> None:
 
     assert "1. Interpret – Ein sehr langer Titel" in presentation.summary
     assert "Höchste Bewertung" in presentation.summary
-    assert "Gesamtscore: +10 Punkte" in presentation.detail
-    assert "Selten gespielt: +10 Punkte" in presentation.detail
-    assert "Keine gültige Bewertung vorhanden" in presentation.detail
+    assert "Primäre Abspielgruppe: mindestens 0 · Zugehörigkeit: ja" in presentation.detail
+    assert "Sekundärer Bewertungsscore: +10 Punkte" in presentation.detail
+    assert "Selten gespielt: Abspielhäufigkeit: +10 Punkte" in presentation.detail
+    assert "Titelbewertung: Metadaten unbekannt – keine Auswirkung" in presentation.detail
+    assert "Gesamtscore" not in presentation.detail
     assert "Titel ist vorübergehend gesperrt" in presentation.detail
     assert "selection." not in presentation.detail
     assert "PLAY_COUNT_SCORE" not in presentation.detail
+
+
+def test_preview_explains_active_continuity_rules_and_real_tie_only() -> None:
+    step = _preview().steps[0]
+    selected = next(
+        item
+        for item in step.rationale.evaluated_candidates
+        if item.decision_category is CandidateDecisionCategory.SELECTED
+    )
+    rules = (
+        RuleEvaluation(
+            "selection.bpm_continuity",
+            1,
+            RuleKind.SOFT_WEIGHT,
+            RuleOutcome.SCORE_DELTA,
+            "BPM_DISTANCE",
+            r"G:\private\must-not-appear",
+            "STRICT",
+            facts=(("distance", 6.0),),
+            score_delta=0.9,
+        ),
+        RuleEvaluation(
+            "selection.energy_continuity",
+            1,
+            RuleKind.SOFT_WEIGHT,
+            RuleOutcome.UNKNOWN_METADATA,
+            "METADATA_UNKNOWN",
+            "untrusted comment",
+            "STRICT",
+        ),
+        RuleEvaluation(
+            "selection.mood_continuity",
+            1,
+            RuleKind.SOFT_WEIGHT,
+            RuleOutcome.SCORE_DELTA,
+            "MOOD_OVERLAP",
+            "untrusted mood detail",
+            "STRICT",
+            facts=(("common_terms", r"G:\private\mood"),),
+            score_delta=0.5,
+        ),
+    )
+    explained = replace(selected, rules=rules, secondary_score=0.9, total_score=0.9)
+    rationale = replace(
+        step.rationale,
+        evaluated_candidates=(explained,),
+        secondary_score=0.9,
+        final_tie_candidate_count=2,
+    )
+
+    detail = present_preview_step(replace(step, rationale=rationale)).detail
+
+    assert "BPM-Abstand 6 BPM: +0.9 Punkte" in detail
+    assert "Energie-Kontinuität: Metadaten unbekannt – keine Auswirkung" in detail
+    assert "Gemeinsame Stimmung: bestätigte Stimmung: +0.5 Punkte" in detail
+    assert "Gleichstandsentscheidung zwischen 2 gleichrangigen Finalisten" in detail
+    assert detail.count("BPM-Kontinuität") == 1
+    assert "G:\\private" not in detail
+    assert "untrusted comment" not in detail
 
 
 def test_long_list_text_is_shortened_while_details_keep_the_full_title() -> None:
