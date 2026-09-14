@@ -8,7 +8,6 @@ import customtkinter as ctk  # type: ignore[import-untyped]
 from party_player.selection_decision import (
     CandidateDecisionCategory,
     CandidateEvaluation,
-    RuleKind,
     RuleOutcome,
 )
 from party_player.selection_preview import (
@@ -73,6 +72,16 @@ _DECISION_TEXT = {
     "SELECTED_RNG_TIE_BREAK": "Zufallsentscheidung zwischen vollständig gleichwertigen Titeln",
     "SELECTED_EMERGENCY_ORDER": "Reihenfolge der Notfallauswahl",
     "SELECTED_QUEUE_PRIORITY": "Priorität der Warteschlange",
+    "SELECTED_HIGHEST_SECONDARY_SCORE": "Höchste sekundäre Bewertung in der Primärgruppe",
+}
+
+_RULE_LABELS = {
+    "selection.play_count": "Selten gespielt",
+    "selection.rating": "Titelbewertung",
+    "selection.genre_diversity": "Genre-Abwechslung",
+    "selection.bpm_continuity": "BPM-Kontinuität",
+    "selection.energy_continuity": "Energie-Kontinuität",
+    "selection.mood_continuity": "Stimmungsanschluss",
 }
 
 _SOURCE_TEXT = {
@@ -179,16 +188,17 @@ def _detail_text(
         f"Hauptgrund: {reason}",
     ]
     if selected is not None:
-        lines.append(f"Gesamtscore: {selected.total_score:+g} Punkte")
-        score_rules = [
-            rule
-            for rule in selected.rules
-            if rule.rule_kind is RuleKind.SOFT_WEIGHT
-            and rule.result_code is RuleOutcome.SCORE_DELTA
-        ]
-        if score_rules:
+        lines.extend(_selection_rank_text(rationale, selected))
+        by_rule = {rule.rule_id: rule for rule in selected.rules if rule.rule_id in _RULE_LABELS}
+        soft_rules = list(by_rule.values())
+        effective = [rule for rule in soft_rules if rule.score_delta != 0.0]
+        neutral = [rule for rule in soft_rules if rule.score_delta == 0.0]
+        if effective:
             lines.append("\nWirksame Bewertungen:")
-            lines.extend(f"• {rule.reason}: {rule.score_delta:+g} Punkte" for rule in score_rules)
+            lines.extend(f"• {_rule_text(rule)}" for rule in effective)
+        if neutral:
+            lines.append("\nRegeln ohne Auswirkung:")
+            lines.extend(f"• {_rule_text(rule)}" for rule in neutral)
         relaxed = [
             (
                 f"Bedienerausnahme: {rule.reason}"
@@ -201,14 +211,6 @@ def _detail_text(
         if relaxed:
             lines.append("\nGelockerte oder übersteuerte Regeln:")
             lines.extend(f"• {text}" for text in relaxed)
-        missing = [
-            rule.reason
-            for rule in selected.rules
-            if rule.result_code is RuleOutcome.UNKNOWN_METADATA
-        ]
-        if missing:
-            lines.append("\nFehlende Metadaten:")
-            lines.extend(f"• {text}" for text in missing)
     alternatives = [
         candidate.reason
         for candidate in rationale.evaluated_candidates
@@ -222,6 +224,77 @@ def _detail_text(
             f"\nWeitere {rationale.omitted_candidate_count} Kandidatenauswertungen wurden ausgeblendet."
         )
     return "\n".join(lines)
+
+
+def _selection_rank_text(rationale: Any, selected: CandidateEvaluation) -> list[str]:
+    play_count = selected.play_count
+    primary = selected.primary_play_count
+    lines = [f"Abspielzahl: {play_count if play_count is not None else 'nicht verfügbar'}"]
+    if primary is None:
+        lines.append("Primäre Abspielgruppe: Abspielregel nicht aktiv")
+    else:
+        membership = "ja" if selected.in_primary_play_group else "nein"
+        lines.append(f"Primäre Abspielgruppe: mindestens {primary} · Zugehörigkeit: {membership}")
+    lines.append(f"Sekundärer Bewertungsscore: {selected.secondary_score:+g} Punkte")
+    if rationale.final_tie_candidate_count > 1:
+        lines.append(
+            f"Gleichstandsentscheidung zwischen {rationale.final_tie_candidate_count} "
+            "gleichrangigen Finalisten"
+        )
+    return lines
+
+
+def _fact(rule: Any, name: str) -> str | int | float | bool | None:
+    return dict(rule.facts).get(name)
+
+
+def _number_fact(rule: Any, name: str) -> str:
+    value = _fact(rule, name)
+    return f"{value:g}" if isinstance(value, (int, float)) and not isinstance(value, bool) else "?"
+
+
+def _safe_term_fact(rule: Any, name: str) -> str:
+    value = _fact(rule, name)
+    if (
+        isinstance(value, str)
+        and value
+        and len(value) <= 80
+        and value.isprintable()
+        and not any(marker in value for marker in ("\\", "/", ":"))
+    ):
+        return value
+    return "bestätigte Stimmung"
+
+
+def _rule_text(rule: Any) -> str:
+    label = _RULE_LABELS[rule.rule_id]
+    if rule.reason_code == "PREDECESSOR_MISSING":
+        return f"{label}: Kein vorheriger Titel – Regel nicht anwendbar"
+    if rule.reason_code in {"METADATA_UNKNOWN", "RATING_UNKNOWN", "RATING_INVALID"}:
+        return f"{label}: Metadaten unbekannt – keine Auswirkung"
+    if rule.reason_code == "ZERO_WEIGHT":
+        return f"{label}: Gewichtung 0 – keine Auswirkung"
+    if rule.reason_code == "MAIN_GENRE_REPEATED":
+        detail = "Gleiches Hauptgenre wie der vorherige Titel"
+    elif rule.reason_code == "BPM_DISTANCE":
+        detail = f"BPM-Abstand {_number_fact(rule, 'distance')} BPM"
+    elif rule.reason_code == "ENERGY_DISTANCE":
+        detail = f"Energieabstand {_number_fact(rule, 'distance')}"
+    elif rule.reason_code == "MOOD_OVERLAP":
+        detail = f"Gemeinsame Stimmung: {_safe_term_fact(rule, 'common_terms')}"
+    elif rule.reason_code == "ADDITIONAL_GENRE_OVERLAP":
+        detail = "Überschneidung zusätzlicher Genres"
+    elif rule.reason_code == "NO_GENRE_OVERLAP":
+        detail = "Keine gemeinsame Genrebezeichnung"
+    elif rule.reason_code == "NO_MOOD_OVERLAP":
+        detail = "Keine gemeinsame Stimmung"
+    elif rule.rule_id == "selection.play_count":
+        detail = "Abspielhäufigkeit"
+    elif rule.rule_id == "selection.rating":
+        detail = "Titelbewertung"
+    else:
+        detail = "Keine Auswirkung"
+    return f"{label}: {detail}: {rule.score_delta:+g} Punkte"
 
 
 def _relaxation_text(stage: str) -> str:

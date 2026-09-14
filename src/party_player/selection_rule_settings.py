@@ -1,9 +1,15 @@
-"""Validated persistent settings for the existing automatic soft rules."""
+"""Validated persistent settings for automatic soft rules."""
 
 from dataclasses import dataclass
 import math
 
 from party_player.database.connection import Database
+from party_player.selection_continuity import (
+    BPM_CONTINUITY_RULE_ID,
+    ENERGY_CONTINUITY_RULE_ID,
+    GENRE_DIVERSITY_RULE_ID,
+    MOOD_CONTINUITY_RULE_ID,
+)
 
 PLAY_COUNT_RULE_ID = "selection.play_count"
 RATING_RULE_ID = "selection.rating"
@@ -22,6 +28,10 @@ class SoftRuleSetting:
 class SelectionScoringSettings:
     play_count: SoftRuleSetting = SoftRuleSetting(PLAY_COUNT_RULE_ID, True, 10.0)
     rating: SoftRuleSetting = SoftRuleSetting(RATING_RULE_ID, True, 1.0)
+    genre_diversity: SoftRuleSetting = SoftRuleSetting(GENRE_DIVERSITY_RULE_ID, False, 1.0)
+    bpm_continuity: SoftRuleSetting = SoftRuleSetting(BPM_CONTINUITY_RULE_ID, False, 1.0)
+    energy_continuity: SoftRuleSetting = SoftRuleSetting(ENERGY_CONTINUITY_RULE_ID, False, 1.0)
+    mood_continuity: SoftRuleSetting = SoftRuleSetting(MOOD_CONTINUITY_RULE_ID, False, 1.0)
 
 
 DEFAULT_SELECTION_SCORING_SETTINGS = SelectionScoringSettings()
@@ -33,6 +43,10 @@ class SelectionRuleSettingsRepository:
     _LIMITS = {
         PLAY_COUNT_RULE_ID: (5.0, 100.0),
         RATING_RULE_ID: (0.0, 1.0),
+        GENRE_DIVERSITY_RULE_ID: (0.0, 2.0),
+        BPM_CONTINUITY_RULE_ID: (0.0, 2.0),
+        ENERGY_CONTINUITY_RULE_ID: (0.0, 2.0),
+        MOOD_CONTINUITY_RULE_ID: (0.0, 2.0),
     }
 
     def __init__(self, database: Database) -> None:
@@ -40,7 +54,7 @@ class SelectionRuleSettingsRepository:
 
     def load(self) -> SelectionScoringSettings:
         defaults = DEFAULT_SELECTION_SCORING_SETTINGS
-        known = {PLAY_COUNT_RULE_ID: defaults.play_count, RATING_RULE_ID: defaults.rating}
+        known = {setting.rule_id: setting for setting in self._values(defaults)}
         with self._database.connect() as connection:
             rows = connection.execute(
                 """SELECT rule_id, config_version, enabled, weight
@@ -66,22 +80,23 @@ class SelectionRuleSettingsRepository:
         return SelectionScoringSettings(
             parsed.get(PLAY_COUNT_RULE_ID, defaults.play_count),
             parsed.get(RATING_RULE_ID, defaults.rating),
+            parsed.get(GENRE_DIVERSITY_RULE_ID, defaults.genre_diversity),
+            parsed.get(BPM_CONTINUITY_RULE_ID, defaults.bpm_continuity),
+            parsed.get(ENERGY_CONTINUITY_RULE_ID, defaults.energy_continuity),
+            parsed.get(MOOD_CONTINUITY_RULE_ID, defaults.mood_continuity),
         )
 
     def set(self, setting: SoftRuleSetting) -> None:
         self._validate(setting)
         current = self.load()
-        self.save(
-            SelectionScoringSettings(
-                play_count=setting if setting.rule_id == PLAY_COUNT_RULE_ID else current.play_count,
-                rating=setting if setting.rule_id == RATING_RULE_ID else current.rating,
-            )
-        )
+        values = {value.rule_id: value for value in self._values(current)}
+        values[setting.rule_id] = setting
+        self.save(SelectionScoringSettings(*values.values()))
 
     def save(self, settings: SelectionScoringSettings) -> None:
         """Validate and persist one complete settings form atomically."""
-        values = (settings.play_count, settings.rating)
-        if {setting.rule_id for setting in values} != {PLAY_COUNT_RULE_ID, RATING_RULE_ID}:
+        values = self._values(settings)
+        if tuple(setting.rule_id for setting in values) != tuple(self._LIMITS):
             raise ValueError("Auswahlregeln sind unvollständig oder doppelt")
         for setting in values:
             self._validate(setting)
@@ -103,6 +118,17 @@ class SelectionRuleSettingsRepository:
                         setting.weight,
                     ),
                 )
+
+    @staticmethod
+    def _values(settings: SelectionScoringSettings) -> tuple[SoftRuleSetting, ...]:
+        return (
+            settings.play_count,
+            settings.rating,
+            settings.genre_diversity,
+            settings.bpm_continuity,
+            settings.energy_continuity,
+            settings.mood_continuity,
+        )
 
     def _validate(self, setting: SoftRuleSetting) -> None:
         if setting.rule_id not in self._LIMITS:
