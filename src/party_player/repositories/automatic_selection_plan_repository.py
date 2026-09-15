@@ -177,12 +177,17 @@ class AutomaticSelectionPlanRepository:
 
     @staticmethod
     def _insert_plan(connection: sqlite3.Connection, plan: AutomaticSelectionPlan) -> None:
-        connection.execute(
+        cursor = connection.execute(
             """INSERT INTO automatic_selection_plans
                (plan_id, session_id, status, created_at, updated_at, planning_seed,
                 rule_configuration_version, rule_configuration_digest,
                 rationale_schema_version, source_context_code, planned_depth, revision,
-                invalid_reason_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                invalid_reason_code)
+               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+               WHERE EXISTS (
+                   SELECT 1 FROM party_sessions
+                   WHERE id=? AND status IN ('active','paused')
+               )""",
             (
                 plan.plan_id,
                 plan.session_id,
@@ -197,8 +202,11 @@ class AutomaticSelectionPlanRepository:
                 plan.planned_depth,
                 plan.revision,
                 plan.invalid_reason_code,
+                plan.session_id,
             ),
         )
+        if cursor.rowcount != 1:
+            raise ValueError("session is missing or not eligible for planning")
 
     @staticmethod
     def _step_values(step: AutomaticSelectionPlanStep) -> tuple[object, ...]:

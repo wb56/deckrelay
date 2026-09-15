@@ -33,6 +33,12 @@ class ShortTrackSelectionRule:
         self.threshold_seconds = max(1.0, threshold_seconds)
         self.policy = policy
 
+    def selection_configuration(self) -> dict[str, object]:
+        return {
+            "threshold_seconds": self.threshold_seconds,
+            "policy": self.policy.value,
+        }
+
     def evaluate(self, entry: QueueEntry, track: Track) -> SelectionDecision | None:
         return selection_decision_from_evaluation(
             self.evaluate_rule(

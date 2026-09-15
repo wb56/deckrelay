@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Automatische Auswahlfolgen können deterministisch mit einem eigenen Planungssseed
+  berechnet und als vollständiger oder sicherer teilweiser Entwurfsplan gespeichert
+  werden, ohne Queue oder laufende Automatik zu verändern.
 - Ein persistentes, transaktionales Modell für automatische Auswahlpläne bereitet
   nachvollziehbare Planung und sichere Wiederaufnahme vor, ohne die bestehende
   Automatik bereits zu verändern.
