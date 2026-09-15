@@ -85,7 +85,7 @@ def test_v43_migration_adds_disabled_metadata_rules_without_overwriting(tmp_path
             """SELECT rule_id, config_version, enabled, weight
                FROM selection_rule_settings ORDER BY rule_id"""
         ).fetchall()
-    assert version == LATEST_SCHEMA_VERSION == 43
+    assert version == LATEST_SCHEMA_VERSION == 44
     assert [tuple(row) for row in rows] == [
         (BPM_CONTINUITY_RULE_ID, 1, 0, 1.0),
         (ENERGY_CONTINUITY_RULE_ID, 1, 0, 1.0),

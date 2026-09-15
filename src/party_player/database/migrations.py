@@ -4,7 +4,7 @@ import sqlite3
 
 from party_player.database.connection import Database
 
-LATEST_SCHEMA_VERSION = 43
+LATEST_SCHEMA_VERSION = 44
 
 
 def migrate(database: Database) -> None:
@@ -195,6 +195,12 @@ def migrate(database: Database) -> None:
         if version < 43:
             _migrate_to_v43(connection)
             _set_version(connection, 43)
+            version = 43
+        if version < 44:
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            _migrate_to_v44(connection)
+            _set_version(connection, 44)
 
 
 def _migrate_to_v1(connection: sqlite3.Connection) -> None:
@@ -1757,3 +1763,63 @@ def _migrate_to_v43(connection: sqlite3.Connection) -> None:
             ("selection.mood_continuity",),
         ),
     )
+
+
+def _migrate_to_v44(connection: sqlite3.Connection) -> None:
+    """Add durable automatic-selection plans without activating planning."""
+    statements = (
+        """CREATE TABLE IF NOT EXISTS automatic_selection_plans (
+            plan_id TEXT PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES party_sessions(id),
+            status TEXT NOT NULL CHECK(status IN
+                ('DRAFT','ACTIVE','PAUSED','COMPLETED','INVALIDATED','DISCARDED')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            planning_seed INTEGER,
+            rule_configuration_version INTEGER NOT NULL CHECK(rule_configuration_version >= 1),
+            rule_configuration_digest TEXT NOT NULL CHECK(
+                length(rule_configuration_digest) = 64
+                AND rule_configuration_digest NOT GLOB '*[^0-9a-f]*'),
+            rationale_schema_version INTEGER NOT NULL CHECK(rationale_schema_version >= 1),
+            source_context_code TEXT NOT NULL CHECK(length(source_context_code) BETWEEN 1 AND 64),
+            planned_depth INTEGER NOT NULL CHECK(planned_depth BETWEEN 1 AND 10),
+            revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+            invalid_reason_code TEXT,
+            CHECK((status IN ('INVALIDATED','DISCARDED')) = (invalid_reason_code IS NOT NULL))
+        )""",
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_automatic_selection_plans_resumable_session
+            ON automatic_selection_plans(session_id)
+            WHERE status IN ('ACTIVE','PAUSED')""",
+        """CREATE INDEX IF NOT EXISTS idx_automatic_selection_plans_session_status
+            ON automatic_selection_plans(session_id, status)""",
+        """CREATE TABLE IF NOT EXISTS automatic_selection_plan_steps (
+            step_id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL REFERENCES automatic_selection_plans(plan_id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK(position >= 1),
+            track_id INTEGER NOT NULL CHECK(track_id >= 1),
+            status TEXT NOT NULL CHECK(status IN ('PLANNED','QUEUED','INVALIDATED')),
+            planned_at TEXT NOT NULL,
+            previous_track_id INTEGER CHECK(previous_track_id IS NULL OR previous_track_id >= 1),
+            relaxation_stage_code TEXT NOT NULL CHECK(length(relaxation_stage_code) BETWEEN 1 AND 64),
+            primary_play_count INTEGER CHECK(primary_play_count IS NULL OR primary_play_count >= 0),
+            secondary_score REAL NOT NULL CHECK(
+                secondary_score = secondary_score AND abs(secondary_score) <= 1.7976931348623157e308),
+            tie_candidate_count INTEGER NOT NULL CHECK(tie_candidate_count >= 1),
+            tie_break_method_code TEXT NOT NULL CHECK(length(tie_break_method_code) BETWEEN 1 AND 64),
+            selection_reason_code TEXT NOT NULL CHECK(length(selection_reason_code) BETWEEN 1 AND 64),
+            executed_queue_entry_id INTEGER REFERENCES party_queue(id) ON DELETE RESTRICT,
+            invalid_reason_code TEXT,
+            UNIQUE(plan_id, position),
+            CHECK((status = 'QUEUED') = (executed_queue_entry_id IS NOT NULL)),
+            CHECK((status = 'INVALIDATED') = (invalid_reason_code IS NOT NULL))
+        )""",
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_automatic_selection_plan_steps_queue_entry
+            ON automatic_selection_plan_steps(executed_queue_entry_id)
+            WHERE executed_queue_entry_id IS NOT NULL""",
+        """CREATE INDEX IF NOT EXISTS idx_automatic_selection_plan_steps_plan_status
+            ON automatic_selection_plan_steps(plan_id, status)""",
+        """CREATE INDEX IF NOT EXISTS idx_automatic_selection_plan_steps_track
+            ON automatic_selection_plan_steps(track_id)""",
+    )
+    for statement in statements:
+        connection.execute(statement)
