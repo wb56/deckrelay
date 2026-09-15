@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Ein persistentes, transaktionales Modell für automatische Auswahlpläne bereitet
+  nachvollziehbare Planung und sichere Wiederaufnahme vor, ohne die bestehende
+  Automatik bereits zu verändern.
 - Genre-, BPM-, Energie- und Stimmungsregeln können jetzt dauerhaft aktiviert und
   in drei Stärken eingestellt werden; die Automatikvorschau trennt primäre
   Abspielgruppe, sekundäre Bewertung und Gleichstand.
