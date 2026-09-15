@@ -73,9 +73,11 @@ class AutomaticSelectionPlan:
         if isinstance(self.session_id, bool) or self.session_id <= 0:
             raise ValueError("session_id must be positive")
         if self.planning_seed is not None and (
-            isinstance(self.planning_seed, bool) or not isinstance(self.planning_seed, int)
+            isinstance(self.planning_seed, bool)
+            or not isinstance(self.planning_seed, int)
+            or not 0 <= self.planning_seed <= 2**63 - 1
         ):
-            raise ValueError("planning_seed must be an integer or None")
+            raise ValueError("planning_seed must be between 0 and 2^63-1 or None")
         if (
             isinstance(self.rule_configuration_version, bool)
             or isinstance(self.rationale_schema_version, bool)

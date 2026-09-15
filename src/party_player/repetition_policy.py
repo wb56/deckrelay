@@ -153,6 +153,28 @@ class PersistentRepetitionService:
         self._preview_now += timedelta(seconds=max(0.0, track.duration_seconds or 0.0))
         self._preview_plays.insert(0, RecentPlay(track.id, track.artist, self._preview_now))
 
+    def selection_configuration(self) -> dict[str, object]:
+        """Expose only effective repetition parameters for plan reproducibility."""
+        source_windows = {
+            source.value: {
+                "track_window_size": values[0],
+                "track_window_minutes": values[1],
+                "artist_window_size": values[2],
+                "artist_window_minutes": values[3],
+            }
+            for source, values in sorted(
+                self._source_windows.items(), key=lambda item: item[0].value
+            )
+        }
+        return {
+            "track_window_size": self.track_window_size,
+            "track_window_seconds": self.track_window.total_seconds(),
+            "artist_window_size": self.artist_window_size,
+            "artist_window_seconds": self.artist_window.total_seconds(),
+            "queue_artist_repetition_enabled": self.queue_artist_repetition_enabled,
+            "source_windows": source_windows,
+        }
+
     def allow_queue_entry(self, queue_id: int) -> None:
         self._operator_overrides.add(queue_id)
         self._logger.info(

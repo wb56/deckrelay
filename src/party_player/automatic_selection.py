@@ -93,6 +93,33 @@ class _PreviewTracks:
         return list(self.candidates)
 
 
+@dataclass(frozen=True, slots=True)
+class SelectionSimulationStep:
+    position: int
+    previous_track_id: int | None
+    track: Track
+    rationale: SelectionRationale
+
+
+@dataclass(frozen=True, slots=True)
+class SelectionSimulation:
+    requested_depth: int
+    steps: tuple[SelectionSimulationStep, ...]
+    settings: SelectionScoringSettings
+    context_code: str
+    completion_rationale: SelectionRationale | None = None
+
+
+@dataclass(slots=True)
+class _PreparedSimulation:
+    rules: TrackSelectionService
+    settings: SelectionScoringSettings
+    history: _PreviewHistory
+    previous_track_id: int | None
+    candidates: tuple[Track, ...]
+    metadata: SelectionMetadataCatalogSnapshot
+
+
 class _AutomaticTrackSource(Protocol):
     def automatic_candidates(self) -> list[Track]: ...
 
@@ -222,44 +249,105 @@ class AutomaticSelectionService:
         if not 1 <= count <= self.MAX_PREVIEW_DEPTH:
             raise ValueError(f"Vorschautiefe muss zwischen 1 und {self.MAX_PREVIEW_DEPTH} liegen")
         with self._selection_lock:
-            history = self._history.preview_snapshot()
-            previous_track_id = self._previous_track_id(history)
-            candidates, metadata = self._load_catalog_snapshot(previous_track_id)
-            preview_rules = rules.copy_for_preview()
             preview_random = random.Random()
             preview_random.setstate(self._random.getstate())
-            settings = self._load_rule_settings()
-        preview_selector = AutomaticSelectionService(
-            _PreviewTracks(candidates),
+            prepared = self._prepare_simulation(rules)
+        simulation = self._simulate_prepared(
+            prepared, count, preview_random, context_code="AUTOMATIC_PREVIEW"
+        )
+        steps = tuple(
+            SelectionPreviewStep(
+                step.position,
+                step.track.id,
+                step.track.title,
+                step.track.artist,
+                step.rationale.relaxation_stage,
+                step.rationale,
+            )
+            for step in simulation.steps
+        )
+        completion = (
+            SelectionPreviewCompletion.REQUESTED_DEPTH_REACHED
+            if len(steps) == count
+            else SelectionPreviewCompletion.NO_SAFE_CANDIDATE
+        )
+        return SelectionPreview(
+            preview_id=uuid.uuid4().hex,
+            created_at=datetime.now(),
+            requested_depth=count,
+            achieved_depth=len(steps),
+            steps=steps,
+            completion_reason=completion,
+            completion_rationale=simulation.completion_rationale,
+        )
+
+    def simulate_sequence(
+        self,
+        rules: TrackSelectionService,
+        count: int,
+        *,
+        randomizer: random.Random,
+        context_code: str = "AUTOMATIC_PLANNING",
+    ) -> SelectionSimulation:
+        """Simulate one sequence with an isolated caller-owned RNG."""
+        if not 1 <= count <= self.MAX_PREVIEW_DEPTH:
+            raise ValueError(f"Vorschautiefe muss zwischen 1 und {self.MAX_PREVIEW_DEPTH} liegen")
+        with self._selection_lock:
+            prepared = self._prepare_simulation(rules)
+        return self._simulate_prepared(prepared, count, randomizer, context_code=context_code)
+
+    def _prepare_simulation(self, rules: TrackSelectionService) -> _PreparedSimulation:
+        settings = self._load_rule_settings()
+        history = self._history.preview_snapshot()
+        previous_track_id = self._previous_track_id(history)
+        candidates, metadata = self._load_catalog_snapshot(previous_track_id)
+        return _PreparedSimulation(
+            rules.copy_for_preview(),
+            settings,
             history,
+            previous_track_id,
+            candidates,
+            metadata,
+        )
+
+    def _simulate_prepared(
+        self,
+        prepared: _PreparedSimulation,
+        count: int,
+        randomizer: random.Random,
+        *,
+        context_code: str,
+    ) -> SelectionSimulation:
+        previous_track_id = prepared.previous_track_id
+        simulation_selector = AutomaticSelectionService(
+            _PreviewTracks(prepared.candidates),
+            prepared.history,
             recent_track_limit=self.recent_track_limit,
-            randomizer=preview_random,
+            randomizer=randomizer,
             emergency_playlist=None,
             continuity_settings=self._continuity_settings,
         )
-        preview_id = uuid.uuid4().hex
-        steps: list[SelectionPreviewStep] = []
+        steps: list[SelectionSimulationStep] = []
         completion_rationale: SelectionRationale | None = None
-        completion = SelectionPreviewCompletion.REQUESTED_DEPTH_REACHED
         for position in range(1, count + 1):
+            step_previous_track_id = previous_track_id
             sequence = SelectionSequenceContext(
                 previous_track_id,
-                metadata.for_track(previous_track_id),
+                prepared.metadata.for_track(previous_track_id),
                 position,
             )
-            selected = preview_selector._run_isolated(
-                lambda: preview_selector._select(
-                    preview_rules,
-                    settings,
-                    candidates,
-                    metadata,
-                    history,
+            selected = simulation_selector._run_isolated(
+                lambda: simulation_selector._select(
+                    prepared.rules,
+                    prepared.settings,
+                    prepared.candidates,
+                    prepared.metadata,
+                    prepared.history,
                     sequence,
                 )
             )
-            rationale = preview_selector.last_rationale
+            rationale = simulation_selector.last_rationale
             if selected is None or rationale is None:
-                completion = SelectionPreviewCompletion.NO_SAFE_CANDIDATE
                 completion_rationale = rationale
                 break
             source_entry = QueueEntry(
@@ -278,25 +366,21 @@ class AutomaticSelectionService:
             )
             rationale = attach_source_resolution(rationale, resolution)
             steps.append(
-                SelectionPreviewStep(
+                SelectionSimulationStep(
                     position,
-                    selected.id,
-                    selected.title,
-                    selected.artist,
-                    rationale.relaxation_stage,
+                    step_previous_track_id,
+                    selected,
                     rationale,
                 )
             )
-            history.record_played(selected)
-            preview_rules.record_preview_played(selected)
+            prepared.history.record_played(selected)
+            prepared.rules.record_preview_played(selected)
             previous_track_id = selected.id
-        return SelectionPreview(
-            preview_id=preview_id,
-            created_at=datetime.now(),
-            requested_depth=count,
-            achieved_depth=len(steps),
+        return SelectionSimulation(
             steps=tuple(steps),
-            completion_reason=completion,
+            requested_depth=count,
+            settings=prepared.settings,
+            context_code=context_code,
             completion_rationale=completion_rationale,
         )
 

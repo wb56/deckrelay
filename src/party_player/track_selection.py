@@ -1,6 +1,7 @@
 """Composable, GUI-independent rules for automatic queue candidates."""
 
 from collections import deque
+from collections.abc import Mapping
 import copy
 from dataclasses import dataclass
 import math
@@ -231,6 +232,41 @@ class TrackSelectionService:
             recorder = getattr(rule, "record_preview_played", None)
             if callable(recorder):
                 recorder(track)
+
+    def configuration_projection(self) -> tuple[dict[str, object], ...]:
+        """Return the explicit, path-free configuration of executable rules."""
+        projected: list[dict[str, object]] = []
+        for rule in self._rules:
+            parameters = getattr(rule, "selection_configuration", None)
+            values = parameters() if callable(parameters) else {}
+            if not isinstance(values, dict) or any(not isinstance(key, str) for key in values):
+                raise TypeError("Ungültige Auswahlregel-Konfigurationsprojektion")
+            projected.append(
+                {
+                    "rule_id": rule.rule_id,
+                    "rule_version": rule.rule_version,
+                    "rule_kind": rule.rule_kind.value,
+                    "relaxable_reason_codes": sorted(rule.relaxable_reason_codes),
+                    "parameters": self._safe_configuration_value(values),
+                }
+            )
+        return tuple(projected)
+
+    @classmethod
+    def _safe_configuration_value(cls, value: object) -> object:
+        if value is None or type(value) in {bool, int, float}:
+            return value
+        if isinstance(value, str):
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", value):
+                raise ValueError("Regelkonfiguration enthält keinen sicheren Code")
+            return value
+        if isinstance(value, Mapping):
+            if any(not isinstance(key, str) for key in value):
+                raise TypeError("Regelkonfigurationsschlüssel müssen Text sein")
+            return {key: cls._safe_configuration_value(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [cls._safe_configuration_value(item) for item in value]
+        raise TypeError("Regelkonfiguration enthält einen nicht unterstützten Wert")
 
     def evaluate(
         self,
