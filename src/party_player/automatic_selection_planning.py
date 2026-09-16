@@ -113,6 +113,11 @@ class AutomaticSelectionPlanningService:
                 "PLANNING_TECHNICAL_ERROR",
             )
 
+    def current_configuration_digest(self) -> str:
+        """Describe the currently effective rules without planning any tracks."""
+        settings = self._automatic_selection.scoring_settings_snapshot()
+        return selection_configuration_digest(self._configuration(settings))
+
     @staticmethod
     def _validated_seed(seed: int | None) -> int:
         if seed is None:

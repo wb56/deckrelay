@@ -2815,7 +2815,11 @@ class MainController:
             if entry.status in {QueueStatus.WAITING, QueueStatus.READY, QueueStatus.PLAYING}
         ]
         loaded_start_deck = self._loaded_automatic_start_deck()
-        if not active_entries and loaded_start_deck is None:
+        if (
+            not active_entries
+            and loaded_start_deck is None
+            and not self._queue_service.can_supply_empty_queue_candidate()
+        ):
             message = "Die Automatik kann nicht starten: Die Queue enthält keinen Titel."
             self._view.show_queue_warning(message)
             self._queue_service.record_audit_event(
@@ -3252,7 +3256,11 @@ class MainController:
     def _auto_load(self, *, recovery_replacement: bool = False) -> None:
         if not self.automatic_deck_loading:
             return
-        if self._background_preload:
+        plan_candidate_required = (
+            self._queue_service.can_supply_empty_queue_candidate()
+            and not any(entry.status is QueueStatus.WAITING for entry in self._queue_entries_cache)
+        )
+        if self._background_preload or plan_candidate_required:
             layout = self._callback_state.snapshot()
             if not self._heartbeat_started and (
                 layout.pending_layout_refreshes
@@ -3309,7 +3317,10 @@ class MainController:
             return
         if monotonic() < self._next_preload_candidate_search_at:
             return
-        if not any(entry.status == QueueStatus.WAITING for entry in self._queue_entries_cache):
+        if (
+            not any(entry.status == QueueStatus.WAITING for entry in self._queue_entries_cache)
+            and not self._queue_service.can_supply_empty_queue_candidate()
+        ):
             if recovery_replacement:
                 self._pause_automatic_queue(
                     "Kein sicherer Ersatztitel verfügbar; manueller Eingriff erforderlich"
@@ -3347,6 +3358,10 @@ class MainController:
                             "Kein sicherer Ersatztitel verfügbar; "
                             "manueller Eingriff erforderlich"
                         )
+                        return
+                    plan_pause_reason = self._queue_service.automatic_plan_pause_reason()
+                    if plan_pause_reason is not None:
+                        self._pause_automatic_queue(plan_pause_reason)
                         return
                     self._preload_candidate_misses += 1
                     delay = self._candidate_search_backoff_seconds(self._preload_candidate_misses)

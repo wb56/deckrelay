@@ -16,6 +16,11 @@ from party_player.repository import PartyPlayerRepository
 from party_player.track_selection import SelectionDecision, TrackSelectionService
 from party_player.file_availability import FileAvailabilityChecker, FileAvailabilityService
 from party_player.automatic_selection import AutomaticSelectionService
+from party_player.automatic_selection_plan_execution import (
+    AutomaticSelectionPlanExecutionResult,
+    AutomaticSelectionPlanExecutionService,
+    AutomaticSelectionPlanExecutionStatus,
+)
 from party_player.selection_preview import SelectionPreview
 from party_player.structured_logging import log_queue_event
 from party_player.performance_monitor import PerformanceMonitor
@@ -118,6 +123,7 @@ class QueueService:
         wall_clock: Callable[[], datetime] = datetime.now,
         empty_queue_policy: EmptyQueuePolicy = EmptyQueuePolicy.STOP_AFTER_CURRENT,
         automatic_selection: AutomaticSelectionService | None = None,
+        automatic_plan_execution: AutomaticSelectionPlanExecutionService | None = None,
         repeat_playlist_entries: Callable[[], list[SavedQueueEntry]] | None = None,
     ) -> None:
         self._repository = repository
@@ -141,6 +147,8 @@ class QueueService:
         self._wall_clock = wall_clock
         self.empty_queue_policy = empty_queue_policy
         self._automatic_selection = automatic_selection
+        self._automatic_plan_execution = automatic_plan_execution
+        self.last_plan_execution_result: AutomaticSelectionPlanExecutionResult | None = None
         self._repeat_playlist_entries = repeat_playlist_entries
         self._logger = logging.getLogger(__name__)
         self._performance: PerformanceMonitor | None = None
@@ -161,6 +169,29 @@ class QueueService:
         if self._automatic_selection is None:
             raise RuntimeError("Automatische Titelauswahl ist nicht verfügbar")
         return self._automatic_selection.preview(self._selection_service, count)
+
+    def can_supply_empty_queue_candidate(self) -> bool:
+        return (
+            self.empty_queue_policy is EmptyQueuePolicy.AUTOMATIC_SELECTION
+            and self._automatic_plan_execution is not None
+        )
+
+    def automatic_plan_pause_reason(self) -> str | None:
+        result = self.last_plan_execution_result
+        if result is None:
+            return None
+        if (
+            result.status
+            in {
+                AutomaticSelectionPlanExecutionStatus.RECALCULATION_REQUIRED,
+                AutomaticSelectionPlanExecutionStatus.CONCURRENT_UPDATE,
+                AutomaticSelectionPlanExecutionStatus.INCONSISTENT_QUEUE_LINK,
+                AutomaticSelectionPlanExecutionStatus.PERSISTENCE_FAILED,
+            }
+            or result.reason_code == "PLAN_PAUSED"
+        ):
+            return "Automatikplan kann nicht sicher fortgesetzt werden"
+        return None
 
     def add(
         self,
@@ -1027,6 +1058,48 @@ class QueueService:
                     repeated, self.last_source_resolution
                 )
             return repeated
+        if (
+            self.empty_queue_policy is EmptyQueuePolicy.AUTOMATIC_SELECTION
+            and self._automatic_plan_execution is not None
+        ):
+            result = self._automatic_plan_execution.ensure_next_step(self.session_id)
+            self.last_plan_execution_result = result
+            added = result.queue_entry
+            if (
+                result.status
+                in {
+                    AutomaticSelectionPlanExecutionStatus.MATERIALIZED,
+                    AutomaticSelectionPlanExecutionStatus.ALREADY_MATERIALIZED,
+                }
+                and added is not None
+            ):
+                self.last_source_resolution = self._source_resolver.describe_generated(
+                    added,
+                    context_id=resolution_context_id,
+                    rationale_context_id=None,
+                    empty_queue_policy=self.empty_queue_policy,
+                    reason=SourceResolutionReason.AUTOMATIC_REQUIRED_EMPTY_QUEUE,
+                )
+                self.last_selection_rationale = source_selection_rationale(
+                    added, self.last_source_resolution
+                )
+                self.record_audit_event(
+                    "AUTOMATIC_PLAN_STEP_MATERIALIZED",
+                    entity_type="QUEUE",
+                    entity_id=added.queue_id,
+                    details={"reason": result.status.value},
+                )
+                return added
+            self.last_source_resolution = self._source_resolver.describe_unavailable(
+                context_id=resolution_context_id,
+                rationale_context_id=None,
+                empty_queue_policy=self.empty_queue_policy,
+                automatic_required=True,
+            )
+            self.last_selection_rationale = source_selection_rationale(
+                None, self.last_source_resolution
+            )
+            return None
         if self._automatic_selection is None:
             self.last_source_resolution = self._source_resolver.describe_unavailable(
                 context_id=resolution_context_id,

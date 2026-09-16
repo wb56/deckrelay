@@ -58,6 +58,10 @@ from party_player.automatic_selection import (
     AutomaticSelectionHistory,
     AutomaticSelectionService,
 )
+from party_player.automatic_selection_plan_execution import (
+    AutomaticSelectionPlanExecutionService,
+)
+from party_player.automatic_selection_planning import AutomaticSelectionPlanningService
 from party_player.enums import EmptyQueuePolicy
 from party_player.file_availability import FileAvailabilityService
 from party_player.emergency_playlist import (
@@ -83,6 +87,9 @@ from party_player.emergency_history import (
 from party_player.audio_recovery import AudioRecoveryService
 from party_player.deck_health_monitor import DeckHealthMonitor
 from party_player.repositories.track_repository import TrackRepository
+from party_player.repositories.automatic_selection_plan_repository import (
+    AutomaticSelectionPlanRepository,
+)
 from party_player.repositories.saved_queue_repository import SavedQueueRepository
 from party_player.repositories.equalizer_repository import (
     EqualizerAssignmentRepository,
@@ -281,16 +288,32 @@ class PartyPlayerApplication:
             )
             return list(saved.entries) if saved is not None else []
 
+        track_selection = TrackSelectionService(
+            (track_blocks, artist_blocks, suitability, repetition, short_tracks)
+        )
+        automatic_plan_repository = AutomaticSelectionPlanRepository(database, party_repository)
+        automatic_planning = AutomaticSelectionPlanningService(
+            automatic_selection,
+            track_selection,
+            automatic_plan_repository,
+        )
+        automatic_plan_execution = AutomaticSelectionPlanExecutionService(
+            automatic_plan_repository,
+            automatic_planning,
+            tracks,
+            track_selection,
+            FileAvailabilityService(),
+        )
+
         queue_service = QueueService(
             party_repository,
             tracks,
             session.session_id,
             cue_points=cue_points,
-            selection_service=TrackSelectionService(
-                (track_blocks, artist_blocks, suitability, repetition, short_tracks)
-            ),
+            selection_service=track_selection,
             empty_queue_policy=EmptyQueuePolicy.AUTOMATIC_SELECTION,
             automatic_selection=automatic_selection,
+            automatic_plan_execution=automatic_plan_execution,
             repeat_playlist_entries=repeat_playlist_entries,
         )
         loudness = LoudnessService(

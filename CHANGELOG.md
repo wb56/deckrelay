@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Die Automatik führt persistierte Auswahlpläne schrittweise über die bestehende
+  Queue aus und prüft jeden Titel vor der Einreihung erneut auf harte Regeln und
+  Dateiverfügbarkeit.
 - Automatische Auswahlfolgen können deterministisch mit einem eigenen Planungssseed
   berechnet und als vollständiger oder sicherer teilweiser Entwurfsplan gespeichert
   werden, ohne Queue oder laufende Automatik zu verändern.

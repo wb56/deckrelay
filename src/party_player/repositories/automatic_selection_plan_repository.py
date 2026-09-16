@@ -82,6 +82,79 @@ class AutomaticSelectionPlanRepository:
                 return None
             return self._load_steps(connection, self._plan_from_row(rows[0]))
 
+    def activate_draft_plan(
+        self,
+        plan_id: str,
+        expected_revision: int,
+        current_configuration_digest: str,
+    ) -> AutomaticSelectionPlanBundle:
+        """Activate one eligible draft with all invariants checked atomically."""
+        with self._database.transaction() as connection:
+            plan = self._required_plan(connection, plan_id)
+            self._require_revision(plan, expected_revision)
+            if plan.status is not AutomaticSelectionPlanStatus.DRAFT:
+                raise ValueError("only draft plans can be activated")
+            if plan.rule_configuration_digest != current_configuration_digest:
+                raise ValueError("plan configuration changed")
+            session = connection.execute(
+                "SELECT status FROM party_sessions WHERE id=?", (plan.session_id,)
+            ).fetchone()
+            if session is None or str(session["status"]) not in {"active", "paused"}:
+                raise ValueError("session is missing or not eligible for planning")
+            planned = connection.execute(
+                """SELECT COUNT(*) FROM automatic_selection_plan_steps
+                   WHERE plan_id=? AND status='PLANNED'""",
+                (plan_id,),
+            ).fetchone()[0]
+            if int(planned) < 1:
+                raise ValueError("draft plan has no planned steps")
+            conflict = connection.execute(
+                """SELECT 1 FROM automatic_selection_plans
+                   WHERE session_id=? AND plan_id<>?
+                     AND status IN ('ACTIVE','PAUSED') LIMIT 1""",
+                (plan.session_id, plan_id),
+            ).fetchone()
+            if conflict is not None:
+                raise AutomaticSelectionPlanConflictError("another resumable plan already exists")
+            candidate = replace(
+                plan,
+                status=AutomaticSelectionPlanStatus.ACTIVE,
+                updated_at=datetime.utcnow(),
+                revision=plan.revision + 1,
+            )
+            self._update_plan_cas(connection, candidate, expected_revision)
+            return self._load_steps(connection, candidate)
+
+    def pause_invalid_step(
+        self,
+        plan_id: str,
+        position: int,
+        expected_revision: int,
+        reason_code: str,
+    ) -> AutomaticSelectionPlanBundle:
+        """Invalidate one unsafe step and pause its plan in the same transaction."""
+        with self._database.transaction() as connection:
+            plan = self._required_plan(connection, plan_id)
+            self._require_revision(plan, expected_revision)
+            if plan.status is not AutomaticSelectionPlanStatus.ACTIVE:
+                raise ValueError("only active plans can be paused for invalid steps")
+            cursor = connection.execute(
+                """UPDATE automatic_selection_plan_steps
+                   SET status='INVALIDATED', invalid_reason_code=?
+                   WHERE plan_id=? AND position=? AND status='PLANNED'""",
+                (reason_code, plan_id, position),
+            )
+            if cursor.rowcount != 1:
+                raise AutomaticSelectionPlanConflictError("plan step changed concurrently")
+            candidate = replace(
+                plan,
+                status=AutomaticSelectionPlanStatus.PAUSED,
+                updated_at=datetime.utcnow(),
+                revision=plan.revision + 1,
+            )
+            self._update_plan_cas(connection, candidate, expected_revision)
+            return self._load_steps(connection, candidate)
+
     def change_status(
         self,
         plan_id: str,
