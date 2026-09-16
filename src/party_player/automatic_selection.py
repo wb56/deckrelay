@@ -288,18 +288,25 @@ class AutomaticSelectionService:
         *,
         randomizer: random.Random,
         context_code: str = "AUTOMATIC_PLANNING",
+        previous_track_id: int | None = None,
     ) -> SelectionSimulation:
         """Simulate one sequence with an isolated caller-owned RNG."""
         if not 1 <= count <= self.MAX_PREVIEW_DEPTH:
             raise ValueError(f"Vorschautiefe muss zwischen 1 und {self.MAX_PREVIEW_DEPTH} liegen")
         with self._selection_lock:
-            prepared = self._prepare_simulation(rules)
+            prepared = self._prepare_simulation(rules, previous_track_id=previous_track_id)
         return self._simulate_prepared(prepared, count, randomizer, context_code=context_code)
 
-    def _prepare_simulation(self, rules: TrackSelectionService) -> _PreparedSimulation:
+    def _prepare_simulation(
+        self,
+        rules: TrackSelectionService,
+        *,
+        previous_track_id: int | None = None,
+    ) -> _PreparedSimulation:
         settings = self._load_rule_settings()
         history = self._history.preview_snapshot()
-        previous_track_id = self._previous_track_id(history)
+        if previous_track_id is None:
+            previous_track_id = self._previous_track_id(history)
         candidates, metadata = self._load_catalog_snapshot(previous_track_id)
         return _PreparedSimulation(
             rules.copy_for_preview(),

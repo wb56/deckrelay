@@ -16,7 +16,7 @@ from party_player.automatic_selection_plan import (
 from party_player.database.connection import Database
 from party_player.database.migrations import LATEST_SCHEMA_VERSION, migrate
 from party_player.database import migrations
-from party_player.enums import QueueSource, QueueStatus
+from party_player.enums import CompletionStatus, QueueSource, QueueStatus
 from party_player.repository import PartyPlayerRepository
 from party_player.repositories.automatic_selection_plan_repository import (
     AutomaticSelectionPlanConflictError,
@@ -139,6 +139,21 @@ def test_create_load_transition_and_atomic_idempotent_queue_link(tmp_path: Path)
         repository.invalidate_remaining(PLAN_ID, 1, 2, "CATALOG_CHANGED")
 
 
+def test_recovered_session_can_create_and_activate_replacement_plan(tmp_path: Path) -> None:
+    database, repository, session_id = _setup(tmp_path / "recovered-plan.db")
+    with database.connect() as connection:
+        connection.execute("UPDATE party_sessions SET status='recovered' WHERE id=?", (session_id,))
+
+    draft = repository.create(_bundle(session_id))
+    active = repository.activate_draft_plan(
+        draft.plan.plan_id,
+        draft.plan.revision,
+        draft.plan.rule_configuration_digest,
+    )
+
+    assert active.plan.status is AutomaticSelectionPlanStatus.ACTIVE
+
+
 def test_activate_draft_checks_digest_revision_session_and_creates_no_queue(
     tmp_path: Path,
 ) -> None:
@@ -175,6 +190,100 @@ def test_activate_draft_rejects_changed_configuration_and_closed_session(
             0,
             draft.plan.rule_configuration_digest,
         )
+
+
+def test_startup_recovery_keeps_plan_playback_terminal_and_pauses_plan(
+    tmp_path: Path,
+) -> None:
+    database, repository, session_id = _setup(tmp_path / "recovery-playing.db")
+    party = PartyPlayerRepository(database)
+    draft = repository.create(_bundle(session_id))
+    active = repository.activate_draft_plan(PLAN_ID, 0, draft.plan.rule_configuration_digest)
+    linked, entry = repository.materialize_step(PLAN_ID, 1, active.plan.revision)
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE party_queue SET status='playing', played_at=CURRENT_TIMESTAMP WHERE id=?",
+            (entry.queue_id,),
+        )
+
+    party.recover_queue_after_restart(session_id)
+    state = repository.recovery_state(session_id, draft.plan.rule_configuration_digest)
+
+    assert state is not None
+    assert state.plan_status is AutomaticSelectionPlanStatus.PAUSED
+    assert state.interrupted_track_id == 1
+    assert state.actual_predecessor_track_id == 1
+    assert party.get_queue_entry(entry.queue_id).status is QueueStatus.SKIPPED  # type: ignore[union-attr]
+    with database.connect() as connection:
+        history = connection.execute(
+            "SELECT completion_status FROM play_history WHERE queue_id=?", (entry.queue_id,)
+        ).fetchone()
+    assert history["completion_status"] == "ABORTED"
+    assert linked.plan.status is AutomaticSelectionPlanStatus.ACTIVE
+
+
+def test_recovery_resume_discard_and_foreign_playback_are_cas_safe(tmp_path: Path) -> None:
+    database, repository, session_id = _setup(tmp_path / "recovery-actions.db")
+    draft = repository.create(_bundle(session_id))
+    repository.activate_draft_plan(PLAN_ID, 0, draft.plan.rule_configuration_digest)
+    state = repository.recovery_state(session_id, draft.plan.rule_configuration_digest)
+    assert state is not None
+    resumed = repository.resume_recovered_plan(PLAN_ID, state.plan_revision)
+    assert resumed.plan.status is AutomaticSelectionPlanStatus.ACTIVE
+
+    party = PartyPlayerRepository(database)
+    foreign = party.add_queue_entry(session_id, 2, QueueSource.MANUAL)
+    assert repository.pause_for_foreign_playback(session_id, foreign.queue_id)
+    paused = repository.get(PLAN_ID)
+    assert paused is not None
+    assert paused.plan.status is AutomaticSelectionPlanStatus.PAUSED
+    assert all(step.status is AutomaticSelectionPlanStepStatus.INVALIDATED for step in paused.steps)
+    discarded = repository.discard_recovered_plan(PLAN_ID, paused.plan.revision)
+    assert discarded.plan.status is AutomaticSelectionPlanStatus.DISCARDED
+    repeated = repository.discard_recovered_plan(PLAN_ID, paused.plan.revision)
+    assert repeated.plan == discarded.plan
+
+
+def test_finished_session_discards_only_its_resumable_plan(tmp_path: Path) -> None:
+    _, repository, session_id = _setup(tmp_path / "session-finish.db")
+    draft = repository.create(_bundle(session_id))
+    repository.activate_draft_plan(PLAN_ID, 0, draft.plan.rule_configuration_digest)
+    repository.discard_for_finished_session(session_id)
+    stored = repository.get(PLAN_ID)
+    assert stored is not None
+    assert stored.plan.status is AutomaticSelectionPlanStatus.DISCARDED
+    assert all(step.invalid_reason_code == "SESSION_FINISHED" for step in stored.steps)
+
+
+def test_recovery_predecessor_uses_same_cross_session_played_history_as_planning(
+    tmp_path: Path,
+) -> None:
+    database, repository, session_id = _setup(tmp_path / "cross-session-predecessor.db")
+    party = PartyPlayerRepository(database)
+    older_session = party.create_session("Older").session_id
+    now = datetime.now(UTC)
+    party.add_history(
+        older_session,
+        1,
+        "A",
+        now,
+        CompletionStatus.PLAYED,
+        120.0,
+        completed_at=now,
+    )
+    bundle = _bundle(session_id)
+    bundle = AutomaticSelectionPlanBundle(
+        bundle.plan,
+        (replace(bundle.steps[0], previous_track_id=1), bundle.steps[1]),
+    )
+    draft = repository.create(bundle)
+    repository.activate_draft_plan(PLAN_ID, 0, draft.plan.rule_configuration_digest)
+
+    state = repository.recovery_state(session_id, draft.plan.rule_configuration_digest)
+
+    assert state is not None
+    assert state.actual_predecessor_track_id == 1
+    assert state.reason_code.value == "RECOVERY_REQUIRED"
 
 
 def test_invalid_step_and_plan_pause_are_one_revision_change(tmp_path: Path) -> None:

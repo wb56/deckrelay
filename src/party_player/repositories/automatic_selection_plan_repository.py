@@ -9,6 +9,9 @@ import sqlite3
 from party_player.automatic_selection_plan import (
     AutomaticSelectionPlan,
     AutomaticSelectionPlanBundle,
+    AutomaticSelectionPlanRecoveryAction,
+    AutomaticSelectionPlanRecoveryReason,
+    AutomaticSelectionPlanRecoveryState,
     AutomaticSelectionPlanStatus,
     AutomaticSelectionPlanStep,
     AutomaticSelectionPlanStepStatus,
@@ -82,6 +85,280 @@ class AutomaticSelectionPlanRepository:
                 return None
             return self._load_steps(connection, self._plan_from_row(rows[0]))
 
+    def recovery_state(
+        self, session_id: int, current_configuration_digest: str
+    ) -> AutomaticSelectionPlanRecoveryState | None:
+        """Pause and describe one resumable plan in one short transaction."""
+        with self._database.transaction() as connection:
+            rows = connection.execute(
+                """SELECT * FROM automatic_selection_plans
+                   WHERE session_id=? AND status IN ('ACTIVE','PAUSED')""",
+                (session_id,),
+            ).fetchall()
+            if not rows:
+                return None
+            if len(rows) != 1:
+                raise RuntimeError("multiple resumable plans")
+            plan = self._plan_from_row(rows[0])
+            if plan.status is AutomaticSelectionPlanStatus.ACTIVE:
+                paused = replace(
+                    plan,
+                    status=AutomaticSelectionPlanStatus.PAUSED,
+                    updated_at=datetime.utcnow(),
+                    revision=plan.revision + 1,
+                )
+                self._update_plan_cas(connection, paused, plan.revision)
+                plan = paused
+            step_rows = connection.execute(
+                """SELECT s.step_id, s.track_id, s.status, s.previous_track_id,
+                          s.executed_queue_entry_id,
+                          q.status AS queue_status, q.skip_code
+                   FROM automatic_selection_plan_steps s
+                   LEFT JOIN party_queue q ON q.id=s.executed_queue_entry_id
+                   WHERE s.plan_id=? ORDER BY s.position""",
+                (plan.plan_id,),
+            ).fetchall()
+            interrupted = next(
+                (row for row in step_rows if row["skip_code"] == "RECOVERY_INTERRUPTED_PLAYBACK"),
+                None,
+            )
+            missing = any(
+                row["status"] == "QUEUED" and row["queue_status"] is None for row in step_rows
+            )
+            predecessor_row = connection.execute(
+                """SELECT track_id FROM (
+                       SELECT track_id, COALESCE(played_at, updated_at) AS occurred, id
+                       FROM party_queue WHERE session_id=? AND status='playing'
+                       UNION ALL
+                       SELECT track_id, finished_at AS occurred, id FROM play_history
+                       WHERE completion_status='PLAYED'
+                   ) ORDER BY occurred DESC, id DESC LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+            actual_predecessor = (
+                int(interrupted["track_id"])
+                if interrupted is not None
+                else int(predecessor_row["track_id"]) if predecessor_row is not None else None
+            )
+            configuration_matches = plan.rule_configuration_digest == current_configuration_digest
+            first_remaining = next(
+                (
+                    row
+                    for row in step_rows
+                    if row["status"] == "PLANNED"
+                    or row["queue_status"] in {"waiting", "preparing", "ready", "playing"}
+                ),
+                None,
+            )
+            stored_previous = None
+            if first_remaining is not None:
+                stored_previous = (
+                    int(first_remaining["previous_track_id"])
+                    if first_remaining["previous_track_id"] is not None
+                    else None
+                )
+            predecessor_changed = (
+                first_remaining is not None and stored_previous != actual_predecessor
+            )
+            reason = (
+                AutomaticSelectionPlanRecoveryReason.INTERRUPTED_PLAYBACK
+                if interrupted is not None
+                else (
+                    AutomaticSelectionPlanRecoveryReason.INCONSISTENT_QUEUE_LINK
+                    if missing
+                    else (
+                        AutomaticSelectionPlanRecoveryReason.CONFIGURATION_CHANGED
+                        if not configuration_matches
+                        else (
+                            AutomaticSelectionPlanRecoveryReason.PREDECESSOR_CHANGED
+                            if predecessor_changed
+                            else AutomaticSelectionPlanRecoveryReason.RECOVERY_REQUIRED
+                        )
+                    )
+                )
+            )
+            return AutomaticSelectionPlanRecoveryState(
+                plan.plan_id,
+                session_id,
+                plan.status,
+                plan.revision,
+                sum(row["status"] == "PLANNED" for row in step_rows),
+                sum(
+                    row["queue_status"] in {"waiting", "preparing", "ready", "playing"}
+                    for row in step_rows
+                ),
+                str(interrupted["step_id"]) if interrupted is not None else None,
+                int(interrupted["track_id"]) if interrupted is not None else None,
+                actual_predecessor,
+                configuration_matches,
+                (
+                    (AutomaticSelectionPlanRecoveryAction.RESUME,)
+                    if configuration_matches
+                    and interrupted is None
+                    and not missing
+                    and not predecessor_changed
+                    else ()
+                )
+                + (
+                    AutomaticSelectionPlanRecoveryAction.RECALCULATE,
+                    AutomaticSelectionPlanRecoveryAction.DISCARD,
+                ),
+                reason,
+            )
+
+    def resume_recovered_plan(
+        self, plan_id: str, expected_revision: int
+    ) -> AutomaticSelectionPlanBundle:
+        return self.change_status(plan_id, expected_revision, AutomaticSelectionPlanStatus.ACTIVE)
+
+    def pause_for_foreign_playback(self, session_id: int, queue_id: int) -> bool:
+        """Pause and invalidate the unmaterialized tail after actual foreign playback."""
+        with self._database.transaction() as connection:
+            row = connection.execute(
+                """SELECT * FROM automatic_selection_plans
+                   WHERE session_id=? AND status='ACTIVE'""",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            plan = self._plan_from_row(row)
+            linked = connection.execute(
+                """SELECT 1 FROM automatic_selection_plan_steps
+                   WHERE plan_id=? AND executed_queue_entry_id=?""",
+                (plan.plan_id, queue_id),
+            ).fetchone()
+            if linked is not None:
+                return False
+            connection.execute(
+                """UPDATE automatic_selection_plan_steps
+                   SET status='INVALIDATED', invalid_reason_code='FOREIGN_PLAYBACK'
+                   WHERE plan_id=? AND status='PLANNED'""",
+                (plan.plan_id,),
+            )
+            candidate = replace(
+                plan,
+                status=AutomaticSelectionPlanStatus.PAUSED,
+                updated_at=datetime.utcnow(),
+                revision=plan.revision + 1,
+            )
+            self._update_plan_cas(connection, candidate, plan.revision)
+            return True
+
+    def discard_for_finished_session(self, session_id: int) -> None:
+        """Prevent a resumable plan from crossing its owning session boundary."""
+        with self._database.transaction() as connection:
+            rows = connection.execute(
+                """SELECT * FROM automatic_selection_plans
+                   WHERE session_id=? AND status IN ('ACTIVE','PAUSED')""",
+                (session_id,),
+            ).fetchall()
+            for row in rows:
+                plan = self._plan_from_row(row)
+                connection.execute(
+                    """UPDATE automatic_selection_plan_steps
+                       SET status='INVALIDATED', invalid_reason_code='SESSION_FINISHED'
+                       WHERE plan_id=? AND status='PLANNED'""",
+                    (plan.plan_id,),
+                )
+                discarded = replace(
+                    plan,
+                    status=AutomaticSelectionPlanStatus.DISCARDED,
+                    updated_at=datetime.utcnow(),
+                    revision=plan.revision + 1,
+                    invalid_reason_code="SESSION_FINISHED",
+                )
+                self._update_plan_cas(connection, discarded, plan.revision)
+
+    def discard_recovered_plan(
+        self, plan_id: str, expected_revision: int
+    ) -> AutomaticSelectionPlanBundle:
+        """Discard remaining work and only remove safe waiting automatic links."""
+        with self._database.transaction() as connection:
+            plan = self._required_plan(connection, plan_id)
+            if plan.status is AutomaticSelectionPlanStatus.DISCARDED:
+                return self._load_steps(connection, plan)
+            self._require_revision(plan, expected_revision)
+            playing = connection.execute(
+                """SELECT 1 FROM automatic_selection_plan_steps s
+                   JOIN party_queue q ON q.id=s.executed_queue_entry_id
+                   WHERE s.plan_id=? AND q.status='playing' LIMIT 1""",
+                (plan_id,),
+            ).fetchone()
+            if playing is not None:
+                raise ValueError("playing plan entry cannot be discarded")
+            connection.execute(
+                """UPDATE party_queue SET status='removed', loaded_deck=NULL,
+                          updated_at=CURRENT_TIMESTAMP
+                   WHERE id IN (SELECT executed_queue_entry_id
+                                FROM automatic_selection_plan_steps WHERE plan_id=?)
+                     AND source='AUTOMATIC' AND status='waiting'""",
+                (plan_id,),
+            )
+            connection.execute(
+                """UPDATE automatic_selection_plan_steps
+                   SET status='INVALIDATED', invalid_reason_code='PLAN_DISCARDED'
+                   WHERE plan_id=? AND status='PLANNED'""",
+                (plan_id,),
+            )
+            discarded = replace(
+                plan,
+                status=AutomaticSelectionPlanStatus.DISCARDED,
+                updated_at=datetime.utcnow(),
+                revision=plan.revision + 1,
+                invalid_reason_code="PLAN_DISCARDED",
+            )
+            self._update_plan_cas(connection, discarded, expected_revision)
+            return self._load_steps(connection, discarded)
+
+    def replace_recovered_plan(
+        self,
+        old_plan_id: str,
+        expected_revision: int,
+        new_plan_id: str,
+        current_configuration_digest: str,
+    ) -> AutomaticSelectionPlanBundle:
+        """Atomically retire the old remainder and activate a completed draft."""
+        with self._database.transaction() as connection:
+            old = self._required_plan(connection, old_plan_id)
+            self._require_revision(old, expected_revision)
+            new = self._required_plan(connection, new_plan_id)
+            if new.status is not AutomaticSelectionPlanStatus.DRAFT:
+                raise ValueError("replacement must be a draft")
+            if new.session_id != old.session_id:
+                raise ValueError("replacement session differs")
+            if new.rule_configuration_digest != current_configuration_digest:
+                raise ValueError("replacement configuration changed")
+            connection.execute(
+                """UPDATE party_queue SET status='removed', loaded_deck=NULL,
+                          updated_at=CURRENT_TIMESTAMP
+                   WHERE id IN (SELECT executed_queue_entry_id
+                                FROM automatic_selection_plan_steps WHERE plan_id=?)
+                     AND source='AUTOMATIC' AND status='waiting'""",
+                (old_plan_id,),
+            )
+            connection.execute(
+                """UPDATE automatic_selection_plan_steps
+                   SET status='INVALIDATED', invalid_reason_code='PLAN_RECALCULATED'
+                   WHERE plan_id=? AND status='PLANNED'""",
+                (old_plan_id,),
+            )
+            retired = replace(
+                old,
+                status=AutomaticSelectionPlanStatus.INVALIDATED,
+                updated_at=datetime.utcnow(),
+                revision=old.revision + 1,
+                invalid_reason_code="PLAN_RECALCULATED",
+            )
+            self._update_plan_cas(connection, retired, expected_revision)
+            active = replace(
+                new,
+                status=AutomaticSelectionPlanStatus.ACTIVE,
+                updated_at=datetime.utcnow(),
+                revision=new.revision + 1,
+            )
+            self._update_plan_cas(connection, active, new.revision)
+            return self._load_steps(connection, active)
+
     def activate_draft_plan(
         self,
         plan_id: str,
@@ -99,7 +376,11 @@ class AutomaticSelectionPlanRepository:
             session = connection.execute(
                 "SELECT status FROM party_sessions WHERE id=?", (plan.session_id,)
             ).fetchone()
-            if session is None or str(session["status"]) not in {"active", "paused"}:
+            if session is None or str(session["status"]) not in {
+                "active",
+                "paused",
+                "recovered",
+            }:
                 raise ValueError("session is missing or not eligible for planning")
             planned = connection.execute(
                 """SELECT COUNT(*) FROM automatic_selection_plan_steps
@@ -259,7 +540,7 @@ class AutomaticSelectionPlanRepository:
                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                WHERE EXISTS (
                    SELECT 1 FROM party_sessions
-                   WHERE id=? AND status IN ('active','paused')
+                   WHERE id=? AND status IN ('active','paused','recovered')
                )""",
             (
                 plan.plan_id,
