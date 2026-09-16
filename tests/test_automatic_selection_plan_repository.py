@@ -139,6 +139,57 @@ def test_create_load_transition_and_atomic_idempotent_queue_link(tmp_path: Path)
         repository.invalidate_remaining(PLAN_ID, 1, 2, "CATALOG_CHANGED")
 
 
+def test_activate_draft_checks_digest_revision_session_and_creates_no_queue(
+    tmp_path: Path,
+) -> None:
+    database, repository, session_id = _setup(tmp_path / "activate.db")
+    draft = repository.create(_bundle(session_id))
+
+    active = repository.activate_draft_plan(
+        PLAN_ID,
+        0,
+        draft.plan.rule_configuration_digest,
+    )
+
+    assert active.plan.status is AutomaticSelectionPlanStatus.ACTIVE
+    assert active.plan.revision == 1
+    with database.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM party_queue").fetchone()[0] == 0
+    with pytest.raises(AutomaticSelectionPlanConflictError):
+        repository.activate_draft_plan(PLAN_ID, 0, draft.plan.rule_configuration_digest)
+
+
+def test_activate_draft_rejects_changed_configuration_and_closed_session(
+    tmp_path: Path,
+) -> None:
+    database, repository, session_id = _setup(tmp_path / "activate-rejected.db")
+    draft = repository.create(_bundle(session_id))
+
+    with pytest.raises(ValueError, match="configuration changed"):
+        repository.activate_draft_plan(PLAN_ID, 0, "different")
+    with database.connect() as connection:
+        connection.execute("UPDATE party_sessions SET status='completed' WHERE id=?", (session_id,))
+    with pytest.raises(ValueError, match="not eligible"):
+        repository.activate_draft_plan(
+            PLAN_ID,
+            0,
+            draft.plan.rule_configuration_digest,
+        )
+
+
+def test_invalid_step_and_plan_pause_are_one_revision_change(tmp_path: Path) -> None:
+    _, repository, session_id = _setup(tmp_path / "pause-invalid.db")
+    draft = repository.create(_bundle(session_id))
+    active = repository.activate_draft_plan(PLAN_ID, 0, draft.plan.rule_configuration_digest)
+
+    paused = repository.pause_invalid_step(PLAN_ID, 1, active.plan.revision, "TRACK_BLOCKED")
+
+    assert paused.plan.status is AutomaticSelectionPlanStatus.PAUSED
+    assert paused.plan.revision == 2
+    assert paused.steps[0].status is AutomaticSelectionPlanStepStatus.INVALIDATED
+    assert paused.steps[0].invalid_reason_code == "TRACK_BLOCKED"
+
+
 def test_discard_invalidates_only_unmaterialized_steps_atomically(tmp_path: Path) -> None:
     _, repository, session_id = _setup(tmp_path / "discard.db")
     repository.create(_bundle(session_id))

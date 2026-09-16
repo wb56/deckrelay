@@ -391,6 +391,10 @@ class AutomaticSelectionService:
             else DEFAULT_SELECTION_SCORING_SETTINGS
         )
 
+    def scoring_settings_snapshot(self) -> SelectionScoringSettings:
+        """Load one immutable scoring snapshot for plan configuration checks."""
+        return self._load_rule_settings()
+
     def _load_catalog_snapshot(
         self,
         previous_track_id: int | None,
