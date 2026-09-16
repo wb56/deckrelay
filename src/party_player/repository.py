@@ -117,8 +117,28 @@ class PartyPlayerRepository:
             )
             connection.execute(
                 """UPDATE party_queue
-                   SET status = 'waiting',
+                   SET status = CASE
+                           WHEN status = 'playing' AND EXISTS (
+                               SELECT 1 FROM automatic_selection_plan_steps s
+                               WHERE s.executed_queue_entry_id = party_queue.id
+                           ) THEN 'skipped'
+                           ELSE 'waiting'
+                       END,
                        loaded_deck = NULL,
+                       skip_reason = CASE
+                           WHEN status = 'playing' AND EXISTS (
+                               SELECT 1 FROM automatic_selection_plan_steps s
+                               WHERE s.executed_queue_entry_id = party_queue.id
+                           ) THEN 'Wiedergabe durch Neustart unterbrochen'
+                           ELSE skip_reason
+                       END,
+                       skip_code = CASE
+                           WHEN status = 'playing' AND EXISTS (
+                               SELECT 1 FROM automatic_selection_plan_steps s
+                               WHERE s.executed_queue_entry_id = party_queue.id
+                           ) THEN 'RECOVERY_INTERRUPTED_PLAYBACK'
+                           ELSE skip_code
+                       END,
                        locked = CASE
                            WHEN lock_source IN ('MANUAL', 'MANUAL_SYSTEM') THEN 1
                            ELSE 0

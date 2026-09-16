@@ -592,6 +592,8 @@ class QueueService:
         )
         with log_measure:
             self._log_event("QUEUE_PLAYING", updated, "PLAYING")
+        if self._automatic_plan_execution is not None:
+            self._automatic_plan_execution.observe_playback_started(self.session_id, queue_id)
 
     def mark_finished(self, queue_id: int, status: QueueStatus) -> None:
         """Finish one known queue entry without touching other deck assignments."""
@@ -638,6 +640,8 @@ class QueueService:
         if entry is None:
             return None
         self._transition(entry.queue_id, QueueStatus.PLAYING)
+        if self._automatic_plan_execution is not None:
+            self._automatic_plan_execution.observe_playback_started(self.session_id, entry.queue_id)
         return entry.queue_id
 
     def mark_finished_for_deck(

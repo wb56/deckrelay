@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Callable
 from datetime import datetime
+from queue import Empty, Queue
 from threading import Thread
 
 from party_player.audio.vlc_backend import VlcAudioBackend
@@ -62,6 +63,11 @@ from party_player.automatic_selection_plan_execution import (
     AutomaticSelectionPlanExecutionService,
 )
 from party_player.automatic_selection_planning import AutomaticSelectionPlanningService
+from party_player.automatic_selection_plan_recovery import (
+    AutomaticSelectionPlanRecoveryResult,
+    AutomaticSelectionPlanRecoveryResultCode,
+    AutomaticSelectionPlanRecoveryService,
+)
 from party_player.enums import EmptyQueuePolicy
 from party_player.file_availability import FileAvailabilityService
 from party_player.emergency_playlist import (
@@ -125,6 +131,9 @@ from party_player.capability_snapshots import CapabilitySnapshotState
 from party_player.worker_diagnostics import WorkerRegistry
 from party_player.ui.main_window import MainWindow
 from party_player.ui.first_run_dialog import FirstRunSetupDialog
+from party_player.ui.automatic_selection_plan_recovery_dialog import (
+    AutomaticSelectionPlanRecoveryDialog,
+)
 from party_player.models import SavedQueueEntry
 from party_player.overlay_player import OverlayAudioPlayer
 from party_player.overlay import OverlayDefinition, OverlayPlayResult
@@ -292,12 +301,22 @@ class PartyPlayerApplication:
             (track_blocks, artist_blocks, suitability, repetition, short_tracks)
         )
         automatic_plan_repository = AutomaticSelectionPlanRepository(database, party_repository)
+        session_service.bind_automatic_plan_discard(
+            automatic_plan_repository.discard_for_finished_session
+        )
         automatic_planning = AutomaticSelectionPlanningService(
             automatic_selection,
             track_selection,
             automatic_plan_repository,
         )
         automatic_plan_execution = AutomaticSelectionPlanExecutionService(
+            automatic_plan_repository,
+            automatic_planning,
+            tracks,
+            track_selection,
+            FileAvailabilityService(),
+        )
+        automatic_plan_recovery = AutomaticSelectionPlanRecoveryService(
             automatic_plan_repository,
             automatic_planning,
             tracks,
@@ -851,7 +870,13 @@ class PartyPlayerApplication:
         # Let Windows paint the complete shell before catalog/session recovery can
         # preload or automatically start audio.  This guarantees that the operator
         # sees and can control DeckRelay before the first audible playback.
-        def initialize() -> None:
+        initialized = False
+
+        def initialize_controller() -> None:
+            nonlocal initialized
+            if initialized:
+                return
+            initialized = True
             controller.initialize()
             if settings.emergency_preload_primary():
                 Thread(
@@ -859,6 +884,92 @@ class PartyPlayerApplication:
                     name="emergency-silent-preload",
                     daemon=True,
                 ).start()
+
+        def initialize() -> None:
+            results: Queue[AutomaticSelectionPlanRecoveryResult] = Queue(maxsize=1)
+
+            def inspect_recovery() -> None:
+                results.put(automatic_plan_recovery.inspect(session.session_id))
+
+            def present() -> None:
+                try:
+                    result = results.get_nowait()
+                except Empty:
+                    window.after(25, present)
+                    return
+                state = result.state
+                if (
+                    result.code is AutomaticSelectionPlanRecoveryResultCode.RECOVERY_NOT_REQUIRED
+                    or state is None
+                ):
+                    initialize_controller()
+                    return
+
+                def decide(operation: Callable[[], object]) -> None:
+                    completed: Queue[object] = Queue(maxsize=1)
+
+                    def worker() -> None:
+                        completed.put(operation())
+
+                    def poll_decision() -> None:
+                        try:
+                            decision_result = completed.get_nowait()
+                        except Empty:
+                            window.after(25, poll_decision)
+                            return
+                        success = isinstance(
+                            decision_result, AutomaticSelectionPlanRecoveryResult
+                        ) and decision_result.code in {
+                            AutomaticSelectionPlanRecoveryResultCode.RESUMED,
+                            AutomaticSelectionPlanRecoveryResultCode.RECALCULATED,
+                            AutomaticSelectionPlanRecoveryResultCode.DISCARDED,
+                        }
+                        dialog.finish_decision(
+                            success=success,
+                            message=(
+                                "Der Plan kann nicht unverändert fortgesetzt werden. "
+                                "Bitte neu berechnen oder verwerfen."
+                            ),
+                        )
+                        if success:
+                            initialize_controller()
+
+                    Thread(
+                        target=worker,
+                        name="automatic-plan-recovery-decision",
+                        daemon=True,
+                    ).start()
+                    window.after(25, poll_decision)
+
+                dialog = AutomaticSelectionPlanRecoveryDialog(
+                    window,
+                    state,
+                    resume=lambda: decide(
+                        lambda: automatic_plan_recovery.resume_plan(
+                            state.plan_id, state.plan_revision
+                        )
+                    ),
+                    recalculate=lambda: decide(
+                        lambda: automatic_plan_recovery.recalculate_plan(
+                            state.plan_id,
+                            state.plan_revision,
+                            state.actual_predecessor_track_id,
+                        )
+                    ),
+                    discard=lambda: decide(
+                        lambda: automatic_plan_recovery.discard_plan(
+                            state.plan_id, state.plan_revision
+                        )
+                    ),
+                    leave_paused=initialize_controller,
+                )
+
+            Thread(
+                target=inspect_recovery,
+                name="automatic-plan-recovery-inspection",
+                daemon=True,
+            ).start()
+            window.after(25, present)
 
         def poll_metadata_analysis() -> None:
             if not window.winfo_exists():

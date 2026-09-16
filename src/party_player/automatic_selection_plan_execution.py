@@ -103,6 +103,14 @@ class AutomaticSelectionPlanExecutionService:
                 reason_code="PLAN_ACTIVATION_FAILED",
             )
 
+    def observe_playback_started(self, session_id: int, queue_id: int) -> None:
+        """Pause an active plan when actual playback is not its linked next step."""
+        try:
+            self._plans.pause_for_foreign_playback(session_id, queue_id)
+        except Exception:
+            # Playback is authoritative and must never be stopped by plan bookkeeping.
+            return
+
     def ensure_next_step(self, session_id: int) -> AutomaticSelectionPlanExecutionResult:
         """Use or create one active plan and materialize at most one step."""
         with self._lock:

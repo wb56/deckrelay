@@ -252,6 +252,10 @@ class TrackSelectionService:
             )
         return tuple(projected)
 
+    def all_relaxable_reason_codes(self) -> frozenset[str]:
+        """Expose the bounded hard-rule relaxations for hard-validity rechecks."""
+        return frozenset(code for rule in self._rules for code in rule.relaxable_reason_codes)
+
     @classmethod
     def _safe_configuration_value(cls, value: object) -> object:
         if value is None or type(value) in {bool, int, float}:

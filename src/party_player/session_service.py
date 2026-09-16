@@ -1,6 +1,7 @@
 """Party session lifecycle and safe recovery."""
 
 import json
+from collections.abc import Callable
 
 from party_player.enums import SessionStatus
 from party_player.models import PartySession
@@ -11,6 +12,10 @@ from party_player.repository import PartyPlayerRepository
 class PartySessionService:
     def __init__(self, repository: PartyPlayerRepository) -> None:
         self._repository = repository
+        self._discard_automatic_plan: Callable[[int], None] | None = None
+
+    def bind_automatic_plan_discard(self, callback: Callable[[int], None]) -> None:
+        self._discard_automatic_plan = callback
 
     def start(self, name: str = "Party") -> PartySession:
         return self._repository.create_session(name)
@@ -55,6 +60,8 @@ class PartySessionService:
         )
 
     def finish(self, session_id: int) -> None:
+        if self._discard_automatic_plan is not None:
+            self._discard_automatic_plan(session_id)
         self._repository.set_session_status(session_id, SessionStatus.FINISHED)
 
     def select_playlist(self, session_id: int, saved_queue_id: int | None) -> None:

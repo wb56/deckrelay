@@ -33,6 +33,52 @@ class AutomaticSelectionPlanStepStatus(StrEnum):
     INVALIDATED = "INVALIDATED"
 
 
+class AutomaticSelectionPlanRecoveryReason(StrEnum):
+    RECOVERY_NOT_REQUIRED = "RECOVERY_NOT_REQUIRED"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    INTERRUPTED_PLAYBACK = "INTERRUPTED_PLAYBACK"
+    CONFIGURATION_CHANGED = "CONFIGURATION_CHANGED"
+    PREDECESSOR_CHANGED = "PREDECESSOR_CHANGED"
+    INCONSISTENT_QUEUE_LINK = "INCONSISTENT_QUEUE_LINK"
+
+
+class AutomaticSelectionPlanRecoveryAction(StrEnum):
+    RESUME = "RESUME"
+    RECALCULATE = "RECALCULATE"
+    DISCARD = "DISCARD"
+
+
+@dataclass(frozen=True, slots=True)
+class AutomaticSelectionPlanRecoveryState:
+    """Immutable, path-free decision snapshot produced during startup recovery."""
+
+    plan_id: str
+    session_id: int
+    plan_status: AutomaticSelectionPlanStatus
+    plan_revision: int
+    remaining_planned_steps: int
+    linked_nonterminal_steps: int
+    interrupted_step_id: str | None
+    interrupted_track_id: int | None
+    actual_predecessor_track_id: int | None
+    configuration_matches: bool
+    available_actions: tuple[AutomaticSelectionPlanRecoveryAction, ...]
+    reason_code: AutomaticSelectionPlanRecoveryReason
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.plan_id, "plan_id")
+        if self.session_id < 1 or self.plan_revision < 0:
+            raise ValueError("session and revision must be valid")
+        if self.remaining_planned_steps < 0 or self.linked_nonterminal_steps < 0:
+            raise ValueError("recovery counts must be non-negative")
+        if self.interrupted_step_id is not None:
+            _require_uuid(self.interrupted_step_id, "interrupted_step_id")
+        if self.interrupted_track_id is not None and self.interrupted_track_id < 1:
+            raise ValueError("interrupted_track_id must be positive")
+        if self.actual_predecessor_track_id is not None and self.actual_predecessor_track_id < 1:
+            raise ValueError("actual_predecessor_track_id must be positive")
+
+
 def _require_uuid(value: str, field_name: str) -> None:
     try:
         parsed = UUID(value)

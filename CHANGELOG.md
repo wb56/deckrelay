@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Unterbrochene Automatikpläne werden nach einem Neustart sicher pausiert und können
+  fortgesetzt, neu berechnet oder verworfen werden, ohne bereits gestartete Titel
+  automatisch zu wiederholen.
 - Die Automatik führt persistierte Auswahlpläne schrittweise über die bestehende
   Queue aus und prüft jeden Titel vor der Einreihung erneut auf harte Regeln und
   Dateiverfügbarkeit.
