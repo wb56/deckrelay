@@ -7,6 +7,8 @@ from datetime import datetime
 import random
 import logging
 import inspect
+import hashlib
+import json
 from threading import Lock
 from typing import Protocol
 import uuid
@@ -42,6 +44,7 @@ from party_player.selection_preview import (
     SelectionPreview,
     SelectionPreviewCompletion,
     SelectionPreviewStep,
+    SelectionPreviewPlanningBasis,
 )
 from party_player.selection_decision import attach_source_resolution
 from party_player.selection_source import SelectionSourceResolver, SourceResolutionReason
@@ -118,6 +121,7 @@ class _PreparedSimulation:
     previous_track_id: int | None
     candidates: tuple[Track, ...]
     metadata: SelectionMetadataCatalogSnapshot
+    hard_rules: object
 
 
 class _AutomaticTrackSource(Protocol):
@@ -234,17 +238,26 @@ class AutomaticSelectionService:
             history = self._history.preview_snapshot()
             previous_track_id = self._previous_track_id(history)
             candidates, metadata = self._load_catalog_snapshot(previous_track_id)
+            prepared_rules = rules.copy_for_preview()
+            prepared_rules.prepare_catalog(candidates)
             sequence = SelectionSequenceContext(
                 previous_track_id,
                 metadata.for_track(previous_track_id),
                 0,
             )
-            return self._select(rules, settings, candidates, metadata, history, sequence)
+            return self._select(prepared_rules, settings, candidates, metadata, history, sequence)
 
         with self._selection_lock:
             return self._run_isolated(select_once)
 
-    def preview(self, rules: TrackSelectionService, count: int) -> SelectionPreview:
+    def preview(
+        self,
+        rules: TrackSelectionService,
+        count: int,
+        *,
+        session_id: int | None = None,
+        configuration_digest: str | None = None,
+    ) -> SelectionPreview:
         """Predict automatic choices without advancing any productive state."""
         if not 1 <= count <= self.MAX_PREVIEW_DEPTH:
             raise ValueError(f"Vorschautiefe muss zwischen 1 und {self.MAX_PREVIEW_DEPTH} liegen")
@@ -252,6 +265,8 @@ class AutomaticSelectionService:
             preview_random = random.Random()
             preview_random.setstate(self._random.getstate())
             prepared = self._prepare_simulation(rules)
+            basis_previous_track_id = prepared.previous_track_id
+            basis_history_fingerprint = self._history_fingerprint(prepared.history)
         simulation = self._simulate_prepared(
             prepared, count, preview_random, context_code="AUTOMATIC_PREVIEW"
         )
@@ -279,7 +294,33 @@ class AutomaticSelectionService:
             steps=steps,
             completion_reason=completion,
             completion_rationale=simulation.completion_rationale,
+            planning_basis=(
+                SelectionPreviewPlanningBasis(
+                    session_id=session_id,
+                    configuration_digest=configuration_digest,
+                    rationale_schema_version=3,
+                    previous_track_id=basis_previous_track_id,
+                    history_fingerprint=basis_history_fingerprint,
+                )
+                if session_id is not None and configuration_digest is not None
+                else None
+            ),
         )
+
+    def current_history_basis(self) -> tuple[int | None, str]:
+        """Load only the history facts used to validate a displayed preview."""
+        history = self._history.preview_snapshot()
+        return self._previous_track_id(history), self._history_fingerprint(history)
+
+    @staticmethod
+    def _history_fingerprint(history: _PreviewHistory) -> str:
+        counts = history.play_counts()
+        recent_ids = sorted(history.recent_track_ids(max(len(counts), 1_000_000)))
+        encoded = json.dumps(
+            {"counts": sorted(counts.items()), "recent": recent_ids},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     def simulate_sequence(
         self,
@@ -308,13 +349,16 @@ class AutomaticSelectionService:
         if previous_track_id is None:
             previous_track_id = self._previous_track_id(history)
         candidates, metadata = self._load_catalog_snapshot(previous_track_id)
+        prepared_rules = rules.copy_for_preview()
+        hard_rules = prepared_rules.prepare_catalog(candidates)
         return _PreparedSimulation(
-            rules.copy_for_preview(),
+            prepared_rules,
             settings,
             history,
             previous_track_id,
             candidates,
             metadata,
+            hard_rules,
         )
 
     def _simulate_prepared(

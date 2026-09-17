@@ -68,6 +68,67 @@ class AutomaticSelectionPlanRepository:
             )
         return bundle
 
+    def create_replacing_resumable(
+        self,
+        bundle: AutomaticSelectionPlanBundle,
+        old_plan_id: str,
+        expected_revision: int,
+        current_configuration_digest: str,
+    ) -> AutomaticSelectionPlanBundle:
+        """Create one draft and replace one resumable plan in a single transaction."""
+        with self._database.transaction() as connection:
+            old = self._required_plan(connection, old_plan_id)
+            self._require_revision(old, expected_revision)
+            if old.status not in {
+                AutomaticSelectionPlanStatus.ACTIVE,
+                AutomaticSelectionPlanStatus.PAUSED,
+            }:
+                raise ValueError("only a resumable plan can be replaced")
+            if bundle.plan.session_id != old.session_id:
+                raise ValueError("replacement session differs")
+            if bundle.plan.rule_configuration_digest != current_configuration_digest:
+                raise ValueError("replacement configuration changed")
+            self._insert_plan(connection, bundle.plan)
+            connection.executemany(
+                """INSERT INTO automatic_selection_plan_steps
+                   (step_id, plan_id, position, track_id, status, planned_at,
+                    previous_track_id, relaxation_stage_code, primary_play_count,
+                    secondary_score, tie_candidate_count, tie_break_method_code,
+                    selection_reason_code, executed_queue_entry_id, invalid_reason_code)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [self._step_values(step) for step in bundle.steps],
+            )
+            connection.execute(
+                """UPDATE party_queue SET status='removed', loaded_deck=NULL,
+                          updated_at=CURRENT_TIMESTAMP
+                   WHERE id IN (SELECT executed_queue_entry_id
+                                FROM automatic_selection_plan_steps WHERE plan_id=?)
+                     AND source='AUTOMATIC' AND status='waiting'""",
+                (old_plan_id,),
+            )
+            connection.execute(
+                """UPDATE automatic_selection_plan_steps
+                   SET status='INVALIDATED', invalid_reason_code='PLAN_RECALCULATED'
+                   WHERE plan_id=? AND status='PLANNED'""",
+                (old_plan_id,),
+            )
+            retired = replace(
+                old,
+                status=AutomaticSelectionPlanStatus.INVALIDATED,
+                updated_at=datetime.utcnow(),
+                revision=old.revision + 1,
+                invalid_reason_code="PLAN_RECALCULATED",
+            )
+            self._update_plan_cas(connection, retired, expected_revision)
+            active = replace(
+                bundle.plan,
+                status=AutomaticSelectionPlanStatus.ACTIVE,
+                updated_at=datetime.utcnow(),
+                revision=bundle.plan.revision + 1,
+            )
+            self._update_plan_cas(connection, active, bundle.plan.revision)
+            return self._load_steps(connection, active)
+
     def get(self, plan_id: str) -> AutomaticSelectionPlanBundle | None:
         with self._database.connect() as connection:
             return self._load_bundle(connection, plan_id)
@@ -84,6 +145,16 @@ class AutomaticSelectionPlanRepository:
             if not rows:
                 return None
             return self._load_steps(connection, self._plan_from_row(rows[0]))
+
+    def get_latest_for_session(self, session_id: int) -> AutomaticSelectionPlanBundle | None:
+        """Load the newest plan and all steps in two queries."""
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM automatic_selection_plans
+                   WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+            return None if row is None else self._load_steps(connection, self._plan_from_row(row))
 
     def recovery_state(
         self, session_id: int, current_configuration_digest: str

@@ -21,6 +21,7 @@ from party_player.automatic_selection_plan_execution import (
     AutomaticSelectionPlanExecutionService,
     AutomaticSelectionPlanExecutionStatus,
 )
+from party_player.automatic_selection_planning import AutomaticSelectionPlanningService
 from party_player.selection_preview import SelectionPreview
 from party_player.structured_logging import log_queue_event
 from party_player.performance_monitor import PerformanceMonitor
@@ -124,6 +125,7 @@ class QueueService:
         empty_queue_policy: EmptyQueuePolicy = EmptyQueuePolicy.STOP_AFTER_CURRENT,
         automatic_selection: AutomaticSelectionService | None = None,
         automatic_plan_execution: AutomaticSelectionPlanExecutionService | None = None,
+        automatic_planning: AutomaticSelectionPlanningService | None = None,
         repeat_playlist_entries: Callable[[], list[SavedQueueEntry]] | None = None,
     ) -> None:
         self._repository = repository
@@ -148,6 +150,7 @@ class QueueService:
         self.empty_queue_policy = empty_queue_policy
         self._automatic_selection = automatic_selection
         self._automatic_plan_execution = automatic_plan_execution
+        self._automatic_planning = automatic_planning
         self.last_plan_execution_result: AutomaticSelectionPlanExecutionResult | None = None
         self._repeat_playlist_entries = repeat_playlist_entries
         self._logger = logging.getLogger(__name__)
@@ -168,7 +171,17 @@ class QueueService:
         """Delegate to the existing state-neutral automatic preview."""
         if self._automatic_selection is None:
             raise RuntimeError("Automatische Titelauswahl ist nicht verfügbar")
-        return self._automatic_selection.preview(self._selection_service, count)
+        digest = (
+            self._automatic_planning.current_configuration_digest()
+            if self._automatic_planning is not None
+            else None
+        )
+        return self._automatic_selection.preview(
+            self._selection_service,
+            count,
+            session_id=self.session_id if digest is not None else None,
+            configuration_digest=digest,
+        )
 
     def can_supply_empty_queue_candidate(self) -> bool:
         return (

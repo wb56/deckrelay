@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
+from tkinter import messagebox
 
 import customtkinter as ctk  # type: ignore[import-untyped]
 
@@ -16,6 +17,7 @@ from party_player.selection_preview import (
     SelectionPreviewStep,
 )
 from party_player.ui import theme
+from party_player.automatic_selection_plan_ui import PreviewAdoptionCode, PreviewAdoptionResult
 from party_player.ui.responsive_dialog import (
     apply_responsive_dialog_geometry,
     bind_dialog_escape,
@@ -29,6 +31,16 @@ class PreviewRequester(Protocol):
         count: int,
         completed: Callable[[SelectionPreview], None],
         failed: Callable[[str], None],
+    ) -> bool: ...
+
+    def request_preview_adoption(
+        self,
+        preview: SelectionPreview,
+        completed: Callable[[PreviewAdoptionResult], None],
+        failed: Callable[[str], None],
+        *,
+        replace_plan_id: str | None = None,
+        replace_revision: int | None = None,
     ) -> bool: ...
 
 
@@ -311,6 +323,8 @@ class AutomaticSelectionPreviewDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._requester = requester
         self._request_state = PreviewRequestState()
         self._step_buttons: list[Any] = []
+        self._current_preview: SelectionPreview | None = None
+        self._adoption_running = False
         compact = bool(getattr(parent, "_compact_layout_active", False))
         self._compact = compact
         self.title("Automatik-Vorschau")
@@ -376,8 +390,18 @@ class AutomaticSelectionPreviewDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._warning.grid(row=3, column=0, padx=20, pady=(6, 2), sticky="ew")
         self._status = ctk.CTkLabel(self, text="", anchor="w", wraplength=900)
         self._status.grid(row=4, column=0, padx=20, pady=(2, 6), sticky="ew")
-        ctk.CTkButton(self, text="Schließen", command=self._close).grid(
-            row=5, column=0, padx=20, pady=(4, 20), sticky="e"
+        actions = ctk.CTkFrame(self, fg_color="transparent")
+        actions.grid(row=5, column=0, padx=20, pady=(4, 20), sticky="ew")
+        actions.grid_columnconfigure(0, weight=1)
+        self._adopt = ctk.CTkButton(
+            actions,
+            text="Als Automatikplan übernehmen",
+            command=self._adopt_preview,
+            state="disabled",
+        )
+        self._adopt.grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(actions, text="Schließen", command=self._close).grid(
+            row=0, column=1, padx=(8, 0), sticky="e"
         )
         self.protocol("WM_DELETE_WINDOW", self._close)
         bind_dialog_escape(self, self._close)
@@ -409,6 +433,14 @@ class AutomaticSelectionPreviewDialog(ctk.CTkToplevel):  # type: ignore[misc]
         if not self._request_state.finish(generation):
             return
         self._calculate.configure(state="normal", text="Aktualisieren")
+        self._current_preview = preview
+        adopt = getattr(self, "_adopt", None)
+        if adopt is not None:
+            adopt.configure(
+                state=(
+                    "normal" if preview.steps and preview.planning_basis is not None else "disabled"
+                )
+            )
         self._created.configure(text=f"Erstellt: {preview.created_at:%d.%m.%Y %H:%M:%S}")
         self._status.configure(text=preview_completion_text(preview), text_color=theme.TEXT_MUTED)
         for row, step in enumerate(preview.steps):
@@ -436,11 +468,90 @@ class AutomaticSelectionPreviewDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._status.configure(text=f"Vorschau fehlgeschlagen: {message}", text_color=theme.ERROR)
 
     def _clear_result(self) -> None:
+        self._current_preview = None
+        adopt = getattr(self, "_adopt", None)
+        if adopt is not None:
+            adopt.configure(state="disabled")
         for button in self._step_buttons:
             button.destroy()
         self._step_buttons.clear()
         self._detail_text.configure(text="Keine aktuelle Vorschau.")
         self._created.configure(text="Wird berechnet…")
+
+    def _adopt_preview(self) -> None:
+        preview = self._current_preview
+        if preview is None or self._adoption_running:
+            return
+        self._adoption_running = True
+        self._adopt.configure(state="disabled", text="Wird übernommen …")
+        self._status.configure(
+            text="Vorschau wird sicher übernommen …", text_color=theme.TEXT_MUTED
+        )
+        started = self._requester.request_preview_adoption(
+            preview,
+            self._accept_adoption,
+            self._adoption_error,
+        )
+        if not started:
+            self._adoption_error("Die Übernahme konnte nicht gestartet werden.")
+
+    def _accept_adoption(self, result: PreviewAdoptionResult) -> None:
+        if self._request_state.closed:
+            return
+        if result.code is PreviewAdoptionCode.CONFLICT and result.plan is not None:
+            replace = messagebox.askyesno(
+                "Vorhandener Automatikplan",
+                (
+                    "Es besteht bereits ein aktiver oder pausierter Automatikplan. Soll dessen "
+                    "verbleibender Teil verworfen und die angezeigte Vorschau übernommen werden? "
+                    "Bereits gespielte Titel, Historie und fremde Queue-Einträge bleiben erhalten."
+                ),
+                parent=self,
+            )
+            if replace:
+                preview = self._current_preview
+                if preview is not None:
+                    self._requester.request_preview_adoption(
+                        preview,
+                        self._accept_adoption,
+                        self._adoption_error,
+                        replace_plan_id=result.plan.plan.plan_id,
+                        replace_revision=result.plan.plan.revision,
+                    )
+                    return
+        self._adoption_running = False
+        self._adopt.configure(state="normal", text="Als Automatikplan übernehmen")
+        if result.code in {PreviewAdoptionCode.CREATED, PreviewAdoptionCode.REPLACED}:
+            self._status.configure(
+                text=(
+                    "Die angezeigte Reihenfolge wurde als Plan übernommen. "
+                    "Öffnen Sie ‚Automatikplan…‘, um den Entwurf zu aktivieren."
+                ),
+                text_color=theme.TEXT_MUTED,
+            )
+            callback = getattr(self.master, "show_automatic_plan_status", None)
+            if callable(callback):
+                callback("Entwurf · Aktivierung erforderlich")
+        elif result.code is PreviewAdoptionCode.STALE:
+            self._status.configure(
+                text="Die Vorschau ist nicht mehr aktuell. Bitte aktualisieren Sie sie.",
+                text_color=theme.ERROR,
+            )
+        elif result.code is PreviewAdoptionCode.CONFLICT:
+            self._status.configure(
+                text="Der vorhandene Plan blieb unverändert.", text_color=theme.WARNING
+            )
+        else:
+            self._status.configure(
+                text="Die Vorschau konnte nicht sicher übernommen werden.", text_color=theme.ERROR
+            )
+
+    def _adoption_error(self, message: str) -> None:
+        if self._request_state.closed:
+            return
+        self._adoption_running = False
+        self._adopt.configure(state="normal", text="Als Automatikplan übernehmen")
+        self._status.configure(text=message, text_color=theme.ERROR)
 
     def _close(self) -> None:
         self._request_state.close()

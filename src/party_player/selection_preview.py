@@ -23,6 +23,17 @@ class SelectionPreviewStep:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectionPreviewPlanningBasis:
+    """Path-free facts required to adopt exactly one displayed preview."""
+
+    session_id: int
+    configuration_digest: str
+    rationale_schema_version: int
+    previous_track_id: int | None
+    history_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
 class SelectionPreview:
     preview_id: str
     created_at: datetime
@@ -36,3 +47,4 @@ class SelectionPreview:
     )
     schema_version: int = 2
     completion_rationale: SelectionRationale | None = None
+    planning_basis: SelectionPreviewPlanningBasis | None = None

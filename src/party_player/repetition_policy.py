@@ -139,6 +139,29 @@ class PersistentRepetitionService:
         self._logger = logging.getLogger(__name__)
         self._preview_plays: list[RecentPlay] = []
         self._preview_now: datetime | None = None
+        self._snapshot_recent: tuple[RecentPlay, ...] | None = None
+        self._snapshot_timed: tuple[RecentPlay, ...] | None = None
+
+    def prepare_catalog(self, _tracks: tuple[Track, ...]) -> tuple[RecentPlay, ...]:
+        count_sizes = [self.track_window_size, self.artist_window_size]
+        timed_windows = [self.track_window, self.artist_window]
+        for values in self._source_windows.values():
+            if values[0] is not None:
+                count_sizes.append(max(0, values[0]))
+            if values[2] is not None:
+                count_sizes.append(max(0, values[2]))
+            if values[1] is not None:
+                timed_windows.append(timedelta(minutes=max(0.0, values[1])))
+            if values[3] is not None:
+                timed_windows.append(timedelta(minutes=max(0.0, values[3])))
+        maximum = max(1, *count_sizes)
+        widest_window = max(timed_windows)
+        now = self._preview_now if self._preview_now is not None else self._clock()
+        self._snapshot_recent = tuple(self._repository.recent_completed(maximum))
+        self._snapshot_timed = tuple(
+            self._repository.completed_since(now - widest_window) if widest_window else ()
+        )
+        return tuple(dict.fromkeys((*self._snapshot_recent, *self._snapshot_timed)))
 
     def copy_for_preview(self) -> "PersistentRepetitionService":
         preview = object.__new__(PersistentRepetitionService)
@@ -233,10 +256,19 @@ class PersistentRepetitionService:
             ),
         )
         maximum = max(track_window_size, artist_window_size, 1)
-        recent = [*self._preview_plays, *self._repository.recent_completed(maximum)][:maximum]
+        stored_recent = (
+            self._snapshot_recent
+            if self._snapshot_recent is not None
+            else tuple(self._repository.recent_completed(maximum))
+        )
+        recent = [*self._preview_plays, *stored_recent][:maximum]
         now = self._preview_now if self._preview_now is not None else self._clock()
         widest_window = max(track_window, artist_window)
-        timed = self._repository.completed_since(now - widest_window) if widest_window else []
+        timed = list(
+            self._snapshot_timed
+            if self._snapshot_timed is not None
+            else (self._repository.completed_since(now - widest_window) if widest_window else ())
+        )
         if widest_window:
             timed = [
                 *(play for play in self._preview_plays if now - play.finished_at < widest_window),

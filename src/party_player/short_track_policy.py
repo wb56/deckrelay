@@ -1,6 +1,6 @@
 """Queue selection rule for tracks with a short effective cue duration."""
 
-from party_player.cue_points import CuePointService
+from party_player.cue_points import CuePointService, TrackCuePoints
 from party_player.enums import QueueSource, ShortTrackPolicy
 from party_player.models import QueueEntry, Track
 from party_player.selection_decision import (
@@ -32,6 +32,11 @@ class ShortTrackSelectionRule:
         self._cue_points = cue_points
         self.threshold_seconds = max(1.0, threshold_seconds)
         self.policy = policy
+        self._snapshot: dict[int, TrackCuePoints] | None = None
+
+    def prepare_catalog(self, tracks: tuple[Track, ...]) -> dict[int, TrackCuePoints]:
+        self._snapshot = self._cue_points.repository.get_many(tuple(track.id for track in tracks))
+        return self._snapshot
 
     def selection_configuration(self) -> dict[str, object]:
         return {
@@ -55,7 +60,15 @@ class ShortTrackSelectionRule:
         track = rule_input.track
         assert track is not None
         entry = rule_input.entry
-        boundaries = self._cue_points.resolve(track, queue_entry=entry)
+        boundaries = (
+            self._cue_points.resolve_loaded(
+                track,
+                self._snapshot.get(track.id, TrackCuePoints(track.id)),
+                queue_entry=entry,
+            )
+            if self._snapshot is not None
+            else self._cue_points.resolve(track, queue_entry=entry)
+        )
         effective_duration = max(0.0, boundaries.cue_out - boundaries.cue_in)
         if effective_duration >= self.threshold_seconds:
             return hard_rule_evaluation(
