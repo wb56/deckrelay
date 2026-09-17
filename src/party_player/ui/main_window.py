@@ -5052,23 +5052,24 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
     def _layout_preparation_content(self, *, compact: bool) -> None:
         """Arrange the single preparation widget tree for the active presentation."""
         mixer = self._mixer_panel
+        plan_status = self.__dict__.get("_automatic_plan_status")
+        plan_button = self.__dict__.get("_automatic_plan_button")
         if compact:
             mixer.grid_columnconfigure(0, weight=1, uniform="")
             mixer.grid_columnconfigure(1, weight=0, uniform="")
             self._preparation_status_group.grid_configure(
                 row=0, column=0, columnspan=1, padx=8, pady=(4, 4), sticky="ew"
             )
-            for row, widget in enumerate(
-                (
-                    self._preparation_mode_status,
-                    self._preparation_source_status,
-                    self._preparation_queue_status,
-                    self._preparation_automatic_status,
-                    self._automatic_plan_status,
-                    self._automatic_plan_button,
-                ),
-                start=1,
-            ):
+            status_widgets = [
+                self._preparation_mode_status,
+                self._preparation_source_status,
+                self._preparation_queue_status,
+                self._preparation_automatic_status,
+            ]
+            status_widgets.extend(
+                widget for widget in (plan_status, plan_button) if widget is not None
+            )
+            for row, widget in enumerate(status_widgets, start=1):
                 widget.grid_configure(row=row, column=0, columnspan=4, pady=1)
             self._preparation_playback_group.grid_configure(
                 row=1, column=0, columnspan=1, padx=8, pady=4, sticky="ew"
@@ -5097,12 +5098,14 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             )
         ):
             widget.grid_configure(row=1, column=column, columnspan=1, pady=(2, 10))
-        self._automatic_plan_status.grid_configure(
-            row=2, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew"
-        )
-        self._automatic_plan_button.grid_configure(
-            row=2, column=3, columnspan=1, padx=12, pady=(0, 10), sticky="e"
-        )
+        if plan_status is not None:
+            plan_status.grid_configure(
+                row=2, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew"
+            )
+        if plan_button is not None:
+            plan_button.grid_configure(
+                row=2, column=3, columnspan=1, padx=12, pady=(0, 10), sticky="e"
+            )
         self._preparation_playback_group.grid_configure(
             row=1, column=0, columnspan=1, padx=(12, 6), pady=(4, 6), sticky="nsew"
         )
