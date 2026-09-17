@@ -50,6 +50,28 @@ class TrackPolicyRepository:
             str(row["reason"]),
         )
 
+    def get_many(self, track_ids: tuple[int, ...]) -> dict[int, TrackPolicy]:
+        unique_ids = tuple(dict.fromkeys(track_ids))
+        result: dict[int, TrackPolicy] = {}
+        for start in range(0, len(unique_ids), 900):
+            batch = unique_ids[start : start + 900]
+            placeholders = ",".join("?" for _ in batch)
+            with self._database.connect() as connection:
+                rows = connection.execute(
+                    f"SELECT track_id, status, reason FROM track_playback_policies "
+                    f"WHERE track_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+            for row in rows:
+                track_id = int(row["track_id"])
+                result[track_id] = TrackPolicy(
+                    track_id, TrackPolicyStatus(str(row["status"])), str(row["reason"])
+                )
+        return {
+            track_id: result.get(track_id, TrackPolicy(track_id, TrackPolicyStatus.ALLOWED))
+            for track_id in unique_ids
+        }
+
     def set(self, track_id: int, status: TrackPolicyStatus, reason: str = "") -> TrackPolicy:
         with self._database.connect() as connection:
             connection.execute(
@@ -75,6 +97,11 @@ class PersistentTrackBlockService:
     def __init__(self, repository: TrackPolicyRepository) -> None:
         self._repository = repository
         self._operator_overrides: set[int] = set()
+        self._snapshot: dict[int, TrackPolicy] | None = None
+
+    def prepare_catalog(self, tracks: tuple[Track, ...]) -> dict[int, TrackPolicy]:
+        self._snapshot = self._repository.get_many(tuple(track.id for track in tracks))
+        return self._snapshot
 
     def set_policy(
         self,
@@ -105,7 +132,11 @@ class PersistentTrackBlockService:
     ) -> RuleEvaluation:
         track = rule_input.track
         assert track is not None
-        policy = self._repository.get(track.id)
+        policy = (
+            self._snapshot.get(track.id, TrackPolicy(track.id, TrackPolicyStatus.ALLOWED))
+            if self._snapshot is not None
+            else self._repository.get(track.id)
+        )
         if policy.status is TrackPolicyStatus.ALLOWED:
             return hard_rule_evaluation(
                 rule_id=self.rule_id,

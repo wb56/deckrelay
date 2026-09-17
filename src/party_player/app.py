@@ -68,6 +68,7 @@ from party_player.automatic_selection_plan_recovery import (
     AutomaticSelectionPlanRecoveryResultCode,
     AutomaticSelectionPlanRecoveryService,
 )
+from party_player.automatic_selection_plan_ui import AutomaticSelectionPlanUiService
 from party_player.enums import EmptyQueuePolicy
 from party_player.file_availability import FileAvailabilityService
 from party_player.emergency_playlist import (
@@ -323,6 +324,13 @@ class PartyPlayerApplication:
             track_selection,
             FileAvailabilityService(),
         )
+        automatic_plan_ui = AutomaticSelectionPlanUiService(
+            automatic_plan_repository,
+            tracks,
+            automatic_planning,
+            automatic_plan_recovery,
+            automatic_selection,
+        )
 
         queue_service = QueueService(
             party_repository,
@@ -333,6 +341,7 @@ class PartyPlayerApplication:
             empty_queue_policy=EmptyQueuePolicy.AUTOMATIC_SELECTION,
             automatic_selection=automatic_selection,
             automatic_plan_execution=automatic_plan_execution,
+            automatic_planning=automatic_planning,
             repeat_playlist_entries=repeat_playlist_entries,
         )
         loudness = LoudnessService(
@@ -563,6 +572,7 @@ class PartyPlayerApplication:
             deck_health_monitor=DeckHealthMonitor(emergency_state),
             unresolved_emergency_incident=unresolved_emergency_incident,
             resolve_emergency_incident=emergency_persistence.resolve_reviewed,
+            automatic_plan_ui=automatic_plan_ui,
         )
         replaygain_cache.refresh_catalog()
         window.bind_controller(controller)

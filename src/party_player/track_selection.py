@@ -24,6 +24,13 @@ from party_player.selection_decision import (
     SelectionRuleInput,
     hard_rule_evaluation,
 )
+from party_player.selection_hard_rules import (
+    SelectionHardRuleCatalogSnapshot,
+    SelectionHardRuleCueFact,
+    SelectionHardRulePolicyFact,
+    SelectionHardRuleRecentPlay,
+    immutable_mapping,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +239,64 @@ class TrackSelectionService:
             recorder = getattr(rule, "record_preview_played", None)
             if callable(recorder):
                 recorder(track)
+
+    def prepare_catalog(self, tracks: tuple[Track, ...]) -> SelectionHardRuleCatalogSnapshot:
+        """Batch-load immutable hard-rule facts before candidate evaluation."""
+        track_policies: dict[int | str, SelectionHardRulePolicyFact] = {}
+        artist_policies: dict[int | str, SelectionHardRulePolicyFact] = {}
+        suitability: dict[int | str, SelectionHardRulePolicyFact] = {}
+        cues: dict[int | str, SelectionHardRuleCueFact] = {}
+        recent_plays: tuple[SelectionHardRuleRecentPlay, ...] = ()
+        for rule in self._rules:
+            prepare = getattr(rule, "prepare_catalog", None)
+            if not callable(prepare):
+                continue
+            loaded = prepare(tracks)
+            if rule.rule_id == "selection.track_policy":
+                track_policies = {
+                    key: SelectionHardRulePolicyFact(value.status.value, value.reason)
+                    for key, value in loaded.items()
+                }
+            elif rule.rule_id == "selection.artist_policy":
+                artist_policies = {
+                    key: SelectionHardRulePolicyFact(
+                        "BLOCKED",
+                        value.reason,
+                        value.scope.value,
+                        value.session_id,
+                        value.expires_at,
+                    )
+                    for key, value in loaded.items()
+                }
+            elif rule.rule_id == "selection.track_suitability":
+                suitability = {
+                    key: SelectionHardRulePolicyFact(value.status.value, value.reason)
+                    for key, value in loaded.items()
+                }
+            elif rule.rule_id == "selection.short_track":
+                cues = {
+                    key: SelectionHardRuleCueFact(
+                        value.manual_cue_in,
+                        value.manual_cue_out,
+                        value.manual_fade_duration,
+                        value.automatic_cue_in,
+                        value.automatic_cue_out,
+                        value.automatic_fade_duration,
+                    )
+                    for key, value in loaded.items()
+                }
+            elif rule.rule_id == "selection.repetition":
+                recent_plays = tuple(
+                    SelectionHardRuleRecentPlay(value.track_id, value.artist, value.finished_at)
+                    for value in loaded
+                )
+        return SelectionHardRuleCatalogSnapshot(
+            immutable_mapping(track_policies),
+            immutable_mapping(artist_policies),
+            immutable_mapping(suitability),
+            immutable_mapping(cues),
+            recent_plays,
+        )
 
     def configuration_projection(self) -> tuple[dict[str, object], ...]:
         """Return the explicit, path-free configuration of executable rules."""

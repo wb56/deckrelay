@@ -105,6 +105,11 @@ from party_player.settings_service import SettingsService
 from party_player.transition_controller import TransitionController, TransitionState
 from party_player.session_service import PartySessionService
 from party_player.selection_preview import SelectionPreview
+from party_player.automatic_selection_plan_ui import (
+    AutomaticSelectionPlanUiService,
+    PlanOverview,
+    PreviewAdoptionResult,
+)
 
 
 T = TypeVar("T")
@@ -328,6 +333,7 @@ class MainController:
         unresolved_emergency_incident: EmergencyIncident | None = None,
         resolve_emergency_incident: Callable[[int, dict[str, object]], bool] | None = None,
         source_availability_monitor: SourceAvailabilityMonitor | None = None,
+        automatic_plan_ui: AutomaticSelectionPlanUiService | None = None,
     ) -> None:
         self._view = view
         self._library_service = library_service
@@ -375,6 +381,7 @@ class MainController:
         self._source_availability_monitor = (
             source_availability_monitor or SourceAvailabilityMonitor()
         )
+        self._automatic_plan_ui = automatic_plan_ui
         self._source_availability: dict[str, SourceAvailabilitySnapshot] = {
             "A": SourceAvailabilitySnapshot("", SourceAvailabilityState.EMPTY),
             "B": SourceAvailabilitySnapshot("", SourceAvailabilityState.EMPTY),
@@ -5943,6 +5950,99 @@ class MainController:
             "automatic-selection-preview",
             "automatic-selection-preview",
         )
+
+    def request_automatic_plan_overview(
+        self,
+        completed: Callable[[PlanOverview | None], None],
+        failed: Callable[[str], None],
+    ) -> bool:
+        service = self._automatic_plan_ui
+        session = self._session
+        if service is None or session is None:
+            failed("Die Automatikplan-Funktion ist nicht verfügbar.")
+            return False
+
+        def worker() -> None:
+            try:
+                overview = service.overview(session.session_id)
+            except Exception:
+                self._logger.exception("Automatikplan konnte nicht geladen werden")
+                self._publish_gui_callback(
+                    lambda: failed("Der Automatikplan konnte nicht geladen werden."),
+                    "automatic-plan-ui",
+                )
+                return
+            self._publish_gui_callback(lambda: completed(overview), "automatic-plan-ui")
+
+        return self._start_worker(worker, "automatic-plan-overview", "automatic-plan-ui")
+
+    def request_automatic_plan_action(
+        self,
+        action: str,
+        plan_id: str,
+        revision: int,
+        completed: Callable[[], None],
+        failed: Callable[[str], None],
+    ) -> bool:
+        service = self._automatic_plan_ui
+        if service is None:
+            failed("Die Automatikplan-Funktion ist nicht verfügbar.")
+            return False
+
+        def worker() -> None:
+            try:
+                if action == "activate":
+                    service.activate(plan_id, revision)
+                elif action == "resume":
+                    result = service.resume(plan_id, revision)
+                    if result.plan is None:
+                        raise RuntimeError(result.code)
+                elif action == "recalculate":
+                    result = service.recalculate(plan_id, revision)
+                    if result.plan is None:
+                        raise RuntimeError(result.code)
+                elif action == "discard":
+                    result = service.discard(plan_id, revision)
+                    if result.plan is None:
+                        raise RuntimeError(result.code)
+                else:
+                    raise ValueError("unknown action")
+            except Exception:
+                self._logger.exception("Automatikplan-Aktion ist fehlgeschlagen")
+                self._publish_gui_callback(
+                    lambda: failed(
+                        "Die Aktion konnte nicht sicher ausgeführt werden. Bitte neu laden."
+                    ),
+                    "automatic-plan-ui",
+                )
+                return
+            self._publish_gui_callback(completed, "automatic-plan-ui")
+
+        return self._start_worker(worker, f"automatic-plan-{action}", "automatic-plan-ui")
+
+    def request_preview_adoption(
+        self,
+        preview: SelectionPreview,
+        completed: Callable[[PreviewAdoptionResult], None],
+        failed: Callable[[str], None],
+        *,
+        replace_plan_id: str | None = None,
+        replace_revision: int | None = None,
+    ) -> bool:
+        service = self._automatic_plan_ui
+        if service is None:
+            failed("Die Automatikplan-Funktion ist nicht verfügbar.")
+            return False
+
+        def worker() -> None:
+            result = service.adopt_preview(
+                preview,
+                replace_plan_id=replace_plan_id,
+                replace_revision=replace_revision,
+            )
+            self._publish_gui_callback(lambda: completed(result), "automatic-plan-adoption")
+
+        return self._start_worker(worker, "automatic-plan-adoption", "automatic-plan-ui")
 
     def _start_worker(
         self,

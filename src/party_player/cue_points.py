@@ -77,6 +77,26 @@ class CuePointRepository:
             ).fetchone()
         return TrackCuePoints(**dict(row)) if row else TrackCuePoints(track_id)
 
+    def get_many(self, track_ids: tuple[int, ...]) -> dict[int, TrackCuePoints]:
+        unique_ids = tuple(dict.fromkeys(track_ids))
+        result: dict[int, TrackCuePoints] = {}
+        for start in range(0, len(unique_ids), 900):
+            batch = unique_ids[start : start + 900]
+            placeholders = ",".join("?" for _ in batch)
+            with self._database.connect() as connection:
+                rows = connection.execute(
+                    f"""SELECT track_id, manual_cue_in, manual_cue_out,
+                               manual_fade_duration, automatic_cue_in,
+                               automatic_cue_out, automatic_fade_duration,
+                               minimum_level_dbfs, maximum_level_dbfs, peak,
+                               measured_window_count, confidence, analysis_version,
+                               analysed_at, analysis_backend
+                        FROM track_cue_points WHERE track_id IN ({placeholders})""",
+                    batch,
+                ).fetchall()
+            result.update((int(row["track_id"]), TrackCuePoints(**dict(row))) for row in rows)
+        return {track_id: result.get(track_id, TrackCuePoints(track_id)) for track_id in unique_ids}
+
     def manual_track_ids(self, track_ids: list[int]) -> set[int]:
         result: set[int] = set()
         unique_ids = list(dict.fromkeys(track_ids))
@@ -347,6 +367,15 @@ class CuePointService:
         queue_entry: QueueEntry | None = None,
     ) -> ResolvedTrackBoundaries:
         cue = self.repository.get(track.id)
+        return self.resolve_loaded(track, cue, global_fade_duration, queue_entry)
+
+    def resolve_loaded(
+        self,
+        track: Track,
+        cue: TrackCuePoints,
+        global_fade_duration: float | None = None,
+        queue_entry: QueueEntry | None = None,
+    ) -> ResolvedTrackBoundaries:
         duration = max(0.0, track.duration_seconds or 0.0)
         warnings: list[str] = []
         cue_in, in_source = self._resolve_value(cue.manual_cue_in, cue.automatic_cue_in, 0.0)

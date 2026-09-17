@@ -145,6 +145,17 @@ class TrackSuitabilityService:
     def __init__(self, repository: TrackSuitabilityRepository) -> None:
         self._repository = repository
         self._operator_overrides: set[int] = set()
+        self._snapshot: dict[int, TrackSuitability] | None = None
+
+    def prepare_catalog(self, tracks: tuple[Track, ...]) -> dict[int, TrackSuitability]:
+        track_ids = tuple(track.id for track in tracks)
+        loader = getattr(self._repository, "get_many", None)
+        self._snapshot = (
+            loader(track_ids)
+            if callable(loader)
+            else {track_id: self._repository.get(track_id) for track_id in track_ids}
+        )
+        return self._snapshot
 
     def allow_queue_entry(self, queue_id: int) -> None:
         self._operator_overrides.add(queue_id)
@@ -167,7 +178,11 @@ class TrackSuitabilityService:
     ) -> RuleEvaluation:
         track = rule_input.track
         assert track is not None
-        suitability = self._repository.get(track.id)
+        suitability = (
+            self._snapshot.get(track.id, TrackSuitability(track.id, TrackSuitabilityStatus.UNKNOWN))
+            if self._snapshot is not None
+            else self._repository.get(track.id)
+        )
         if suitability.status is TrackSuitabilityStatus.SUITABLE:
             return hard_rule_evaluation(
                 rule_id=self.rule_id,

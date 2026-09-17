@@ -96,6 +96,7 @@ from party_player.controllers.selection_rule_settings_controller import (
 )
 from party_player.ui.selection_rule_settings_dialog import SelectionRuleSettingsDialog
 from party_player.ui.automatic_selection_preview_dialog import AutomaticSelectionPreviewDialog
+from party_player.ui.automatic_selection_plan_dialog import AutomaticSelectionPlanDialog
 from party_player.ui.dirty_row_scheduler import DirtyRowScheduler, RenderBatchStatistics
 from party_player.performance_monitor import PerformanceMonitor
 from party_player.presentation import (
@@ -1255,6 +1256,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._selection_rule_settings_controller: SelectionRuleSettingsController | None = None
         self._selection_rule_settings_dialog: SelectionRuleSettingsDialog | None = None
         self._automatic_selection_preview_dialog: AutomaticSelectionPreviewDialog | None = None
+        self._automatic_selection_plan_dialog: AutomaticSelectionPlanDialog | None = None
         self._backup_restore_controller: BackupRestoreController | None = None
         self._database_backup_dialog_generation = 0
         self._database_operation_generation: int | None = None
@@ -2237,6 +2239,19 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             )
         ):
             widget.grid(row=1, column=column, padx=12, pady=(2, 10), sticky="ew")
+        self._automatic_plan_status = ctk.CTkLabel(
+            status_group, text="Automatikplan: Wird geladen …", anchor="w"
+        )
+        self._automatic_plan_status.grid(
+            row=2, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew"
+        )
+        self._automatic_plan_button = ctk.CTkButton(
+            status_group,
+            text="Automatikplan…",
+            width=150,
+            command=self._show_automatic_plan,
+        )
+        self._automatic_plan_button.grid(row=2, column=3, padx=12, pady=(0, 10), sticky="e")
 
         playback_group = ctk.CTkFrame(mixer, corner_radius=8)
         self._preparation_playback_group = playback_group
@@ -2841,6 +2856,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
 
     def bind_controller(self, controller: MainController) -> None:
         self._controller = controller
+        self.schedule(50, self._refresh_automatic_plan_status)
         self._set_workspace_split(controller.workspace_catalog_ratio(), persist=False)
         selected_profile = controller.emergency_action_profile()
         selected_label = next(
@@ -3012,6 +3028,37 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             except (RuntimeError, TclError):
                 pass
         self._automatic_selection_preview_dialog = AutomaticSelectionPreviewDialog(self, controller)
+
+    def _show_automatic_plan(self) -> None:
+        controller = self._controller
+        if controller is None:
+            return
+        current = self._automatic_selection_plan_dialog
+        if current is not None:
+            try:
+                if current.winfo_exists():
+                    current.focus_force()
+                    return
+            except (RuntimeError, TclError):
+                pass
+        self._automatic_selection_plan_dialog = AutomaticSelectionPlanDialog(self, controller)
+
+    def _refresh_automatic_plan_status(self) -> None:
+        controller = self._controller
+        if controller is None:
+            return
+        controller.request_automatic_plan_overview(
+            lambda overview: self.show_automatic_plan_status(
+                "Kein aktiver Plan"
+                if overview is None
+                else f"Plan {overview.status_text.lower()} · {overview.open_count} von "
+                f"{overview.total} offen"
+            ),
+            lambda _message: self.show_automatic_plan_status("Planstatus nicht verfügbar"),
+        )
+
+    def show_automatic_plan_status(self, text: str) -> None:
+        self._automatic_plan_status.configure(text=f"Automatikplan: {text}")
 
     def bind_backup_restore(
         self, controller: BackupRestoreController, default_backup_directory: Path
@@ -5017,6 +5064,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
                     self._preparation_source_status,
                     self._preparation_queue_status,
                     self._preparation_automatic_status,
+                    self._automatic_plan_status,
+                    self._automatic_plan_button,
                 ),
                 start=1,
             ):
@@ -5048,6 +5097,12 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             )
         ):
             widget.grid_configure(row=1, column=column, columnspan=1, pady=(2, 10))
+        self._automatic_plan_status.grid_configure(
+            row=2, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew"
+        )
+        self._automatic_plan_button.grid_configure(
+            row=2, column=3, columnspan=1, padx=12, pady=(0, 10), sticky="e"
+        )
         self._preparation_playback_group.grid_configure(
             row=1, column=0, columnspan=1, padx=(12, 6), pady=(4, 6), sticky="nsew"
         )

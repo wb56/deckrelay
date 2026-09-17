@@ -67,6 +67,36 @@ class ArtistPolicyRepository:
             str(row["reason"]),
         )
 
+    def get_many(self, artists: tuple[str, ...]) -> dict[str, ArtistPolicy]:
+        normalized = tuple(dict.fromkeys(normalize_artist_name(item) for item in artists))
+        result: dict[str, ArtistPolicy] = {}
+        for start in range(0, len(normalized), 900):
+            batch = normalized[start : start + 900]
+            placeholders = ",".join("?" for _ in batch)
+            with self._database.connect() as connection:
+                rows = connection.execute(
+                    f"""SELECT normalized_artist, display_name, scope, session_id,
+                               expires_at, reason
+                        FROM artist_playback_policies
+                        WHERE normalized_artist IN ({placeholders})""",
+                    batch,
+                ).fetchall()
+            for row in rows:
+                key = str(row["normalized_artist"])
+                result[key] = ArtistPolicy(
+                    key,
+                    str(row["display_name"]),
+                    ArtistPolicyScope(str(row["scope"])),
+                    int(row["session_id"]) if row["session_id"] is not None else None,
+                    (
+                        datetime.fromisoformat(str(row["expires_at"]))
+                        if row["expires_at"] is not None
+                        else None
+                    ),
+                    str(row["reason"]),
+                )
+        return result
+
     def set(
         self,
         artist: str,
@@ -125,6 +155,11 @@ class PersistentArtistBlockService:
         self._repository = repository
         self._session_id = session_id
         self._clock = clock
+        self._snapshot: dict[str, ArtistPolicy] | None = None
+
+    def prepare_catalog(self, tracks: tuple[Track, ...]) -> dict[str, ArtistPolicy]:
+        self._snapshot = self._repository.get_many(tuple(track.artist for track in tracks))
+        return self._snapshot
 
     def evaluate(self, entry: QueueEntry, track: Track) -> SelectionDecision | None:
         return selection_decision_from_evaluation(
@@ -141,7 +176,11 @@ class PersistentArtistBlockService:
     ) -> RuleEvaluation:
         track = rule_input.track
         assert track is not None
-        policy = self._repository.get(track.artist)
+        policy = (
+            self._snapshot.get(normalize_artist_name(track.artist))
+            if self._snapshot is not None
+            else self._repository.get(track.artist)
+        )
         if policy is None:
             return hard_rule_evaluation(
                 rule_id=self.rule_id,

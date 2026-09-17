@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Automatische Auswahlpläne können in der Vorbereitungsansicht angezeigt, aus einer
+  Vorschau übernommen und sicher verwaltet werden; gebündelte harte Regelgrundlagen
+  vermeiden dabei Datenbankabfragen innerhalb der Kandidatensimulation.
 - Unterbrochene Automatikpläne werden nach einem Neustart sicher pausiert und können
   fortgesetzt, neu berechnet oder verworfen werden, ohne bereits gestartete Titel
   automatisch zu wiederholen.
