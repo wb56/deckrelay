@@ -114,11 +114,11 @@ class SettingsService:
 
     @staticmethod
     def _optional_int(value: object) -> int | None:
-        return None if value is None or value == "" else int(value)
+        return None if value is None or value == "" else int(str(value))
 
     @staticmethod
     def _optional_float(value: object) -> float | None:
-        return None if value is None or value == "" else float(value)
+        return None if value is None or value == "" else float(str(value))
 
     def player_mode(self, default: PlayerMode = PlayerMode.SEMI_AUTOMATIC) -> PlayerMode:
         value = self._repository.get_setting("player_mode")

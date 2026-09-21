@@ -6,6 +6,7 @@ import uuid
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 from collections.abc import Callable
+from typing import cast
 
 from party_player.deck_controller import DeckController
 from party_player.cue_points import CuePointService, ResolvedTrackBoundaries
@@ -1049,7 +1050,7 @@ class QueueService:
         resolver = getattr(self._automatic_plan_execution, "relaxation_for_queue_entry", None)
         if not callable(resolver):
             return "STRICT", frozenset()
-        return resolver(self.session_id, entry.queue_id)
+        return cast(tuple[str, frozenset[str]], resolver(self.session_id, entry.queue_id))
 
     def reject_candidate(
         self,

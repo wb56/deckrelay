@@ -347,7 +347,7 @@ class AutomaticSelectionPlanExecutionService:
         self,
         session_id: int,
     ) -> AutomaticSelectionPlanExecutionResult:
-        active_track_ids = getattr(
+        active_track_ids: frozenset[int] = getattr(
             self._plans,
             "automatic_session_track_ids",
             getattr(self._plans, "active_queue_track_ids", lambda _id: frozenset()),

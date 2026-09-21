@@ -6097,7 +6097,11 @@ class MainController:
         )
 
     def selection_catalog_filter(self) -> SelectionCatalogFilter:
-        return self._settings.selection_catalog_filter()
+        return (
+            self._settings.selection_catalog_filter()
+            if self._settings is not None
+            else SelectionCatalogFilter()
+        )
 
     def automatic_preview_defaults(self) -> tuple[int, bool]:
         """Return count and usage defaults for the queue-selection assistant."""
@@ -6108,7 +6112,8 @@ class MainController:
         return (target if target is not None else persisted, target is not None)
 
     def save_selection_catalog_filter(self, selected: SelectionCatalogFilter) -> None:
-        self._settings.set_selection_catalog_filter(selected)
+        if self._settings is not None:
+            self._settings.set_selection_catalog_filter(selected)
 
     def request_automatic_plan_overview(
         self,
