@@ -171,23 +171,47 @@ class QueueService:
         """Delegate to the existing state-neutral automatic preview."""
         if self._automatic_selection is None:
             raise RuntimeError("Automatische Titelauswahl ist nicht verfügbar")
+        excluded_track_ids = {
+            entry.track_id
+            for entry in self._repository.list_queue(self.session_id, include_removed=True)
+            if entry.source is QueueSource.AUTOMATIC
+            or entry.status
+            in {
+                QueueStatus.WAITING,
+                QueueStatus.PREPARING,
+                QueueStatus.READY,
+                QueueStatus.PLAYING,
+            }
+        }
         digest = (
             self._automatic_planning.current_configuration_digest()
             if self._automatic_planning is not None
             else None
         )
-        return self._automatic_selection.preview(
+        preview = self._automatic_selection.preview(
             self._selection_service,
             count,
             session_id=self.session_id if digest is not None else None,
             configuration_digest=digest,
+            excluded_track_ids=frozenset(excluded_track_ids),
         )
+        return preview
 
     def can_supply_empty_queue_candidate(self) -> bool:
         return (
             self.empty_queue_policy is EmptyQueuePolicy.AUTOMATIC_SELECTION
             and self._automatic_plan_execution is not None
         )
+
+    def ensure_automatic_buffer(
+        self, target_count: int
+    ) -> AutomaticSelectionPlanExecutionResult | None:
+        """Materialize enough reviewed plan steps for the requested queue buffer."""
+        if self._automatic_plan_execution is None:
+            return None
+        result = self._automatic_plan_execution.ensure_buffer(self.session_id, target_count)
+        self.last_plan_execution_result = result
+        return result
 
     def automatic_plan_pause_reason(self) -> str | None:
         result = self.last_plan_execution_result
@@ -203,7 +227,7 @@ class QueueService:
             }
             or result.reason_code == "PLAN_PAUSED"
         ):
-            return "Automatikplan kann nicht sicher fortgesetzt werden"
+            return "Fortlaufende Automatik muss angepasst werden"
         return None
 
     def add(
@@ -244,11 +268,14 @@ class QueueService:
         *,
         source: str,
         use_saved_cues: bool = True,
+        replace_queue: bool = False,
     ) -> tuple[int, int]:
         """Add a saved-queue snapshot using one database transaction."""
         added = 0
         skipped = 0
         with self._repository.transaction():
+            if replace_queue:
+                self._repository.clear_complete_queue(self.session_id)
             for entry in entries:
                 try:
                     self.add(
@@ -837,7 +864,16 @@ class QueueService:
         ):
             examined.add(waiting.queue_id)
             track = self._tracks.get_active(waiting.track_id)
-            decision = self._selection_service.evaluate(waiting, track)
+            relaxed_codes = self._candidate_relaxation(waiting)[1]
+            decision = (
+                self._selection_service.evaluate(
+                    waiting,
+                    track,
+                    relaxed_codes=relaxed_codes,
+                )
+                if relaxed_codes
+                else self._selection_service.evaluate(waiting, track)
+            )
             if not decision.accepted:
                 self.reject_candidate(waiting.queue_id, decision)
                 continue
@@ -862,7 +898,12 @@ class QueueService:
 
     def preview_candidate_decision(self, entry: QueueEntry) -> SelectionDecision:
         """Evaluate stable business rules for a start preview without mutating the queue."""
-        return self._selection_service.evaluate(entry, self._tracks.get_active(entry.track_id))
+        _stage, relaxed_codes = self._candidate_relaxation(entry)
+        return self._selection_service.evaluate(
+            entry,
+            self._tracks.get_active(entry.track_id),
+            relaxed_codes=relaxed_codes,
+        )
 
     def preview_candidate_decisions(
         self,
@@ -879,7 +920,11 @@ class QueueService:
                     (
                         SelectionDecision.allow()
                         if entry.status is QueueStatus.READY
-                        else self._selection_service.evaluate(entry, track)
+                        else self._selection_service.evaluate(
+                            entry,
+                            track,
+                            relaxed_codes=self._candidate_relaxation(entry)[1],
+                        )
                     ),
                 )
         return results
@@ -930,8 +975,13 @@ class QueueService:
                     terminal_status=decision.terminal_status,
                 )
             return None, decision
+        relaxation_stage, relaxed_codes = self._candidate_relaxation(entry)
         rationale_context = (
-            SelectionContext(source_resolution.context.context_id)
+            SelectionContext(
+                source_resolution.context.context_id,
+                relaxation_stage,
+                relaxed_codes,
+            )
             if source_resolution is not None
             and source_rationale is not None
             and source_rationale.selected_candidate is not None
@@ -941,6 +991,7 @@ class QueueService:
         decision, rationale = self._selection_service.evaluate_with_rationale(
             entry,
             track,
+            relaxed_codes=relaxed_codes,
             context=rationale_context,
         )
         if decision.accepted:
@@ -991,6 +1042,14 @@ class QueueService:
             decision.code or "ACCEPTED",
         )
         return track, decision
+
+    def _candidate_relaxation(self, entry: QueueEntry) -> tuple[str, frozenset[str]]:
+        if entry.source is not QueueSource.AUTOMATIC or self._automatic_plan_execution is None:
+            return "STRICT", frozenset()
+        resolver = getattr(self._automatic_plan_execution, "relaxation_for_queue_entry", None)
+        if not callable(resolver):
+            return "STRICT", frozenset()
+        return resolver(self.session_id, entry.queue_id)
 
     def reject_candidate(
         self,
@@ -1089,6 +1148,7 @@ class QueueService:
                     AutomaticSelectionPlanExecutionStatus.ALREADY_MATERIALIZED,
                 }
                 and added is not None
+                and added.status is QueueStatus.WAITING
             ):
                 self.last_source_resolution = self._source_resolver.describe_generated(
                     added,

@@ -175,3 +175,37 @@ def test_confirmed_replacement_keeps_a_playing_plan_entry_untouched(tmp_path: Pa
         ).fetchone()[0]
     assert queue_status == "playing"
     assert resumable == 1
+
+
+def test_ending_resumable_plan_preserves_materialized_queue_entries(tmp_path: Path) -> None:
+    database, session_id, rules, selection, planning, repository, ui = _services(tmp_path)
+    adopted = ui.adopt_preview(_preview(session_id, rules, selection, planning, depth=2))
+    assert adopted.plan is not None
+    active = repository.activate_draft_plan(
+        adopted.plan.plan.plan_id,
+        adopted.plan.plan.revision,
+        adopted.plan.plan.rule_configuration_digest,
+    )
+    linked, first = repository.materialize_step(active.plan.plan_id, 1, active.plan.revision)
+    linked, second = repository.materialize_step(
+        linked.plan.plan_id,
+        2,
+        linked.plan.revision,
+    )
+    with database.connect() as connection:
+        connection.execute("UPDATE party_queue SET status='playing' WHERE id=?", (first.queue_id,))
+
+    assert ui.end_resumable_for_session(session_id)
+
+    ended = repository.get(adopted.plan.plan.plan_id)
+    assert ended is not None
+    assert ended.plan.status is AutomaticSelectionPlanStatus.DISCARDED
+    with database.connect() as connection:
+        statuses = {
+            row["id"]: row["status"]
+            for row in connection.execute(
+                "SELECT id,status FROM party_queue WHERE id IN (?,?)",
+                (first.queue_id, second.queue_id),
+            )
+        }
+    assert statuses == {first.queue_id: "playing", second.queue_id: "waiting"}

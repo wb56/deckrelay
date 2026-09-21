@@ -9,8 +9,54 @@ from party_player.database.migrations import migrate
 from party_player.enums import PlayerMode
 from party_player.repository import PartyPlayerRepository
 from party_player.settings_service import SettingsService
+from party_player.selection_catalog_filter import SelectionCatalogFilter
 from party_player.presentation import PresentationPreference, Workspace
 from party_player.system_dependencies import DependencySelectionMode
+
+
+def test_selection_catalog_filter_survives_service_recreation(tmp_path: Path) -> None:
+    database = Database(tmp_path / "selection-filter.db")
+    migrate(database)
+    repository = PartyPlayerRepository(database)
+    selected = SelectionCatalogFilter(
+        genres=("Disco", "Pop"),
+        moods=("Fröhlich",),
+        year_from=1970,
+        year_to=1999,
+        bpm_from=100.0,
+        bpm_to=130.0,
+        energy_from=40,
+        energy_to=90,
+        minimum_rating=4,
+        include_missing=True,
+    )
+
+    SettingsService(repository).set_selection_catalog_filter(selected)
+
+    assert SettingsService(PartyPlayerRepository(database)).selection_catalog_filter() == selected
+
+
+def test_automatic_selection_minimum_stock_survives_service_recreation(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "automatic-minimum-stock.db")
+    migrate(database)
+
+    SettingsService(PartyPlayerRepository(database)).set_automatic_selection_minimum_stock(3)
+
+    restored = SettingsService(PartyPlayerRepository(database))
+    assert restored.automatic_selection_minimum_stock() == 3
+
+
+def test_invalid_automatic_selection_minimum_stock_uses_safe_default(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "invalid-automatic-minimum-stock.db")
+    migrate(database)
+    repository = PartyPlayerRepository(database)
+    repository.set_setting("automatic_selection_minimum_stock", "99")
+
+    assert SettingsService(repository).automatic_selection_minimum_stock(default=4) == 4
 
 
 def test_automatic_loading_setting_survives_service_recreation(tmp_path: Path) -> None:

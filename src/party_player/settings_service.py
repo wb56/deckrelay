@@ -13,6 +13,7 @@ from party_player.presentation import (
     workspace,
 )
 from party_player.repository import PartyPlayerRepository
+from party_player.selection_catalog_filter import SelectionCatalogFilter
 from party_player.system_dependencies import DependencySelectionMode
 
 
@@ -48,6 +49,76 @@ class SettingsService:
 
     def set_automatic_deck_loading(self, enabled: bool) -> None:
         self._repository.set_setting("automatic_deck_loading", "true" if enabled else "false")
+
+    def selection_catalog_filter(self) -> SelectionCatalogFilter:
+        raw = self._repository.get_setting("selection_catalog_filter") or "{}"
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError
+            return SelectionCatalogFilter(
+                genres=tuple(str(value) for value in data.get("genres", ()) if str(value).strip()),
+                moods=tuple(str(value) for value in data.get("moods", ()) if str(value).strip()),
+                year_from=self._optional_int(data.get("year_from")),
+                year_to=self._optional_int(data.get("year_to")),
+                bpm_from=self._optional_float(data.get("bpm_from")),
+                bpm_to=self._optional_float(data.get("bpm_to")),
+                energy_from=self._optional_int(data.get("energy_from")),
+                energy_to=self._optional_int(data.get("energy_to")),
+                minimum_rating=self._optional_int(data.get("minimum_rating")),
+                include_missing=bool(data.get("include_missing", False)),
+            )
+        except (TypeError, ValueError, OverflowError):
+            self._logger.warning("Ungültiger Katalogfilter; gesamter Katalog wird verwendet")
+            return SelectionCatalogFilter()
+
+    def set_selection_catalog_filter(self, selected: SelectionCatalogFilter) -> None:
+        self._repository.set_setting(
+            "selection_catalog_filter",
+            json.dumps(
+                {
+                    "genres": selected.genres,
+                    "moods": selected.moods,
+                    "year_from": selected.year_from,
+                    "year_to": selected.year_to,
+                    "bpm_from": selected.bpm_from,
+                    "bpm_to": selected.bpm_to,
+                    "energy_from": selected.energy_from,
+                    "energy_to": selected.energy_to,
+                    "minimum_rating": selected.minimum_rating,
+                    "include_missing": selected.include_missing,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+
+    def automatic_selection_minimum_stock(self, default: int = 5) -> int:
+        value = self._repository.get_setting("automatic_selection_minimum_stock")
+        try:
+            parsed = int(value) if value is not None else int(default)
+        except (TypeError, ValueError):
+            parsed = 0
+        if 1 <= parsed <= 10:
+            return parsed
+        self._logger.warning(
+            "Ungültiger automatischer Mindestvorrat %r; Standardwert wird verwendet",
+            value,
+        )
+        return min(10, max(1, int(default)))
+
+    def set_automatic_selection_minimum_stock(self, count: int) -> None:
+        if isinstance(count, bool) or not 1 <= count <= 10:
+            raise ValueError("Der automatische Mindestvorrat muss zwischen 1 und 10 liegen")
+        self._repository.set_setting("automatic_selection_minimum_stock", str(count))
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        return None if value is None or value == "" else int(value)
+
+    @staticmethod
+    def _optional_float(value: object) -> float | None:
+        return None if value is None or value == "" else float(value)
 
     def player_mode(self, default: PlayerMode = PlayerMode.SEMI_AUTOMATIC) -> PlayerMode:
         value = self._repository.get_setting("player_mode")

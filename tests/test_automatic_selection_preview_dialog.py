@@ -8,6 +8,10 @@ from typing import Any, cast
 import pytest
 
 from party_player.controllers.main_controller import MainController
+from party_player.automatic_selection_plan_execution import (
+    AutomaticSelectionPlanExecutionStatus,
+)
+from party_player.automatic_selection_plan_ui import PreviewAdoptionCode, PreviewAdoptionResult
 from party_player.enums import QueueSource, QueueStatus
 from party_player.selection_decision import (
     CandidateDecisionCategory,
@@ -23,6 +27,7 @@ from party_player.selection_decision import (
 from party_player.selection_preview import (
     SelectionPreview,
     SelectionPreviewCompletion,
+    SelectionPreviewPlanningBasis,
     SelectionPreviewStep,
 )
 from party_player.ui.automatic_selection_preview_dialog import (
@@ -33,6 +38,7 @@ from party_player.ui.automatic_selection_preview_dialog import (
     preview_exclusion_text,
     preview_depth,
     preview_dialog_dimensions,
+    selected_preview,
 )
 from party_player.ui.main_window import MainWindow
 
@@ -240,7 +246,9 @@ def test_relaxation_and_no_safe_candidate_are_explained() -> None:
         step.rationale,
     )
 
-    assert "Titel- und Interpretabstand erweitert" in present_preview_step(relaxed).summary
+    presentation = present_preview_step(relaxed)
+    assert "Regeln gelockert" in presentation.summary
+    assert "Titel- und Interpretabstand erweitert" in presentation.detail
     assert "Kein sicher geeigneter" in preview_completion_text(source)
     assert "1 von 5" in preview_completion_text(source)
 
@@ -388,6 +396,57 @@ def test_closed_dialog_ignores_late_worker_error_without_widget_access() -> None
     assert dialog._status.values == before
 
 
+def test_successful_dynamic_adoption_closes_without_plan_overview_detour() -> None:
+    opened: list[bool] = []
+
+    class Parent:
+        def _show_automatic_plan(self) -> None:
+            opened.append(True)
+
+        def after_idle(self, callback: Any) -> None:
+            callback()
+
+    class Dialog:
+        def __init__(self) -> None:
+            self._request_state = PreviewRequestState()
+            self._adoption_running = True
+            self._adopt = _Widget()
+            self._status = _Widget()
+            self.master = Parent()
+            self.closed = False
+
+        def _close(self) -> None:
+            self.closed = True
+
+    dialog = Dialog()
+
+    AutomaticSelectionPreviewDialog._accept_adoption(
+        cast(Any, dialog), PreviewAdoptionResult(PreviewAdoptionCode.CREATED)
+    )
+
+    assert dialog.closed
+    assert opened == []
+
+
+def test_selected_preview_keeps_display_order_and_renumbers_plan_steps() -> None:
+    first = _preview().steps[0]
+    source = replace(
+        _preview(depth=3),
+        achieved_depth=3,
+        steps=(
+            first,
+            replace(first, position=2, track_id=8, title="Zweiter Titel"),
+            replace(first, position=3, track_id=9, title="Dritter Titel"),
+        ),
+    )
+
+    result = selected_preview(source, {7, 9})
+
+    assert [step.track_id for step in result.steps] == [7, 9]
+    assert [step.position for step in result.steps] == [1, 2]
+    assert result.requested_depth == result.achieved_depth == 2
+
+
 def test_main_window_opens_one_preview_dialog_from_existing_menu_path(monkeypatch: Any) -> None:
     created: list[tuple[object, object]] = []
 
@@ -446,6 +505,255 @@ def test_controller_uses_worker_and_only_state_neutral_preview_boundary() -> Non
     assert completed == []
     controller.callbacks[0]()
     assert completed == [preview]
+
+
+def test_controller_appends_preview_to_editable_queue_in_displayed_order() -> None:
+    preview = replace(
+        _preview(),
+        planning_basis=SelectionPreviewPlanningBasis(42, "digest", 3, None, "history"),
+    )
+
+    class Queue:
+        def __init__(self) -> None:
+            self.added_entries: list[Any] = []
+            self.source = ""
+
+        def add_many(
+            self,
+            entries: list[Any],
+            *,
+            source: str,
+            use_saved_cues: bool,
+            replace_queue: bool,
+        ) -> tuple[int, int]:
+            self.added_entries = entries
+            self.source = source
+            assert not use_saved_cues
+            assert replace_queue
+            return len(entries), 0
+
+        def entries(self) -> list[Any]:
+            return []
+
+    class ControllerDouble:
+        def __init__(self) -> None:
+            self._session = type("Session", (), {"session_id": 42})()
+            self._queue_service = Queue()
+            self._automatic_plan_ui = None
+            self.refreshed = False
+            self.paused = False
+
+        def _pause_automatic_queue(self, _reason: str) -> None:
+            self.paused = True
+
+        def _publish_gui_callback(self, callback: Any, _source: str) -> None:
+            callback()
+
+        def _start_worker(self, target: Any, _name: str, _category: str) -> bool:
+            target()
+            return True
+
+        def _refresh_queue(self) -> None:
+            self.refreshed = True
+
+    controller = ControllerDouble()
+    completed: list[tuple[int, int]] = []
+
+    assert MainController.request_preview_queue_adoption(
+        cast(Any, controller),
+        preview,
+        lambda added, skipped: completed.append((added, skipped)),
+        pytest.fail,
+    )
+
+    assert [entry.track_id for entry in controller._queue_service.added_entries] == [7]
+    assert controller._queue_service.source == QueueSource.AUTOMATIC.value
+    assert controller.paused
+    assert controller.refreshed
+    assert completed == [(1, 0)]
+
+
+def test_controller_extends_existing_queue_without_pausing_or_replacing_it() -> None:
+    preview = replace(
+        _preview(),
+        planning_basis=SelectionPreviewPlanningBasis(42, "digest", 3, None, "history"),
+    )
+
+    class Queue:
+        def __init__(self) -> None:
+            self.source = ""
+
+        def add_many(
+            self,
+            _entries: list[Any],
+            *,
+            source: str,
+            use_saved_cues: bool,
+            replace_queue: bool,
+        ) -> tuple[int, int]:
+            self.source = source
+            assert not use_saved_cues
+            assert not replace_queue
+            return 1, 0
+
+    class ControllerDouble:
+        def __init__(self) -> None:
+            self._session = type("Session", (), {"session_id": 42})()
+            self._queue_service = Queue()
+            self._automatic_plan_ui = None
+            self.paused = False
+
+        def _pause_automatic_queue(self, _reason: str) -> None:
+            self.paused = True
+
+        def _publish_gui_callback(self, callback: Any, _source: str) -> None:
+            callback()
+
+        def _start_worker(self, target: Any, _name: str, _category: str) -> bool:
+            target()
+            return True
+
+        def _refresh_queue(self) -> None:
+            pass
+
+    controller = ControllerDouble()
+    completed: list[tuple[int, int]] = []
+
+    assert MainController.request_preview_queue_adoption(
+        cast(Any, controller),
+        preview,
+        lambda added, skipped: completed.append((added, skipped)),
+        pytest.fail,
+        replace_queue=False,
+    )
+
+    assert not controller.paused
+    assert controller._queue_service.source == QueueSource.MANUAL.value
+    assert completed == [(1, 0)]
+
+
+def test_controller_can_adopt_and_activate_dynamic_preview_in_one_action() -> None:
+    preview = _preview()
+    draft = type(
+        "Bundle",
+        (),
+        {
+            "plan": type(
+                "Plan",
+                (),
+                {
+                    "plan_id": "plan",
+                    "revision": 4,
+                    "status": type("Status", (), {"value": "DRAFT"})(),
+                },
+            )()
+        },
+    )()
+    active = object()
+
+    class Plans:
+        def adopt_preview(self, _preview: Any, **_kwargs: Any) -> PreviewAdoptionResult:
+            return PreviewAdoptionResult(PreviewAdoptionCode.CREATED, draft)
+
+        def activate(self, plan_id: str, revision: int) -> object:
+            assert (plan_id, revision) == ("plan", 4)
+            return active
+
+    class ControllerDouble:
+        def __init__(self) -> None:
+            self._automatic_plan_ui = Plans()
+            self.mode: Any = None
+
+        def _publish_gui_callback(self, callback: Any, _source: str) -> None:
+            callback()
+
+        def _start_worker(self, target: Any, _name: str, _category: str) -> bool:
+            target()
+            return True
+
+        def set_player_mode(self, mode: Any) -> None:
+            self.mode = mode
+
+        _queue_service = type(
+            "QueueService",
+            (),
+            {
+                "ensure_automatic_buffer": lambda _self, _count: type(
+                    "Result",
+                    (),
+                    {
+                        "status": AutomaticSelectionPlanExecutionStatus.MATERIALIZED,
+                        "reason_code": None,
+                    },
+                )()
+            },
+        )()
+
+    controller = ControllerDouble()
+    completed: list[PreviewAdoptionResult] = []
+
+    assert MainController.request_preview_adoption(
+        cast(Any, controller),
+        preview,
+        completed.append,
+        pytest.fail,
+        activate=True,
+    )
+
+    assert completed == [PreviewAdoptionResult(PreviewAdoptionCode.CREATED, active)]
+    assert controller.mode.value == "automatic"
+
+
+def test_controller_does_not_activate_an_already_active_replacement_twice() -> None:
+    active = type(
+        "Bundle",
+        (),
+        {"plan": type("Plan", (), {"status": type("Status", (), {"value": "ACTIVE"})()})()},
+    )()
+
+    class Plans:
+        def adopt_preview(self, _preview: Any, **_kwargs: Any) -> PreviewAdoptionResult:
+            return PreviewAdoptionResult(PreviewAdoptionCode.REPLACED, active)
+
+        def activate(self, _plan_id: str, _revision: int) -> object:
+            raise AssertionError("active replacement must not be activated again")
+
+    class ControllerDouble:
+        _automatic_plan_ui = Plans()
+        _queue_service = type(
+            "QueueService",
+            (),
+            {
+                "ensure_automatic_buffer": lambda _self, _count: type(
+                    "Result",
+                    (),
+                    {
+                        "status": AutomaticSelectionPlanExecutionStatus.MATERIALIZED,
+                        "reason_code": None,
+                    },
+                )()
+            },
+        )()
+
+        def _publish_gui_callback(self, callback: Any, _source: str) -> None:
+            callback()
+
+        def _start_worker(self, target: Any, _name: str, _category: str) -> bool:
+            target()
+            return True
+
+        def set_player_mode(self, _mode: Any) -> None:
+            pass
+
+    completed: list[PreviewAdoptionResult] = []
+    assert MainController.request_preview_adoption(
+        cast(Any, ControllerDouble()),
+        _preview(),
+        completed.append,
+        pytest.fail,
+        activate=True,
+    )
+    assert completed == [PreviewAdoptionResult(PreviewAdoptionCode.REPLACED, active)]
 
 
 def test_controller_does_not_expose_internal_error_details_to_the_gui() -> None:

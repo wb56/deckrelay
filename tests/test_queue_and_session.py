@@ -551,6 +551,29 @@ def test_recovered_old_queue_can_be_replaced_or_prefixed_before_cd_and_survives_
     assert all(row["completion_status"] == "PLAYED" for row in history)
 
 
+def test_preview_replacement_hides_old_terminal_entries_and_keeps_exact_new_order(
+    tmp_path: Path,
+) -> None:
+    database = database_with_tracks(tmp_path / "preview-replacement.db")
+    repository = PartyPlayerRepository(database)
+    tracks = TrackRepository(database)
+    session = repository.create_session("Vorbereitung")
+    queue = QueueService(repository, tracks, session.session_id)
+    old = queue.add(1, source=QueueSource.AUTOMATIC)
+    queue.mark_skipped(old.queue_id, "Vorherige automatische Auswahl")
+
+    added, skipped = queue.add_many(
+        [SavedQueueEntry(2, 1), SavedQueueEntry(1, 2)],
+        source=QueueSource.AUTOMATIC.value,
+        use_saved_cues=False,
+        replace_queue=True,
+    )
+
+    assert (added, skipped) == (2, 0)
+    assert [entry.track_id for entry in queue.entries()] == [2, 1]
+    assert all(entry.status is QueueStatus.WAITING for entry in queue.entries())
+
+
 def test_session_lifecycle_routes_queue_mutations_through_queue_service(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1013,6 +1036,55 @@ def test_autoload_applies_selection_rules_and_continues(tmp_path: Path) -> None:
     assert skipped.status == QueueStatus.SKIPPED
     assert skipped.skip_code == "BLOCKED_TRACK"
     assert skipped.skip_reason == "Automatisch gesperrt"
+
+
+def test_next_load_candidate_honors_automatic_plan_relaxation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PlannedRelaxation:
+        @staticmethod
+        def relaxation_for_queue_entry(
+            session_id: int,
+            queue_id: int,
+        ) -> tuple[str, frozenset[str]]:
+            assert session_id > 0
+            assert queue_id > 0
+            return "TRACK_DISTANCE", frozenset({"TRACK_REPETITION"})
+
+    database = database_with_tracks(tmp_path / "planned-relaxation-candidate.db")
+    repository = PartyPlayerRepository(database)
+    tracks = TrackRepository(database)
+    session = repository.create_session("Planned relaxation")
+    selection = TrackSelectionService()
+    service = QueueService(
+        repository,
+        tracks,
+        session.session_id,
+        selection_service=selection,
+        automatic_plan_execution=PlannedRelaxation(),  # type: ignore[arg-type]
+    )
+    planned = service.add(1, source=QueueSource.AUTOMATIC)
+    seen_relaxed_codes: list[frozenset[str]] = []
+
+    def evaluate(
+        entry: object,
+        track: object,
+        *,
+        relaxed_codes: frozenset[str] = frozenset(),
+    ) -> SelectionDecision:
+        seen_relaxed_codes.append(relaxed_codes)
+        return SelectionDecision.allow()
+
+    monkeypatch.setattr(selection, "evaluate", evaluate)
+    deck_a = DeckController("A", FakeAudioBackend())
+    deck_b = DeckController("B", FakeAudioBackend())
+
+    candidate = service.next_load_candidate(deck_a, deck_b)
+
+    assert candidate is not None
+    assert candidate[0].queue_id == planned.queue_id
+    assert seen_relaxed_codes == [frozenset({"TRACK_REPETITION"})]
 
 
 def test_autoload_skips_unavailable_file_and_uses_next_candidate(tmp_path: Path) -> None:

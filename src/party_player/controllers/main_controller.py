@@ -48,6 +48,7 @@ from party_player.enums import (
     DeckState,
     HistoryReasonCode,
     PlayerMode,
+    QueueSource,
     QueueStatus,
 )
 from party_player.equalizer import (
@@ -86,7 +87,15 @@ from party_player.one_deck_mode import (
     AudioOperatingModeSnapshot,
     OneDeckModeService,
 )
-from party_player.models import Deck, PartySession, QueueEntry, QueueStats, SavedQueue, Track
+from party_player.models import (
+    Deck,
+    PartySession,
+    QueueEntry,
+    QueueStats,
+    SavedQueue,
+    SavedQueueEntry,
+    Track,
+)
 from party_player.playback_history_service import HistoryPersistRequest, PlaybackHistoryService
 from party_player.queue_service import QueueService
 from party_player.controllers.queue_controller import QueueController
@@ -105,9 +114,14 @@ from party_player.settings_service import SettingsService
 from party_player.transition_controller import TransitionController, TransitionState
 from party_player.session_service import PartySessionService
 from party_player.selection_preview import SelectionPreview
+from party_player.selection_catalog_filter import SelectionCatalogFilter
+from party_player.automatic_selection_plan_execution import (
+    AutomaticSelectionPlanExecutionStatus,
+)
 from party_player.automatic_selection_plan_ui import (
     AutomaticSelectionPlanUiService,
     PlanOverview,
+    PreviewAdoptionCode,
     PreviewAdoptionResult,
 )
 
@@ -367,6 +381,9 @@ class MainController:
         self._automatic_recovering_decks: set[str] = set()
         self._automatic_status_state = "ready"
         self._automatic_status_reason = ""
+        self._dynamic_automatic_target_count: int | None = None
+        self._automatic_refill_in_progress = False
+        self._automatic_refill_requested = False
         self._last_automatic_status_render: tuple[str, str] | None = None
         self.queue_duplicate_policy = (
             settings_service.queue_duplicate_policy() if settings_service is not None else "allow"
@@ -2069,8 +2086,9 @@ class MainController:
         self._queue.clear_waiting()
         self._refresh_queue()
 
-    def clear_complete_queue(self) -> None:
-        self.stop_automatic_queue(reason_code="QUEUE_CLEARED")
+    def clear_complete_queue(self, *, stop_automatic: bool = True) -> None:
+        if stop_automatic:
+            self.stop_automatic_queue(reason_code="QUEUE_CLEARED")
         try:
             prepared = [
                 entry
@@ -2852,6 +2870,7 @@ class MainController:
         if was_paused:
             self._queue_service.record_audit_event("AUTOMATIC_RESUMED")
             self._logger.info("Automatik-Runner fortgesetzt")
+            self._request_automatic_buffer_refill()
         else:
             self._queue_service.record_audit_event(
                 "AUTOMATIC_STARTED",
@@ -3043,6 +3062,7 @@ class MainController:
         self._automatic_run_active = False
         self._automatic_run_paused = False
         self._automatic_pause_reason = None
+        self._dynamic_automatic_target_count = None
         self._automatic_audio_paused_decks.clear()
         self._transition.abort("Automatik beendet")
         self._transition.reset()
@@ -3077,6 +3097,32 @@ class MainController:
                 else reason_labels.get(reason_code, reason_code) if was_engaged else ""
             ),
         )
+
+    def end_dynamic_automatic_queue(self) -> None:
+        """End the resumable plan but retain its already materialized queue titles."""
+        self.stop_automatic_queue()
+        service = self._automatic_plan_ui
+        session = self._session
+        if service is None or session is None:
+            return
+
+        def worker() -> None:
+            try:
+                service.end_resumable_for_session(session.session_id)
+            except Exception:
+                self._logger.exception("Fortlaufende Automatik konnte nicht beendet werden")
+                if not self._closed:
+                    self._publish_gui_callback(
+                        lambda: self._view.show_queue_warning(
+                            "Die fortlaufende Automatik konnte nicht sicher beendet werden."
+                        ),
+                        "automatic-plan-end",
+                    )
+                return
+            if not self._closed:
+                self._publish_gui_callback(self._refresh_queue, "automatic-plan-end")
+
+        self._start_worker(worker, "automatic-plan-end", "automatic-plan-ui")
 
     def set_queue_duplicate_policy(self, policy: str) -> None:
         if policy not in {"allow", "prevent"}:
@@ -3261,7 +3307,11 @@ class MainController:
             return False
 
     def _auto_load(self, *, recovery_replacement: bool = False) -> None:
-        if not self.automatic_deck_loading:
+        if not self.automatic_deck_loading or self._automatic_run_paused:
+            return
+        if self.player_mode is not PlayerMode.AUTOMATIC and not any(
+            entry.status is QueueStatus.WAITING for entry in self._queue_entries_cache
+        ):
             return
         plan_candidate_required = (
             self._queue_service.can_supply_empty_queue_candidate()
@@ -3414,6 +3464,19 @@ class MainController:
     def _candidate_search_backoff_seconds(consecutive_misses: int) -> float:
         exponent = min(4, max(0, consecutive_misses - 1))
         return min(30.0, 2.0 * float(2**exponent))
+
+    @staticmethod
+    def _preload_cache_conflicts(entry: QueueEntry | None) -> bool:
+        """Return whether cached queue state invalidates a completed preload.
+
+        A newly materialized plan entry may not be present in the GUI cache yet.
+        The repository remains authoritative in that short interval, so absence is
+        not a conflict. Existing terminal or otherwise contradictory cache state is.
+        """
+        return entry is not None and entry.status not in {
+            QueueStatus.WAITING,
+            QueueStatus.PREPARING,
+        }
 
     def _start_background_preload(
         self,
@@ -3568,8 +3631,7 @@ class MainController:
                             None,
                         )
                         if (
-                            current_entry is None
-                            or current_entry.status != QueueStatus.WAITING
+                            self._preload_cache_conflicts(current_entry)
                             or deck.model.loaded_track is not None
                             or deck.backend.is_playing()
                         ):
@@ -5113,6 +5175,8 @@ class MainController:
                     )
         self._view.show_queue_cue_warnings(cue_warnings)
         self._show_automatic_status()
+        if entries != previous_entries:
+            self._request_automatic_buffer_refill()
         self._capture_memory_stress_cycle(entries)
         if self._transition.is_transitioning and events:
             structural_types = {
@@ -5503,7 +5567,11 @@ class MainController:
 
     def _pause_automatic_queue(self, reason: str, *, pause_audio: bool = False) -> None:
         """Pause automatic progression and optionally its currently playing audio."""
-        if not self._automatic_run_active and not self._transition.is_transitioning:
+        if (
+            not self.automatic_deck_loading
+            and not self._automatic_run_active
+            and not self._transition.is_transitioning
+        ):
             return
         self._preload_generation += 1
         self._preload_in_progress = False
@@ -5816,6 +5884,14 @@ class MainController:
         remaining = [
             entry for entry in self._queue_entries_cache if entry.status in pending_statuses
         ]
+        if remaining and self._automatic_status_reason in {"Queue ist leer", "Queue leer"}:
+            self._automatic_status_reason = ""
+        buffer_entries = [
+            entry
+            for entry in remaining
+            if entry.source is QueueSource.AUTOMATIC
+            and entry.status in {QueueStatus.WAITING, QueueStatus.PREPARING, QueueStatus.READY}
+        ]
         next_entry = next(
             (
                 entry
@@ -5825,6 +5901,18 @@ class MainController:
             None,
         )
         details: list[str] = []
+        if self._dynamic_automatic_target_count is not None:
+            selected_filter = (
+                self._settings.selection_catalog_filter()
+                if self._settings is not None
+                else SelectionCatalogFilter()
+            )
+            details.append(f"Filter: {selected_filter.summary()}")
+            details.append(
+                f"Vorrat: {len(buffer_entries)}/{self._dynamic_automatic_target_count} Titel"
+            )
+            if len(buffer_entries) < self._dynamic_automatic_target_count:
+                details.append("Mindestvorrat nicht erreicht")
         operating_mode = self._one_deck_mode.snapshot()
         if operating_mode.mode == AudioOperatingMode.ONE_DECK:
             details.append(f"EIN-DECK-BETRIEB: Deck {operating_mode.active_deck_id}")
@@ -5836,9 +5924,11 @@ class MainController:
                 details.append(f"Nächster: {track.title}")
         elif remaining:
             details.append("Kein nächster Titel")
-        if remaining:
+        if remaining and self._dynamic_automatic_target_count is None:
             details.append(f"{len(remaining)} Titel")
-        elif not any("Queue ist leer" in detail for detail in details):
+        elif self._dynamic_automatic_target_count is None and not any(
+            "Queue ist leer" in detail for detail in details
+        ):
             details.append("Queue leer")
         skipped = [
             entry for entry in self._queue_entries_cache if entry.status == QueueStatus.SKIPPED
@@ -5871,6 +5961,61 @@ class MainController:
         """Report an automatic queue failure without focus grab or playback pause."""
         self._logger.exception("%s: %s", title, error)
         self._view.show_queue_warning(f"{title}: {self._safe_error_message(error)}")
+
+    def _request_automatic_buffer_refill(self) -> None:
+        """Coalesce minimum-stock checks and execute persistence work off the GUI thread."""
+        target = self._dynamic_automatic_target_count
+        if (
+            target is None
+            or not self._automatic_run_active
+            or self._automatic_run_paused
+            or self._closed
+        ):
+            return
+        if self._automatic_refill_in_progress:
+            self._automatic_refill_requested = True
+            return
+        self._automatic_refill_in_progress = True
+        self._automatic_refill_requested = False
+
+        def worker() -> None:
+            result = self._queue_service.ensure_automatic_buffer(target)
+
+            def completed() -> None:
+                if self._closed:
+                    return
+                self._automatic_refill_in_progress = False
+                if result is not None and result.status in {
+                    AutomaticSelectionPlanExecutionStatus.NO_SAFE_CANDIDATE,
+                    AutomaticSelectionPlanExecutionStatus.NO_REMAINING_STEP,
+                }:
+                    self._automatic_status_reason = (
+                        "Keine weiteren sicheren Kandidaten für den Mindestvorrat verfügbar"
+                    )
+                elif result is not None and result.status in {
+                    AutomaticSelectionPlanExecutionStatus.RECALCULATION_REQUIRED,
+                    AutomaticSelectionPlanExecutionStatus.INCONSISTENT_QUEUE_LINK,
+                    AutomaticSelectionPlanExecutionStatus.PERSISTENCE_FAILED,
+                }:
+                    self._automatic_status_reason = (
+                        "Nachfüllen blockiert; Automatikplan bitte anpassen"
+                    )
+                else:
+                    self._automatic_status_reason = ""
+                requested = self._automatic_refill_requested
+                self._automatic_refill_requested = False
+                self._refresh_queue()
+                if requested:
+                    self._request_automatic_buffer_refill()
+
+            self._publish_gui_callback(completed, "automatic-buffer-refill")
+
+        if not self._start_worker(
+            worker,
+            "automatic-buffer-refill",
+            "automatic-buffer-refill",
+        ):
+            self._automatic_refill_in_progress = False
 
     @staticmethod
     def _safe_error_message(error: Exception) -> str:
@@ -5951,6 +6096,20 @@ class MainController:
             "automatic-selection-preview",
         )
 
+    def selection_catalog_filter(self) -> SelectionCatalogFilter:
+        return self._settings.selection_catalog_filter()
+
+    def automatic_preview_defaults(self) -> tuple[int, bool]:
+        """Return count and usage defaults for the queue-selection assistant."""
+        target = self._dynamic_automatic_target_count
+        persisted = (
+            self._settings.automatic_selection_minimum_stock() if self._settings is not None else 5
+        )
+        return (target if target is not None else persisted, target is not None)
+
+    def save_selection_catalog_filter(self, selected: SelectionCatalogFilter) -> None:
+        self._settings.set_selection_catalog_filter(selected)
+
     def request_automatic_plan_overview(
         self,
         completed: Callable[[PlanOverview | None], None],
@@ -5972,7 +6131,18 @@ class MainController:
                     "automatic-plan-ui",
                 )
                 return
-            self._publish_gui_callback(lambda: completed(overview), "automatic-plan-ui")
+
+            def overview_completed() -> None:
+                if overview is not None and overview.status.value in {"ACTIVE", "PAUSED"}:
+                    self._dynamic_automatic_target_count = (
+                        self._settings.automatic_selection_minimum_stock(overview.total)
+                        if self._settings is not None
+                        else overview.total
+                    )
+                    self._show_automatic_status()
+                completed(overview)
+
+            self._publish_gui_callback(overview_completed, "automatic-plan-ui")
 
         return self._start_worker(worker, "automatic-plan-overview", "automatic-plan-ui")
 
@@ -6016,7 +6186,13 @@ class MainController:
                     "automatic-plan-ui",
                 )
                 return
-            self._publish_gui_callback(completed, "automatic-plan-ui")
+
+            def action_completed() -> None:
+                if action in {"activate", "resume"}:
+                    self.set_player_mode(PlayerMode.AUTOMATIC)
+                completed()
+
+            self._publish_gui_callback(action_completed, "automatic-plan-ui")
 
         return self._start_worker(worker, f"automatic-plan-{action}", "automatic-plan-ui")
 
@@ -6028,6 +6204,7 @@ class MainController:
         *,
         replace_plan_id: str | None = None,
         replace_revision: int | None = None,
+        activate: bool = False,
     ) -> bool:
         service = self._automatic_plan_ui
         if service is None:
@@ -6040,9 +6217,115 @@ class MainController:
                 replace_plan_id=replace_plan_id,
                 replace_revision=replace_revision,
             )
-            self._publish_gui_callback(lambda: completed(result), "automatic-plan-adoption")
+            if (
+                activate
+                and result.code in {PreviewAdoptionCode.CREATED, PreviewAdoptionCode.REPLACED}
+                and result.plan is not None
+            ):
+                try:
+                    if result.plan.plan.status.value == "DRAFT":
+                        active = service.activate(
+                            result.plan.plan.plan_id, result.plan.plan.revision
+                        )
+                        result = PreviewAdoptionResult(result.code, active)
+                    buffer_result = self._queue_service.ensure_automatic_buffer(len(preview.steps))
+                    if buffer_result is None or buffer_result.status not in {
+                        AutomaticSelectionPlanExecutionStatus.MATERIALIZED,
+                        AutomaticSelectionPlanExecutionStatus.ALREADY_MATERIALIZED,
+                    }:
+                        raise RuntimeError(
+                            buffer_result.reason_code if buffer_result is not None else "NO_PLAN"
+                        )
+                except Exception:
+                    self._logger.exception("Automatikplan konnte nicht aktiviert werden")
+                    result = PreviewAdoptionResult(PreviewAdoptionCode.FAILED)
+
+            def adoption_completed() -> None:
+                if activate and result.code in {
+                    PreviewAdoptionCode.CREATED,
+                    PreviewAdoptionCode.REPLACED,
+                }:
+                    self._dynamic_automatic_target_count = len(preview.steps)
+                    settings = getattr(self, "_settings", None)
+                    if settings is not None:
+                        settings.set_automatic_selection_minimum_stock(len(preview.steps))
+                    self.set_player_mode(PlayerMode.AUTOMATIC)
+                completed(result)
+
+            self._publish_gui_callback(adoption_completed, "automatic-plan-adoption")
 
         return self._start_worker(worker, "automatic-plan-adoption", "automatic-plan-ui")
+
+    def request_preview_queue_adoption(
+        self,
+        preview: SelectionPreview,
+        completed: Callable[[int, int], None],
+        failed: Callable[[str], None],
+        *,
+        replace_queue: bool = True,
+    ) -> bool:
+        """Replace or extend the editable queue with one calculated preview."""
+        session = self._session
+        basis = preview.planning_basis
+        if session is None or basis is None or basis.session_id != session.session_id:
+            failed("Die Vorschau gehört nicht mehr zur aktuellen Sitzung. Bitte neu berechnen.")
+            return False
+        entries = [SavedQueueEntry(step.track_id, step.position) for step in preview.steps]
+        if not entries:
+            failed("Die Vorschau enthält keine Titel.")
+            return False
+        if replace_queue:
+            self._pause_automatic_queue(
+                "Eine neue bearbeitbare Queue wird aus der Auswahl zusammengestellt"
+            )
+            for entry in self._queue_service.entries():
+                if entry.source is not QueueSource.AUTOMATIC or entry.status not in {
+                    QueueStatus.PREPARING,
+                    QueueStatus.READY,
+                }:
+                    continue
+                deck = self._deck(entry.loaded_deck) if entry.loaded_deck in {"A", "B"} else None
+                if deck is not None and (
+                    deck.backend.is_playing() or deck.model.state == DeckState.PLAYING
+                ):
+                    continue
+                self._release_prepared_queue_entry(entry)
+                self._queue_service.remove_prepared(entry.queue_id)
+
+        def worker() -> None:
+            try:
+                service = self._automatic_plan_ui
+                if replace_queue and service is not None:
+                    service.discard_resumable_for_session(session.session_id)
+                added, skipped = self._queue_service.add_many(
+                    entries,
+                    source=(
+                        QueueSource.AUTOMATIC.value if replace_queue else QueueSource.MANUAL.value
+                    ),
+                    use_saved_cues=False,
+                    replace_queue=replace_queue,
+                )
+            except Exception:
+                self._logger.exception("Automatische Queue-Zusammenstellung ist fehlgeschlagen")
+                self._publish_gui_callback(
+                    lambda: failed(
+                        "Die Titel konnten nicht sicher in die Queue übernommen werden."
+                    ),
+                    "automatic-queue-adoption",
+                )
+                return
+
+            def accepted() -> None:
+                self._refresh_queue()
+                completed(added, skipped)
+
+            self._publish_gui_callback(accepted, "automatic-queue-adoption")
+
+        return self._start_worker(
+            worker,
+            "automatic-queue-adoption",
+            "automatic-queue-adoption",
+        )
 
     def _start_worker(
         self,

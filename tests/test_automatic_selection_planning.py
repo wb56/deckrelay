@@ -118,6 +118,21 @@ def _planner(
     )
 
 
+def test_planning_excludes_tracks_already_active_in_the_queue() -> None:
+    planner, _, _ = _planner(tuple(_track(value) for value in range(1, 5)))
+
+    result = planner.create_draft_plan(
+        1,
+        3,
+        planning_seed=720,
+        excluded_track_ids=frozenset({1}),
+    )
+
+    assert result.plan is not None
+    assert len(result.plan.steps) == 3
+    assert all(step.track_id != 1 for step in result.plan.steps)
+
+
 def test_same_seed_creates_same_sequence_without_consuming_productive_rng() -> None:
     tracks = tuple(_track(value) for value in range(1, 7))
     first, _, first_selector = _planner(tracks, productive_seed=1)

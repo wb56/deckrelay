@@ -55,7 +55,7 @@ class AutomaticSelectionPlanDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._step_buttons: list[Any] = []
         self._action_buttons: list[Any] = []
         compact = bool(getattr(parent, "_compact_layout_active", False))
-        self.title("Automatikplan")
+        self.title("Fortlaufende Automatik")
         apply_responsive_dialog_geometry(
             self,
             parent,
@@ -66,9 +66,11 @@ class AutomaticSelectionPlanDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
-        ctk.CTkLabel(self, text="Automatikplan", font=ctk.CTkFont(size=22, weight="bold")).grid(
-            row=0, column=0, padx=20, pady=(18, 4), sticky="w"
-        )
+        ctk.CTkLabel(
+            self,
+            text="Fortlaufende Automatik",
+            font=ctk.CTkFont(size=22, weight="bold"),
+        ).grid(row=0, column=0, padx=20, pady=(18, 4), sticky="w")
         self._header = ctk.CTkLabel(
             self, text="Plan wird geladen …", anchor="w", justify="left", wraplength=900
         )
@@ -195,7 +197,7 @@ class AutomaticSelectionPlanDialog(ctk.CTkToplevel):  # type: ignore[misc]
             button.destroy()
         self._action_buttons.clear()
         labels = {
-            "activate": "Aktivieren",
+            "activate": "Fortlaufende Automatik starten",
             "resume": "Fortsetzen",
             "recalculate": "Neu berechnen",
             "discard": "Verwerfen",

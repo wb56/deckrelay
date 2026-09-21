@@ -284,6 +284,7 @@ class PartyPlayerApplication:
             AutomaticSelectionHistory(database),
             emergency_playlist=emergency_playlist,
             rule_settings=selection_rule_settings,
+            catalog_filter_provider=settings.selection_catalog_filter,
         )
         saved_queue_repository = SavedQueueRepository(database)
         equalizer_resolver = EqualizerResolver(

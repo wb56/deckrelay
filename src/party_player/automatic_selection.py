@@ -46,6 +46,7 @@ from party_player.selection_preview import (
     SelectionPreviewStep,
     SelectionPreviewPlanningBasis,
 )
+from party_player.selection_catalog_filter import SelectionCatalogFilter
 from party_player.selection_decision import attach_source_resolution
 from party_player.selection_source import SelectionSourceResolver, SourceResolutionReason
 from party_player.selection_rule_settings import (
@@ -219,6 +220,7 @@ class AutomaticSelectionService:
         emergency_playlist: LocalEmergencyPlaylistService | None = None,
         rule_settings: SelectionRuleSettingsRepository | None = None,
         continuity_settings: SelectionContinuitySettings | None = None,
+        catalog_filter_provider: Callable[[], SelectionCatalogFilter] | None = None,
     ) -> None:
         self._tracks = tracks
         self._history = history
@@ -227,6 +229,7 @@ class AutomaticSelectionService:
         self._emergency_playlist = emergency_playlist
         self._rule_settings = rule_settings
         self._continuity_settings = continuity_settings
+        self._catalog_filter_provider = catalog_filter_provider
         self.last_relaxation_stage = "NONE"
         self.last_rationale: SelectionRationale | None = None
         self._selection_lock = Lock()
@@ -238,6 +241,7 @@ class AutomaticSelectionService:
             history = self._history.preview_snapshot()
             previous_track_id = self._previous_track_id(history)
             candidates, metadata = self._load_catalog_snapshot(previous_track_id)
+            candidates = self._filter_candidates(candidates, metadata)
             prepared_rules = rules.copy_for_preview()
             prepared_rules.prepare_catalog(candidates)
             sequence = SelectionSequenceContext(
@@ -257,6 +261,7 @@ class AutomaticSelectionService:
         *,
         session_id: int | None = None,
         configuration_digest: str | None = None,
+        excluded_track_ids: frozenset[int] = frozenset(),
     ) -> SelectionPreview:
         """Predict automatic choices without advancing any productive state."""
         if not 1 <= count <= self.MAX_PREVIEW_DEPTH:
@@ -265,6 +270,10 @@ class AutomaticSelectionService:
             preview_random = random.Random()
             preview_random.setstate(self._random.getstate())
             prepared = self._prepare_simulation(rules)
+            if excluded_track_ids:
+                prepared.candidates = tuple(
+                    track for track in prepared.candidates if track.id not in excluded_track_ids
+                )
             basis_previous_track_id = prepared.previous_track_id
             basis_history_fingerprint = self._history_fingerprint(prepared.history)
         simulation = self._simulate_prepared(
@@ -330,12 +339,17 @@ class AutomaticSelectionService:
         randomizer: random.Random,
         context_code: str = "AUTOMATIC_PLANNING",
         previous_track_id: int | None = None,
+        excluded_track_ids: frozenset[int] = frozenset(),
     ) -> SelectionSimulation:
         """Simulate one sequence with an isolated caller-owned RNG."""
         if not 1 <= count <= self.MAX_PREVIEW_DEPTH:
             raise ValueError(f"Vorschautiefe muss zwischen 1 und {self.MAX_PREVIEW_DEPTH} liegen")
         with self._selection_lock:
             prepared = self._prepare_simulation(rules, previous_track_id=previous_track_id)
+            if excluded_track_ids:
+                prepared.candidates = tuple(
+                    track for track in prepared.candidates if track.id not in excluded_track_ids
+                )
         return self._simulate_prepared(prepared, count, randomizer, context_code=context_code)
 
     def _prepare_simulation(
@@ -349,6 +363,7 @@ class AutomaticSelectionService:
         if previous_track_id is None:
             previous_track_id = self._previous_track_id(history)
         candidates, metadata = self._load_catalog_snapshot(previous_track_id)
+        candidates = self._filter_candidates(candidates, metadata)
         prepared_rules = rules.copy_for_preview()
         hard_rules = prepared_rules.prepare_catalog(candidates)
         return _PreparedSimulation(
@@ -359,6 +374,24 @@ class AutomaticSelectionService:
             candidates,
             metadata,
             hard_rules,
+        )
+
+    def _filter_candidates(
+        self,
+        candidates: tuple[Track, ...],
+        metadata: SelectionMetadataCatalogSnapshot,
+    ) -> tuple[Track, ...]:
+        selected_filter = (
+            self._catalog_filter_provider()
+            if self._catalog_filter_provider is not None
+            else SelectionCatalogFilter()
+        )
+        if not selected_filter.active:
+            return candidates
+        return tuple(
+            track
+            for track in candidates
+            if selected_filter.matches(track, metadata.for_track(track.id))
         )
 
     def _simulate_prepared(
@@ -379,6 +412,7 @@ class AutomaticSelectionService:
             continuity_settings=self._continuity_settings,
         )
         steps: list[SelectionSimulationStep] = []
+        remaining_candidates = prepared.candidates
         completion_rationale: SelectionRationale | None = None
         for position in range(1, count + 1):
             step_previous_track_id = previous_track_id
@@ -391,7 +425,7 @@ class AutomaticSelectionService:
                 lambda: simulation_selector._select(
                     prepared.rules,
                     prepared.settings,
-                    prepared.candidates,
+                    remaining_candidates,
                     prepared.metadata,
                     prepared.history,
                     sequence,
@@ -423,6 +457,9 @@ class AutomaticSelectionService:
                     selected,
                     rationale,
                 )
+            )
+            remaining_candidates = tuple(
+                candidate for candidate in remaining_candidates if candidate.id != selected.id
             )
             prepared.history.record_played(selected)
             prepared.rules.record_preview_played(selected)
