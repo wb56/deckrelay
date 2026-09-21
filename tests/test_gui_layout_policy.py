@@ -257,7 +257,7 @@ def test_preparation_source_queue_and_automatic_status_are_updated_separately() 
     window.show_automatic_status("paused")
 
     assert window._preparation_source_status.values["text"] == "Quelle: Gastwünsche"
-    assert window._preparation_queue_status.values["text"] == "Queue: 18 Titel"
+    assert window._preparation_queue_status.values["text"] == "Queue: 12 offene Titel"
     assert window._preparation_automatic_status.values["text"] == "Automatik: pausiert"
 
 

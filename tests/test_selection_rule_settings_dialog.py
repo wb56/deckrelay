@@ -84,6 +84,7 @@ def test_visible_program_options_build_selection_settings_button(monkeypatch: An
     monkeypatch.setattr(main_window.ctk, "CTkButton", Button)
     window = object.__new__(MainWindow)
     window._show_selection_rule_settings = lambda: opened.append(True)
+    window._show_automatic_preview = lambda: None
     window._show_external_program_settings = lambda: None
     playback_group = object()
     system_group = object()
@@ -93,8 +94,10 @@ def test_visible_program_options_build_selection_settings_button(monkeypatch: An
     selection_button = window._selection_rule_settings_button
     assert selection_button in created
     assert selection_button.parent is playback_group
-    assert selection_button.text == "Automatische Titelauswahl…"
+    assert selection_button.text == "Automatikregeln…"
     assert selection_button.grid_options["row"] == 5
+    assert window._automatic_queue_planning_button.text == ("Queue automatisch zusammenstellen…")
+    assert window._automatic_queue_planning_button.grid_options["row"] == 5
     assert window._external_program_settings_button.parent is system_group
     assert window._external_program_settings_button.grid_options["row"] == 1
     selection_button.command()

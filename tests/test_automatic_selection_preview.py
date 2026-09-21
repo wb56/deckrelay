@@ -111,6 +111,21 @@ def test_preview_is_repeatable_and_does_not_change_real_selection() -> None:
     assert history.snapshot_calls == 3
 
 
+def test_preview_never_repeats_a_track_to_fill_requested_depth() -> None:
+    selector = AutomaticSelectionService(
+        _Tracks((_track(1),)),
+        _History({}, []),
+        recent_track_limit=0,
+        randomizer=random.Random(7),
+    )
+
+    preview = selector.preview(TrackSelectionService(), 5)
+
+    assert [step.track_id for step in preview.steps] == [1]
+    assert preview.achieved_depth == 1
+    assert preview.completion_reason is SelectionPreviewCompletion.NO_SAFE_CANDIDATE
+
+
 def test_complete_preview_loads_one_catalog_snapshot_and_preserves_sequence(
     temporary_database,
 ) -> None:
@@ -583,8 +598,8 @@ def test_preview_advances_time_for_persistent_repetition_windows() -> None:
     preview = selector.preview(TrackSelectionService((repetition,)), 3)
 
     assert preview.achieved_depth == 3
-    assert preview.steps[0].artist != preview.steps[1].artist
-    assert preview.steps[2].artist == preview.steps[0].artist
+    assert len({step.track_id for step in preview.steps}) == 3
+    assert sorted(step.artist for step in preview.steps) == ["A", "A", "B"]
 
 
 def test_rng_snapshot_is_serialized_with_real_selection() -> None:

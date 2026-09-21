@@ -1976,22 +1976,53 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             command=self._show_queue_actions_menu,
         )
         self._queue_actions_button.pack(side="right")
+        automatic_controls = ctk.CTkFrame(queue_toolbar, fg_color="transparent")
+        automatic_controls.pack(side="right", fill="x", expand=True, padx=(8, 2))
+        automatic_controls.grid_columnconfigure(0, weight=1)
         self._automatic_queue_active = False
         self._automatic_queue_button = ctk.CTkButton(
-            queue_toolbar,
+            automatic_controls,
             text="▶",
             width=theme.ICON_BUTTON_SIZE,
             height=32,
             command=self._toggle_automatic_queue,
         )
-        self._automatic_queue_button.pack(side="right", padx=(6, 4))
+        self._automatic_queue_button.grid(row=1, column=3, padx=(2, 0), pady=(2, 0))
+        self._automatic_end_button = ctk.CTkButton(
+            automatic_controls,
+            text="Beenden",
+            width=72,
+            height=32,
+            command=self._end_automatic_from_queue,
+            state="disabled",
+        )
+        self._automatic_end_button.grid(row=1, column=2, padx=2, pady=(2, 0))
+        self._automatic_pause_button = ctk.CTkButton(
+            automatic_controls,
+            text="Pausieren",
+            width=76,
+            height=32,
+            command=self._pause_automatic_from_queue,
+            state="disabled",
+        )
+        self._automatic_pause_button.grid(row=1, column=1, padx=2, pady=(2, 0))
+        self._automatic_adjust_button = ctk.CTkButton(
+            automatic_controls,
+            text="Anpassen",
+            width=76,
+            height=32,
+            command=self._show_automatic_preview,
+        )
+        self._automatic_adjust_button.grid(row=1, column=0, padx=2, pady=(2, 0), sticky="e")
         self._automatic_status_label = ctk.CTkLabel(
-            queue_toolbar,
+            automatic_controls,
             text="Automatik bereit",
             text_color=theme.TEXT_MUTED,
-            anchor="e",
+            anchor="w",
+            justify="left",
+            wraplength=520,
         )
-        self._automatic_status_label.pack(side="right", fill="x", expand=True, padx=(8, 2))
+        self._automatic_status_label.grid(row=0, column=0, columnspan=4, padx=2, sticky="ew")
         self._queue_source_tooltip = Tooltip(
             self._queue_source_button,
             "Aktuelle Herkunft anzeigen und weitere Titel zur Queue hinzufügen",
@@ -2240,16 +2271,16 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         ):
             widget.grid(row=1, column=column, padx=12, pady=(2, 10), sticky="ew")
         self._automatic_plan_status = ctk.CTkLabel(
-            status_group, text="Automatikplan: Wird geladen …", anchor="w"
+            status_group, text="Fortlaufende Automatik: Wird geladen …", anchor="w"
         )
         self._automatic_plan_status.grid(
             row=2, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew"
         )
         self._automatic_plan_button = ctk.CTkButton(
             status_group,
-            text="Automatikplan…",
+            text="Automatik anpassen…",
             width=150,
-            command=self._show_automatic_plan,
+            command=self._show_automatic_preview,
         )
         self._automatic_plan_button.grid(row=2, column=3, padx=12, pady=(0, 10), sticky="e")
 
@@ -2954,13 +2985,21 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
     ) -> None:
         if system_group is None:
             system_group = playback_group
+        self._automatic_queue_planning_button = ctk.CTkButton(
+            playback_group,
+            text="Queue automatisch zusammenstellen…",
+            command=self._show_automatic_preview,
+        )
+        self._automatic_queue_planning_button.grid(
+            row=5, column=0, columnspan=2, padx=(12, 4), pady=(6, 10), sticky="ew"
+        )
         self._selection_rule_settings_button = ctk.CTkButton(
             playback_group,
-            text="Automatische Titelauswahl…",
+            text="Automatikregeln…",
             command=self._show_selection_rule_settings,
         )
         self._selection_rule_settings_button.grid(
-            row=5, column=0, columnspan=4, padx=12, pady=(6, 10), sticky="ew"
+            row=5, column=2, columnspan=2, padx=(4, 12), pady=(6, 10), sticky="ew"
         )
         self._external_program_settings_button = ctk.CTkButton(
             system_group,
@@ -3010,8 +3049,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
 
     def _show_extras_menu(self, button: Any) -> None:
         menu = tk.Menu(self, tearoff=False)
-        menu.add_command(label="Automatik-Vorschau…", command=self._show_automatic_preview)
-        menu.add_separator()
         menu.add_command(label="Datenbank und Sicherung…", command=self._show_database_backup)
         menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
 
@@ -3049,16 +3086,16 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             return
         controller.request_automatic_plan_overview(
             lambda overview: self.show_automatic_plan_status(
-                "Kein aktiver Plan"
+                "nicht aktiv"
                 if overview is None
-                else f"Plan {overview.status_text.lower()} · {overview.open_count} von "
+                else f"{overview.status_text} · {overview.open_count} von "
                 f"{overview.total} offen"
             ),
-            lambda _message: self.show_automatic_plan_status("Planstatus nicht verfügbar"),
+            lambda _message: self.show_automatic_plan_status("Status nicht verfügbar"),
         )
 
     def show_automatic_plan_status(self, text: str) -> None:
-        self._automatic_plan_status.configure(text=f"Automatikplan: {text}")
+        self._automatic_plan_status.configure(text=f"Fortlaufende Automatik: {text}")
 
     def bind_backup_restore(
         self, controller: BackupRestoreController, default_backup_directory: Path
@@ -6276,7 +6313,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             )
 
     def show_queue_stats(self, stats: QueueStats) -> None:
-        text = f"{stats.total_tracks} Titel · {_duration_text(stats.total_duration)}"
+        text = f"{stats.remaining_tracks} offen"
+        if stats.total_tracks != stats.remaining_tracks:
+            text += f" · {stats.total_tracks} Sitzungseinträge"
+        text += f" · {_duration_text(stats.remaining_duration)} verbleibend"
         if text != self._queue_stats_text:
             self._queue_stats.configure(text=text)
             self._queue_stats_text = text
@@ -6284,7 +6324,9 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             f"Gesamtlaufzeit {_duration_text(stats.total_duration)} · "
             f"verbleibende Laufzeit {_duration_text(stats.remaining_duration)}"
         )
-        self._preparation_queue_status.configure(text=f"Queue: {stats.total_tracks} Titel")
+        self._preparation_queue_status.configure(
+            text=f"Queue: {stats.remaining_tracks} offene Titel"
+        )
 
     def show_queue_origin(self, text: str) -> None:
         self._queue_source_button.configure(text=f"Quelle: {_ellipsize(text, 28)} ▾")
@@ -6483,6 +6525,23 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         if detail:
             text = f"{text} · {detail}"
         self._automatic_status_label.configure(text=text, text_color=color)
+        running = state in {"running", "transition"}
+        resumable = state == "paused"
+        pause_button = self.__dict__.get("_automatic_pause_button")
+        if pause_button is not None:
+            pause_button.configure(
+                text="Fortsetzen" if resumable else "Pausieren",
+                state="normal" if running or resumable else "disabled",
+                command=(
+                    self._toggle_automatic_queue if resumable else self._pause_automatic_from_queue
+                ),
+            )
+        adjust_button = self.__dict__.get("_automatic_adjust_button")
+        if adjust_button is not None:
+            adjust_button.configure(text="Anpassen" if running or resumable else "Neue Automatik…")
+        end_button = self.__dict__.get("_automatic_end_button")
+        if end_button is not None:
+            end_button.configure(state="normal" if running or resumable else "disabled")
         if force_live_for_operational_update(
             startup_guard=self._presentation_startup_guard,
             active=state in {"running", "transition", "paused", "stopped"},
@@ -7161,7 +7220,24 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
     def _clear_complete_queue(self) -> None:
         if self._controller is None:
             return
-        if ask_silent_yes_no(
+        automatic_running = self._automatic_queue_active or bool(
+            self._controller.is_automatic_queue_paused()
+        )
+        stop_automatic = True
+        if automatic_running:
+            choice = ask_silent_yes_no_cancel(
+                self,
+                "Queue und Automatik",
+                "Was soll geleert werden?\n\n"
+                "Ja = nur aktuelle Queue-Titel entfernen; die Automatik bleibt aktiv "
+                "und füllt wieder nach\n"
+                "Nein = Queue-Titel entfernen und Automatik beenden\n"
+                "Abbrechen = nichts verändern",
+            )
+            if choice is None:
+                return
+            stop_automatic = not choice
+        elif not ask_silent_yes_no(
             self,
             "Queue vollständig leeren?",
             "Alle nicht spielenden Queue-Einträge werden entfernt und vorbereitete "
@@ -7169,7 +7245,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             "Ende erhalten.\n\n"
             "Soll die komplette Queue wirklich geleert werden?",
         ):
-            self._controller.clear_complete_queue()
+            return
+        self._controller.clear_complete_queue(stop_automatic=stop_automatic)
 
     def _shuffle_waiting_queue(self) -> None:
         if self._controller is None:
@@ -7849,6 +7926,21 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
                 from_selected=from_selected,
                 skip_earlier=skip_earlier,
             )
+
+    def _pause_automatic_from_queue(self) -> None:
+        if self._controller is not None:
+            self._controller.pause_automatic_queue()
+
+    def _end_automatic_from_queue(self) -> None:
+        if self._controller is None:
+            return
+        if ask_silent_yes_no(
+            self,
+            "Fortlaufende Automatik beenden?",
+            "Die bereits vorhandenen Queue-Titel bleiben erhalten, aber es werden keine "
+            "weiteren Titel automatisch ergänzt. Automatik wirklich beenden?",
+        ):
+            self._controller.end_dynamic_automatic_queue()
 
     def _show_automatic_help(self) -> None:
         show_silent_message(

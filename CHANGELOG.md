@@ -11,6 +11,10 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Die automatische Queue-Zusammenstellung verbindet persistente Katalogfilter und
+  Mindestvorräte mit einer fortlaufenden Automatik. Sie füllt fehlende sichere Titel
+  nebenläufig und ohne Duplikate nach, respektiert Pausieren und Beenden und lässt
+  bestehende manuelle sowie höher priorisierte Queue-Einträge unverändert.
 - Automatische Auswahlpläne können in der Vorbereitungsansicht angezeigt, aus einer
   Vorschau übernommen und sicher verwaltet werden; gebündelte harte Regelgrundlagen
   vermeiden dabei Datenbankabfragen innerhalb der Kandidatensimulation.

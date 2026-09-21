@@ -111,6 +111,26 @@ class AutomaticSelectionPlanExecutionService:
             # Playback is authoritative and must never be stopped by plan bookkeeping.
             return
 
+    def relaxation_for_queue_entry(
+        self, session_id: int, queue_id: int
+    ) -> tuple[str, frozenset[str]]:
+        """Return the reviewed relaxation attached to one materialized plan step."""
+        resolver = getattr(self._plans, "relaxation_for_queue_entry", None)
+        if callable(resolver):
+            stage = resolver(session_id, queue_id)
+            if stage is not None:
+                return stage, self._relaxed_codes(stage)
+        bundle = self._plans.get_resumable_for_session(session_id)
+        if bundle is None:
+            return "STRICT", frozenset()
+        step = next(
+            (item for item in bundle.steps if item.executed_queue_entry_id == queue_id),
+            None,
+        )
+        if step is None:
+            return "STRICT", frozenset()
+        return step.relaxation_stage_code, self._relaxed_codes(step.relaxation_stage_code)
+
     def ensure_next_step(self, session_id: int) -> AutomaticSelectionPlanExecutionResult:
         """Use or create one active plan and materialize at most one step."""
         with self._lock:
@@ -131,6 +151,64 @@ class AutomaticSelectionPlanExecutionService:
                 result = self.materialize_next_step(plan.plan.plan_id, plan.plan.revision)
                 if result.status is AutomaticSelectionPlanExecutionStatus.PLAN_COMPLETED:
                     return self._create_activate_materialize(session_id)
+                return result
+            except AutomaticSelectionPlanConflictError:
+                return AutomaticSelectionPlanExecutionResult(
+                    AutomaticSelectionPlanExecutionStatus.CONCURRENT_UPDATE,
+                    reason_code="PLAN_CONCURRENT_UPDATE",
+                )
+            except Exception:
+                return AutomaticSelectionPlanExecutionResult(
+                    AutomaticSelectionPlanExecutionStatus.PERSISTENCE_FAILED,
+                    reason_code="PLAN_EXECUTION_FAILED",
+                )
+
+    def ensure_buffer(
+        self,
+        session_id: int,
+        target_count: int,
+    ) -> AutomaticSelectionPlanExecutionResult:
+        """Materialize reviewed steps until the requested unplayed buffer is present."""
+        target = max(1, target_count)
+        with self._lock:
+            try:
+                counter = getattr(self._plans, "automatic_buffer_count", None)
+                present = max(0, int(counter(session_id))) if callable(counter) else 0
+                if present >= target:
+                    return AutomaticSelectionPlanExecutionResult(
+                        AutomaticSelectionPlanExecutionStatus.ALREADY_MATERIALIZED,
+                    )
+                bundle = self._plans.get_resumable_for_session(session_id)
+                result = AutomaticSelectionPlanExecutionResult(
+                    AutomaticSelectionPlanExecutionStatus.ALREADY_MATERIALIZED,
+                    bundle,
+                )
+                while present < target:
+                    if bundle is None:
+                        result = self._create_activate_materialize(session_id)
+                        if result.status is not AutomaticSelectionPlanExecutionStatus.MATERIALIZED:
+                            return result
+                        present += 1
+                        bundle = result.plan
+                        continue
+                    if bundle.plan.status is AutomaticSelectionPlanStatus.PAUSED:
+                        return AutomaticSelectionPlanExecutionResult(
+                            AutomaticSelectionPlanExecutionStatus.NO_ACTIVE_PLAN,
+                            bundle,
+                            reason_code="PLAN_PAUSED",
+                        )
+                    result = self.materialize_next_step(
+                        bundle.plan.plan_id,
+                        bundle.plan.revision,
+                    )
+                    if result.status is AutomaticSelectionPlanExecutionStatus.PLAN_COMPLETED:
+                        bundle = None
+                        continue
+                    if result.status is not AutomaticSelectionPlanExecutionStatus.MATERIALIZED:
+                        return result
+                    present += 1
+                    assert result.plan is not None
+                    bundle = result.plan
                 return result
             except AutomaticSelectionPlanConflictError:
                 return AutomaticSelectionPlanExecutionResult(
@@ -180,7 +258,11 @@ class AutomaticSelectionPlanExecutionService:
                 QueueStatus.WAITING,
                 source=QueueSource.AUTOMATIC,
             )
-            decision = self._rules.evaluate(synthetic, track)
+            decision = self._rules.evaluate(
+                synthetic,
+                track,
+                relaxed_codes=self._relaxed_codes(step.relaxation_stage_code),
+            )
             if decision.accepted and track is not None:
                 decision = self._file_availability.evaluate(track)
             if not decision.accepted:
@@ -224,6 +306,7 @@ class AutomaticSelectionPlanExecutionService:
                 for item in bundle.steps
                 if item.status is AutomaticSelectionPlanStepStatus.QUEUED
                 and item.executed_queue_status not in _TERMINAL_QUEUE_STATUSES
+                and item.executed_queue_status is not QueueStatus.PLAYING
             ),
             None,
         )
@@ -251,11 +334,33 @@ class AutomaticSelectionPlanExecutionService:
             entry,
         )
 
+    @staticmethod
+    def _unplayed_materialized_count(bundle: AutomaticSelectionPlanBundle) -> int:
+        return sum(
+            step.status is AutomaticSelectionPlanStepStatus.QUEUED
+            and step.executed_queue_status not in _TERMINAL_QUEUE_STATUSES
+            and step.executed_queue_status is not QueueStatus.PLAYING
+            for step in bundle.steps
+        )
+
     def _create_activate_materialize(
         self,
         session_id: int,
     ) -> AutomaticSelectionPlanExecutionResult:
-        created = self._planning.create_draft_plan(session_id, depth=5)
+        active_track_ids: frozenset[int] = getattr(
+            self._plans,
+            "automatic_session_track_ids",
+            getattr(self._plans, "active_queue_track_ids", lambda _id: frozenset()),
+        )(session_id)
+        created = (
+            self._planning.create_draft_plan(
+                session_id,
+                depth=5,
+                excluded_track_ids=active_track_ids,
+            )
+            if active_track_ids
+            else self._planning.create_draft_plan(session_id, depth=5)
+        )
         if created.completion_status is AutomaticSelectionPlanCompletion.NO_SAFE_CANDIDATE:
             return AutomaticSelectionPlanExecutionResult(
                 AutomaticSelectionPlanExecutionStatus.NO_SAFE_CANDIDATE,
@@ -333,12 +438,9 @@ class AutomaticSelectionPlanExecutionService:
                 paused,
                 reason_code="PLAN_QUEUE_LINK_MISSING",
             )
-        if any(step.executed_queue_status not in _TERMINAL_QUEUE_STATUSES for step in linked):
-            return AutomaticSelectionPlanExecutionResult(
-                AutomaticSelectionPlanExecutionStatus.NO_REMAINING_STEP,
-                bundle,
-                reason_code="PLAN_STEPS_STILL_ACTIVE",
-            )
+        # A plan describes planning work, not the lifetime of its queue rows.  Once
+        # every safe step has been materialized it may complete so a successor plan
+        # can replenish the buffer.  The linked queue rows remain untouched.
         completed = self._plans.change_status(
             bundle.plan.plan_id,
             bundle.plan.revision,
@@ -359,3 +461,11 @@ class AutomaticSelectionPlanExecutionService:
         ):
             return normalized
         return "PLANNED_TRACK_REJECTED"
+
+    @staticmethod
+    def _relaxed_codes(stage: str) -> frozenset[str]:
+        return {
+            "STRICT": frozenset(),
+            "ARTIST_DISTANCE": frozenset({"ARTIST_REPETITION"}),
+            "TRACK_DISTANCE": frozenset({"ARTIST_REPETITION", "TRACK_REPETITION", "RECENT_TRACK"}),
+        }.get(stage, frozenset())

@@ -70,6 +70,7 @@ class AutomaticSelectionPlanningService:
         depth: int = 5,
         planning_seed: int | None = None,
         previous_track_id: int | None = None,
+        excluded_track_ids: frozenset[int] = frozenset(),
     ) -> AutomaticSelectionPlanCreationResult:
         if isinstance(session_id, bool) or not isinstance(session_id, int) or session_id <= 0:
             raise ValueError("session_id muss positiv sein")
@@ -83,6 +84,7 @@ class AutomaticSelectionPlanningService:
                 randomizer=random.Random(seed),
                 context_code=SOURCE_CONTEXT_CODE,
                 previous_track_id=previous_track_id,
+                excluded_track_ids=excluded_track_ids,
             )
             if not simulation.steps:
                 return AutomaticSelectionPlanCreationResult(

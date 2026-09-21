@@ -194,6 +194,29 @@ class AutomaticSelectionPlanUiService:
     def discard(self, plan_id: str, revision: int) -> AutomaticSelectionPlanRecoveryResult:
         return self._recovery.discard_plan(plan_id, revision)
 
+    def discard_resumable_for_session(self, session_id: int) -> bool:
+        """Discard a resumable dynamic plan before creating a static queue."""
+        bundle = self._plans.get_resumable_for_session(session_id)
+        if bundle is None:
+            return False
+        result = self._recovery.discard_plan(bundle.plan.plan_id, bundle.plan.revision)
+        if result.plan is None:
+            raise RuntimeError(result.code)
+        return True
+
+    def end_resumable_for_session(self, session_id: int) -> bool:
+        """End future plan work while preserving every materialized queue entry."""
+        bundle = self._plans.get_resumable_for_session(session_id)
+        if bundle is None:
+            return False
+        self._plans.change_status(
+            bundle.plan.plan_id,
+            bundle.plan.revision,
+            AutomaticSelectionPlanStatus.DISCARDED,
+            reason_code="USER_ENDED",
+        )
+        return True
+
     def adopt_preview(
         self,
         preview: SelectionPreview,

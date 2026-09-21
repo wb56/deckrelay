@@ -146,6 +146,51 @@ class AutomaticSelectionPlanRepository:
                 return None
             return self._load_steps(connection, self._plan_from_row(rows[0]))
 
+    def active_queue_track_ids(self, session_id: int) -> frozenset[int]:
+        """Return tracks already occupying the active queue or a deck."""
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT track_id FROM party_queue
+                   WHERE session_id=?
+                     AND status IN ('waiting','preparing','ready','playing')""",
+                (session_id,),
+            ).fetchall()
+        return frozenset(int(row["track_id"]) for row in rows)
+
+    def automatic_session_track_ids(self, session_id: int) -> frozenset[int]:
+        """Return every title already materialized automatically in this session."""
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT track_id FROM party_queue
+                   WHERE session_id=? AND source='AUTOMATIC'""",
+                (session_id,),
+            ).fetchall()
+        return frozenset(int(row["track_id"]) for row in rows)
+
+    def automatic_buffer_count(self, session_id: int) -> int:
+        """Count non-playing automatic rows that currently satisfy the buffer."""
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) AS count FROM party_queue
+                   WHERE session_id=? AND source='AUTOMATIC'
+                     AND status IN ('waiting','preparing','ready')""",
+                (session_id,),
+            ).fetchone()
+        return int(row["count"])
+
+    def relaxation_for_queue_entry(self, session_id: int, queue_id: int) -> str | None:
+        """Resolve the reviewed relaxation even after its source plan completed."""
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """SELECT s.relaxation_stage_code
+                   FROM automatic_selection_plan_steps s
+                   JOIN automatic_selection_plans p ON p.plan_id=s.plan_id
+                   WHERE p.session_id=? AND s.executed_queue_entry_id=?
+                   ORDER BY p.created_at DESC LIMIT 1""",
+                (session_id, queue_id),
+            ).fetchone()
+        return None if row is None else str(row["relaxation_stage_code"])
+
     def get_latest_for_session(self, session_id: int) -> AutomaticSelectionPlanBundle | None:
         """Load the newest plan and all steps in two queries."""
         with self._database.connect() as connection:
@@ -294,9 +339,10 @@ class AutomaticSelectionPlanRepository:
                 return False
             plan = self._plan_from_row(row)
             linked = connection.execute(
-                """SELECT 1 FROM automatic_selection_plan_steps
-                   WHERE plan_id=? AND executed_queue_entry_id=?""",
-                (plan.plan_id, queue_id),
+                """SELECT 1 FROM automatic_selection_plan_steps s
+                   JOIN automatic_selection_plans p ON p.plan_id=s.plan_id
+                   WHERE p.session_id=? AND s.executed_queue_entry_id=?""",
+                (session_id, queue_id),
             ).fetchone()
             if linked is not None:
                 return False

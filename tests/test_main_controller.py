@@ -2467,6 +2467,19 @@ def test_complete_queue_clear_removes_failed_entries(tmp_path: Path) -> None:
     assert controller._queue_service.entries() == []
 
 
+def test_complete_queue_clear_can_keep_automatic_runner_active(tmp_path: Path) -> None:
+    controller, _view = build_controller(tmp_path)
+    controller.initialize()
+    controller.set_automatic_deck_loading(False)
+    controller.add_catalog_track_to_queue(1)
+    controller._automatic_run_active = True
+
+    controller.clear_complete_queue(stop_automatic=False)
+
+    assert controller._automatic_run_active
+    assert controller._queue_service.entries() == []
+
+
 def test_complete_queue_clear_keeps_actually_playing_stale_ready_entry(
     tmp_path: Path,
 ) -> None:
@@ -3107,6 +3120,74 @@ def test_three_consecutive_automatic_failures_pause_without_consuming_forever(
     assert controller.is_automatic_queue_paused()
     assert not controller._automatic_run_active
     assert "manueller Eingriff" in view.queue_warnings[-2]
+
+
+def test_three_preparation_failures_pause_semi_automatic_preloading(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, view = build_controller(tmp_path, track_count=1)
+    controller.initialize()
+    entry = controller._queue_service.add(1)
+    track = controller._queue_service.track(entry.track_id)
+    assert track is not None
+    controller._automatic_run_active = False
+    controller._automatic_failure_streak = controller.MAXIMUM_CONSECUTIVE_AUTOMATIC_FAILURES - 1
+
+    controller._continue_after_preparation_failure(
+        controller.deck_a,
+        entry,
+        track,
+        "PREPARATION_FAILED",
+        "Decoderfehler",
+    )
+
+    assert controller.is_automatic_queue_paused()
+    assert not controller._automatic_run_active
+    assert "manueller Eingriff" in view.queue_warnings[-1]
+    monkeypatch.setattr(
+        controller._queue_service,
+        "can_supply_empty_queue_candidate",
+        lambda: pytest.fail("pausierte Vorladung darf keine Kandidaten abfragen"),
+    )
+    controller._auto_load()
+
+
+def test_semi_automatic_empty_queue_does_not_create_dynamic_plan(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, _view = build_controller(tmp_path, track_count=1)
+    controller.initialize()
+    controller.player_mode = PlayerMode.SEMI_AUTOMATIC
+    controller.automatic_deck_loading = True
+    assert not controller._queue_service.entries()
+    monkeypatch.setattr(
+        controller._queue_service,
+        "can_supply_empty_queue_candidate",
+        lambda: pytest.fail("leere halbautomatische Queue darf keinen Plan anfordern"),
+    )
+
+    controller._auto_load()
+
+    assert not controller._queue_service.entries()
+
+
+@pytest.mark.parametrize(
+    ("entry", "conflicts"),
+    [
+        (None, False),
+        (QueueEntry(1, 1, 0, QueueStatus.WAITING), False),
+        (QueueEntry(1, 1, 0, QueueStatus.PREPARING), False),
+        (QueueEntry(1, 1, 0, QueueStatus.READY), True),
+        (QueueEntry(1, 1, 0, QueueStatus.SKIPPED), True),
+    ],
+)
+def test_preload_cache_conflict_allows_new_plan_entry_before_cache_refresh(
+    entry: QueueEntry | None,
+    conflicts: bool,
+) -> None:
+    assert MainController._preload_cache_conflicts(entry) is conflicts
 
 
 def test_manual_load_invalidates_late_automatic_cleanup(
@@ -4092,6 +4173,35 @@ def test_automatic_status_shows_next_remaining_and_repetition_skips(tmp_path: Pa
     assert "Nächster: Song" in view.automatic_status[1]
     assert "2 Titel" in view.automatic_status[1]
     assert "1 übersprungen (1 Wiederholungsschutz)" in view.automatic_status[1]
+
+
+def test_dynamic_automatic_status_reports_an_unmet_forward_buffer(tmp_path: Path) -> None:
+    controller, view = build_controller(tmp_path, track_count=2)
+    controller.initialize()
+    controller.set_automatic_deck_loading(False)
+    controller._queue_service.add(1, "AUTOMATIC")
+    controller.add_catalog_track_to_queue(2)
+    controller._dynamic_automatic_target_count = 3
+    controller._automatic_status_reason = "Queue ist leer"
+
+    controller.start_automatic_queue()
+
+    assert "Vorrat: 1/3 Titel" in view.automatic_status[1]
+    assert "Mindestvorrat nicht erreicht" in view.automatic_status[1]
+    assert "Queue leer" not in view.automatic_status[1]
+
+
+def test_dynamic_automatic_status_reports_replenished_forward_buffer(tmp_path: Path) -> None:
+    controller, view = build_controller(tmp_path, track_count=3)
+    controller.initialize()
+    for track_id in range(1, 4):
+        controller._queue_service.add(track_id, "AUTOMATIC")
+    controller._dynamic_automatic_target_count = 3
+
+    controller._refresh_queue()
+
+    assert "Vorrat: 3/3 Titel" in view.automatic_status[1]
+    assert "Mindestvorrat nicht erreicht" not in view.automatic_status[1]
 
 
 def test_automatic_status_identifies_running_transition(tmp_path: Path) -> None:

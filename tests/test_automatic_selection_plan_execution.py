@@ -44,6 +44,7 @@ def _bundle(
     step_status: AutomaticSelectionPlanStepStatus = AutomaticSelectionPlanStepStatus.PLANNED,
     digest: str = CURRENT_DIGEST,
     queue_status: QueueStatus | None = None,
+    relaxation_stage: str = "STRICT",
 ) -> AutomaticSelectionPlanBundle:
     now = datetime(2026, 9, 16, tzinfo=UTC)
     plan = AutomaticSelectionPlan(
@@ -68,7 +69,7 @@ def _bundle(
         step_status,
         now,
         None,
-        "STRICT",
+        relaxation_stage,
         0,
         0.0,
         1,
@@ -220,14 +221,65 @@ def _service(
     track: Track | None = None,
     available: bool = True,
     planning: _Planning | None = None,
+    rules: object | None = None,
 ) -> AutomaticSelectionPlanExecutionService:
     return AutomaticSelectionPlanExecutionService(
         plans,  # type: ignore[arg-type]
         planning or _Planning(plans),  # type: ignore[arg-type]
         _Tracks(track),  # type: ignore[arg-type]
-        TrackSelectionService(),
+        rules or TrackSelectionService(),  # type: ignore[arg-type]
         _Availability(available),
     )
+
+
+def test_materialization_reuses_the_relaxation_approved_by_the_preview() -> None:
+    plans = _Plans(
+        _bundle(
+            status=AutomaticSelectionPlanStatus.ACTIVE,
+            revision=1,
+            relaxation_stage="TRACK_DISTANCE",
+        )
+    )
+
+    class Rules:
+        relaxed_codes: frozenset[str] = frozenset()
+
+        def evaluate(
+            self,
+            _entry: QueueEntry,
+            _track: Track | None,
+            *,
+            relaxed_codes: frozenset[str],
+        ) -> SelectionDecision:
+            self.relaxed_codes = relaxed_codes
+            return SelectionDecision.allow()
+
+    rules = Rules()
+
+    result = _service(plans, track=_track(), rules=rules).materialize_next_step(PLAN_ID, 1)
+
+    assert result.status is AutomaticSelectionPlanExecutionStatus.MATERIALIZED
+    assert rules.relaxed_codes == frozenset(
+        {"ARTIST_REPETITION", "TRACK_REPETITION", "RECENT_TRACK"}
+    )
+
+
+def test_materialized_queue_entry_exposes_its_reviewed_relaxation() -> None:
+    plans = _Plans(
+        _bundle(
+            status=AutomaticSelectionPlanStatus.ACTIVE,
+            revision=2,
+            step_status=AutomaticSelectionPlanStepStatus.QUEUED,
+            queue_status=QueueStatus.WAITING,
+            relaxation_stage="TRACK_DISTANCE",
+        )
+    )
+    service = _service(plans)
+
+    stage, codes = service.relaxation_for_queue_entry(7, 91)
+
+    assert stage == "TRACK_DISTANCE"
+    assert codes == frozenset({"ARTIST_REPETITION", "TRACK_REPETITION", "RECENT_TRACK"})
 
 
 def test_empty_session_creates_depth_five_plan_and_materializes_one_step() -> None:
@@ -297,7 +349,7 @@ def test_terminal_materialized_plan_completes_idempotently() -> None:
     assert plans.bundle is not None and plans.bundle.plan.revision == 3
 
 
-def test_nonterminal_and_missing_queue_links_do_not_complete_plan() -> None:
+def test_exhausted_plan_completes_while_materialized_queue_row_remains_active() -> None:
     waiting = _Plans(
         _bundle(
             status=AutomaticSelectionPlanStatus.ACTIVE,
@@ -318,7 +370,7 @@ def test_nonterminal_and_missing_queue_links_do_not_complete_plan() -> None:
     active = _service(waiting).materialize_next_step(PLAN_ID, 2)
     inconsistent = _service(missing).materialize_next_step(PLAN_ID, 2)
 
-    assert active.status is AutomaticSelectionPlanExecutionStatus.NO_REMAINING_STEP
+    assert active.status is AutomaticSelectionPlanExecutionStatus.PLAN_COMPLETED
     assert inconsistent.status is AutomaticSelectionPlanExecutionStatus.INCONSISTENT_QUEUE_LINK
     assert missing.bundle is not None
     assert missing.bundle.plan.status is AutomaticSelectionPlanStatus.PAUSED
@@ -339,6 +391,18 @@ def test_active_materialized_step_is_reused_before_another_step_is_queued() -> N
     assert result.status is AutomaticSelectionPlanExecutionStatus.ALREADY_MATERIALIZED
     assert result.queue_entry is not None and result.queue_entry.queue_id == 91
     assert plans.materialize_calls == 1
+
+
+def test_playing_plan_step_does_not_block_materializing_its_successor() -> None:
+    bundle = _bundle(
+        status=AutomaticSelectionPlanStatus.ACTIVE,
+        revision=2,
+        step_status=AutomaticSelectionPlanStepStatus.QUEUED,
+        queue_status=QueueStatus.PLAYING,
+    )
+    service = _service(_Plans(bundle))
+
+    assert service._existing_active_queue_entry(bundle) is None
 
 
 class _QueuePlanExecution:
@@ -411,3 +475,24 @@ def test_queue_does_not_fall_back_to_unpersisted_selection_after_plan_failure(
     assert service.get_next_candidate() is None
     assert service.automatic_plan_pause_reason() is not None
     assert service.entries() == []
+
+
+def test_already_materialized_preparing_step_is_not_claimed_twice(tmp_path: Path) -> None:
+    service, execution = _queue_setup(tmp_path / "queue-preparing-idempotence.db")
+    entry = service.add(1, QueueSource.AUTOMATIC)
+    service.mark_preparing(entry.queue_id, "A")
+
+    def already_materialized(_session_id: int) -> AutomaticSelectionPlanExecutionResult:
+        current = service.entry(entry.queue_id)
+        assert current is not None
+        return AutomaticSelectionPlanExecutionResult(
+            AutomaticSelectionPlanExecutionStatus.ALREADY_MATERIALIZED,
+            queue_entry=current,
+        )
+
+    execution.ensure_next_step = already_materialized  # type: ignore[method-assign]
+
+    assert service.get_next_candidate() is None
+    current = service.entry(entry.queue_id)
+    assert current is not None
+    assert current.status is QueueStatus.PREPARING
