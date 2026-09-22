@@ -390,6 +390,51 @@ def pop_scheduled(view: FakeView, callback_name: str) -> Callable[[], None]:
     return view.scheduled.pop(index)
 
 
+def drain_background_until(
+    controller: MainController,
+    predicate: Callable[[], bool],
+    *,
+    description: str,
+    timeout: float = 5.0,
+) -> None:
+    """Wait for controller workers and apply their callbacks on the test main thread."""
+    deadline = monotonic() + timeout
+    while monotonic() < deadline:
+        controller._drain_background_callbacks()
+        if predicate():
+            return
+        remaining = deadline - monotonic()
+        if remaining <= 0.0:
+            break
+        controller._preload_executor.drain(min(remaining, 0.25))
+        failed_workers = tuple(
+            worker
+            for worker in controller._worker_registry.history()
+            if worker.category.startswith("preload") and worker.state != "completed"
+        )
+        if failed_workers:
+            pytest.fail(f"{description}: Hintergrund-Worker fehlgeschlagen: {failed_workers!r}")
+
+    controller._drain_background_callbacks()
+    if predicate():
+        return
+    dispatcher = controller._gui_dispatcher.statistics()
+    active_workers = controller._worker_registry.active()
+    worker_history = controller._worker_registry.history()
+    pytest.fail(
+        f"{description} wurde nicht abgeschlossen; "
+        f"deck_a={controller.deck_a.model.state.value}/"
+        f"{controller.deck_a.model.loaded_track!r}, "
+        f"deck_b={controller.deck_b.model.state.value}/"
+        f"{controller.deck_b.model.loaded_track!r}, "
+        f"preload_in_progress={controller._preload_in_progress}, "
+        f"callbacks_pending={dispatcher.pending}, "
+        f"callbacks_published={dispatcher.published}, "
+        f"callbacks_processed={dispatcher.processed}, "
+        f"active_workers={active_workers!r}, worker_history={worker_history!r}"
+    )
+
+
 def test_stable_status_snapshot_skips_unchanged_deck_and_mixer_widgets(
     tmp_path: Path,
 ) -> None:
@@ -1297,11 +1342,11 @@ def test_background_preload_finishes_on_controller_callback_queue(tmp_path: Path
     controller.add_catalog_track_to_queue(1)
     controller.start_automatic_queue()
     assert controller._automatic_run_active
-    for _ in range(100):
-        controller._drain_background_callbacks()
-        if controller.deck_a.model.state.value == "playing":
-            break
-        sleep(0.01)
+    drain_background_until(
+        controller,
+        lambda: controller.deck_a.model.state == DeckState.PLAYING,
+        description="Automatischer Hintergrund-Preload",
+    )
 
     assert controller.deck_a.model.loaded_track is not None
     assert controller.deck_a.model.state.value == "playing"
@@ -1317,6 +1362,43 @@ def test_background_preload_finishes_on_controller_callback_queue(tmp_path: Path
     assert "gui_event.preload.update_queue_view" in timings
     assert "gui_event.preload.update_catalog_view" in timings
     assert "gui_event.preload.schedule_followup" in timings
+
+
+def test_background_preload_completion_is_not_limited_to_one_second(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, _view = build_controller(tmp_path, background_preload=True)
+    controller.initialize()
+    original_prepare = controller.deck_a.prepare
+    entered = Event()
+    release = Event()
+
+    def delayed_prepare(track: Track) -> object:
+        entered.set()
+        if not release.wait(5.0):
+            raise TimeoutError("Testfreigabe für den Preload blieb aus")
+        return original_prepare(track)
+
+    monkeypatch.setattr(controller.deck_a, "prepare", delayed_prepare)
+
+    controller.add_catalog_track_to_queue(1)
+    controller.start_automatic_queue()
+    assert controller._preload_executor.drain(2.0)
+    controller._drain_background_callbacks()
+    assert entered.wait(2.0)
+    assert not release.wait(1.1)
+    assert controller.deck_a.model.loaded_track is None
+    release.set()
+
+    drain_background_until(
+        controller,
+        lambda: controller.deck_a.model.state == DeckState.PLAYING,
+        description="Kontrolliert verzögerter Hintergrund-Preload",
+    )
+
+    assert controller.deck_a.model.loaded_track is not None
+    assert controller.deck_a.model.state == DeckState.PLAYING
 
 
 def test_background_automatic_start_fills_both_decks_when_two_tracks_are_playable(
