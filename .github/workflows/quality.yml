@@ -43,6 +43,10 @@ jobs:
   tests:
     runs-on: windows-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, tempo-prototype]
 
     steps:
       - name: Check out repository
@@ -58,8 +62,17 @@ jobs:
       - name: Install project and pinned development tools
         run: python -m pip install -e ".[dev]"
 
-      - name: Pytest without real format tests
-        run: python -m pytest -q -ra -m "not real_formats" --durations=50
+      - name: Pytest core without real format tests
+        if: matrix.shard == 'core'
+        run: >-
+          python -m pytest -q -ra -m "not real_formats" --durations=50
+          --ignore=tests/test_metadata_analysis_prototype.py
+
+      - name: Pytest tempo prototype without real format tests
+        if: matrix.shard == 'tempo-prototype'
+        run: >-
+          python -m pytest -q -ra -m "not real_formats" --durations=50
+          tests/test_metadata_analysis_prototype.py
 
   real-formats:
     runs-on: windows-latest
