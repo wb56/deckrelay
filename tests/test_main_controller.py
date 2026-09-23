@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Callable
 from concurrent.futures import Executor, Future
 import sqlite3
+import tracemalloc
 from threading import Event, Thread
 from time import monotonic, sleep
 from types import SimpleNamespace
@@ -3805,47 +3806,73 @@ def test_history_persistence_failure_does_not_reverse_audio_completion(
 
 
 def test_database_delay_scenario_isolated_to_persistence_and_report(tmp_path: Path) -> None:
-    executor = ManualExecutor()
-    controller, _view = build_controller(tmp_path, persistence_executor=executor, with_history=True)
-    controller.initialize()
-    controller.add_catalog_track_to_queue(1)
-    controller.deck_action("A", "play")
-    track = controller.deck_a.model.loaded_track
-    queue_id = controller._deck_queue_ids["A"]
-    assert track is not None and queue_id is not None
-    controller._performance.record("measurement.before_scenario", 99.0, 1000.0)
-    controller.begin_diagnostic_scenario("database_delay", 20)
-    assert _view.diagnostic_state == ("running", "database_delay")
+    tracing_was_active = tracemalloc.is_tracing()
+    external_controller: MainController | None = None
+    try:
+        assert not tracing_was_active
+        executor = ManualExecutor()
+        controller, _view = build_controller(
+            tmp_path, persistence_executor=executor, with_history=True
+        )
+        try:
+            controller.initialize()
+            controller.add_catalog_track_to_queue(1)
+            controller.deck_action("A", "play")
+            track = controller.deck_a.model.loaded_track
+            queue_id = controller._deck_queue_ids["A"]
+            assert track is not None and queue_id is not None
+            controller._performance.record("measurement.before_scenario", 99.0, 1000.0)
+            controller.begin_diagnostic_scenario("database_delay", 20)
+            assert _view.diagnostic_state == ("running", "database_delay")
 
-    started = monotonic()
-    controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
-    gui_elapsed = monotonic() - started
+            started = monotonic()
+            controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
+            gui_elapsed = monotonic() - started
 
-    assert gui_elapsed < 0.05
-    assert controller.deck_a.model.loaded_track is None
-    executor.run_all()
-    controller._diagnostic_scenario.end()
-    snapshot = controller._diagnostic_scenario.snapshot()
-    assert snapshot is not None
-    assert snapshot.transitions_completed == 1
-    assert snapshot.persistence_jobs_submitted == 2
-    assert snapshot.persistence_jobs_completed == 2
-    report = controller.diagnostic_report("database_delay")
-    assert "acceptance_data_present: true" in report
-    assert "injected_database_delay_ms: 20" in report
-    assert "measurement.before_scenario" not in report
-    for operation in (
-        "database.injected_delay",
-        "database.history.total",
-        "database.history.commit",
-        "database.queue.total",
-        "database.queue.commit",
-        "transition_completion.total",
-        "worker.history_persist",
-        "worker.queue_persist",
-        "worker.playback_persist",
-    ):
-        assert operation in report
+            assert gui_elapsed < 0.05
+            assert controller.deck_a.model.loaded_track is None
+            executor.run_all()
+            controller._diagnostic_scenario.end()
+            snapshot = controller._diagnostic_scenario.snapshot()
+            assert snapshot is not None
+            assert snapshot.transitions_completed == 1
+            assert snapshot.persistence_jobs_submitted == 2
+            assert snapshot.persistence_jobs_completed == 2
+            report = controller.diagnostic_report("database_delay")
+            assert "acceptance_data_present: true" in report
+            assert "injected_database_delay_ms: 20" in report
+            assert "measurement.before_scenario" not in report
+            for operation in (
+                "database.injected_delay",
+                "database.history.total",
+                "database.history.commit",
+                "database.queue.total",
+                "database.queue.commit",
+                "transition_completion.total",
+                "worker.history_persist",
+                "worker.queue_persist",
+                "worker.playback_persist",
+            ):
+                assert operation in report
+        finally:
+            controller.close()
+
+        assert not tracemalloc.is_tracing()
+        tracemalloc.start()
+        external_path = tmp_path / "external-tracing"
+        external_path.mkdir()
+        external_controller, _view = build_controller(external_path)
+        external_controller.begin_diagnostic_scenario("database_delay", 20)
+        external_controller.close()
+        external_controller = None
+        assert tracemalloc.is_tracing()
+    finally:
+        if external_controller is not None:
+            external_controller.close()
+        if tracing_was_active and not tracemalloc.is_tracing():
+            tracemalloc.start()
+        elif not tracing_was_active and tracemalloc.is_tracing():
+            tracemalloc.stop()
 
 
 def test_database_delay_cannot_be_enabled_in_production_mode(tmp_path: Path) -> None:
