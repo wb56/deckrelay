@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Die Auswahlregel-Konfiguration wird vollständig persistent registriert; sichere
+  Standardwerte erhalten das bisherige Auswahlverhalten, eine neue Oberfläche
+  ist mit diesem Teilblock nicht verbunden.
 - Die automatische Queue-Zusammenstellung verbindet persistente Katalogfilter und
   Mindestvorräte mit einer fortlaufenden Automatik. Sie füllt fehlende sichere Titel
   nebenläufig und ohne Duplikate nach, respektiert Pausieren und Beenden und lässt
