@@ -90,7 +90,7 @@ def test_v44_adds_exact_plan_tables_without_catalog_foreign_keys(tmp_path: Path)
         step_fks = connection.execute(
             "PRAGMA foreign_key_list(automatic_selection_plan_steps)"
         ).fetchall()
-    assert version == LATEST_SCHEMA_VERSION == 44
+    assert version == LATEST_SCHEMA_VERSION == 45
     assert tables == {"automatic_selection_plans", "automatic_selection_plan_steps"}
     assert {row[2] for row in step_fks} == {"automatic_selection_plans", "party_queue"}
 

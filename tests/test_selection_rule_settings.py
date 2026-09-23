@@ -17,11 +17,14 @@ from party_player.models import Track
 from party_player.repository import PartyPlayerRepository
 from party_player.repositories.track_repository import TrackRepository
 from party_player.selection_rule_settings import (
+    DEFAULT_SELECTION_RULE_CONFIGURATION,
     DEFAULT_SELECTION_SCORING_SETTINGS,
     PLAY_COUNT_RULE_ID,
     RATING_RULE_ID,
     SelectionScoringSettings,
+    SelectionRuleConfigurationError,
     SelectionRuleSettingsRepository,
+    SelectionRuleSettingsService,
     SoftRuleSetting,
 )
 from party_player.selection_continuity import (
@@ -31,7 +34,7 @@ from party_player.selection_continuity import (
     MOOD_CONTINUITY_RULE_ID,
 )
 from party_player.track_selection import SelectionDecision, TrackSelectionService
-from party_player.selection_decision import RuleOutcome
+from party_player.selection_decision import RuleKind, RuleOutcome
 
 
 def _database(path: Path) -> tuple[Database, int]:
@@ -72,7 +75,10 @@ def test_v43_migration_adds_disabled_metadata_rules_without_overwriting(tmp_path
             (PLAY_COUNT_RULE_ID,),
         )
         connection.execute(
-            "INSERT OR REPLACE INTO selection_rule_settings VALUES (?, 1, 1, 2, CURRENT_TIMESTAMP)",
+            """INSERT OR REPLACE INTO selection_rule_settings
+               (rule_id, rule_kind, config_version, enabled, configurable, weight,
+                default_enabled, default_weight, scope)
+               VALUES (?, 'SOFT_WEIGHT', 1, 1, 1, 2, 0, 1, 'AUTOMATIC_SELECTION')""",
             (GENRE_DIVERSITY_RULE_ID,),
         )
 
@@ -83,9 +89,9 @@ def test_v43_migration_adds_disabled_metadata_rules_without_overwriting(tmp_path
         version = connection.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         rows = connection.execute(
             """SELECT rule_id, config_version, enabled, weight
-               FROM selection_rule_settings ORDER BY rule_id"""
+               FROM selection_rule_settings WHERE rule_kind='SOFT_WEIGHT' ORDER BY rule_id"""
         ).fetchall()
-    assert version == LATEST_SCHEMA_VERSION == 44
+    assert version == LATEST_SCHEMA_VERSION == 45
     assert [tuple(row) for row in rows] == [
         (BPM_CONTINUITY_RULE_ID, 1, 0, 1.0),
         (ENERGY_CONTINUITY_RULE_ID, 1, 0, 1.0),
@@ -116,8 +122,10 @@ def test_v43_migration_rolls_back_on_failure(
 
     def fail(connection: Any) -> None:
         connection.execute(
-            "INSERT INTO selection_rule_settings (rule_id, config_version, enabled, weight) "
-            "VALUES (?, 1, 0, 1)",
+            """INSERT INTO selection_rule_settings
+               (rule_id, rule_kind, config_version, enabled, configurable, weight,
+                default_enabled, default_weight, scope)
+               VALUES (?, 'SOFT_WEIGHT', 1, 0, 1, 1, 0, 1, 'AUTOMATIC_SELECTION')""",
             (GENRE_DIVERSITY_RULE_ID,),
         )
         raise sqlite3.OperationalError("simulated")
@@ -133,6 +141,85 @@ def test_v43_migration_rolls_back_on_failure(
         ).fetchone()[0]
     assert version == 42
     assert count == 0
+
+
+def test_v45_migration_is_transactional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    database = Database(tmp_path / "v45-rollback.db")
+    migrate(database)
+    with database.connect() as connection:
+        connection.execute("UPDATE schema_version SET version = 44")
+
+    def fail(connection: Any) -> None:
+        connection.execute("CREATE TABLE v45_partial_write (value INTEGER NOT NULL)")
+        raise sqlite3.OperationalError("simulated")
+
+    monkeypatch.setattr(migrations, "_migrate_to_v45", fail)
+    with pytest.raises(sqlite3.OperationalError):
+        migrate(database)
+
+    with database.connect() as connection:
+        version = connection.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+        partial = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v45_partial_write'"
+        ).fetchone()
+    assert version == 44
+    assert partial is None
+
+
+def test_complete_typed_registry_contains_soft_defaults_and_immutable_hard_rules(
+    tmp_path: Path,
+) -> None:
+    database, _ = _database(tmp_path / "registry.db")
+    configuration = SelectionRuleSettingsRepository(database).load_configuration()
+
+    assert len(configuration.rules) == 14
+    hard_rules = tuple(
+        rule for rule in configuration.rules if rule.rule_kind is RuleKind.HARD_EXCLUSION
+    )
+    assert len(hard_rules) == 8
+    assert all(rule.enabled and not rule.configurable for rule in hard_rules)
+    assert all(rule.weight is None and rule.default_weight is None for rule in hard_rules)
+    assert all(rule.created_at and rule.updated_at for rule in configuration.rules)
+    assert {
+        (rule.rule_id, rule.enabled, rule.weight)
+        for rule in configuration.rules
+        if rule.rule_kind is RuleKind.SOFT_WEIGHT
+    } == {
+        (rule.rule_id, rule.enabled, rule.weight)
+        for rule in DEFAULT_SELECTION_RULE_CONFIGURATION.rules
+        if rule.rule_kind is RuleKind.SOFT_WEIGHT
+    }
+
+
+def test_service_updates_soft_rules_protects_hard_rules_and_restores_defaults(
+    tmp_path: Path,
+) -> None:
+    database, _ = _database(tmp_path / "service.db")
+    repository = SelectionRuleSettingsRepository(database)
+    service = SelectionRuleSettingsService(repository)
+
+    service.update(RATING_RULE_ID, enabled=False, weight=0.5)
+    assert repository.load().rating == SoftRuleSetting(RATING_RULE_ID, False, 0.5)
+    with pytest.raises(ValueError, match="Schutzregel"):
+        service.update("core.track_exists", enabled=False, weight=None)
+
+    service.restore_defaults()
+    assert repository.load() == DEFAULT_SELECTION_SCORING_SETTINGS
+
+
+def test_service_translates_atomic_database_failure(tmp_path: Path) -> None:
+    database, _ = _database(tmp_path / "service-failure.db")
+    service = SelectionRuleSettingsService(SelectionRuleSettingsRepository(database))
+    with database.connect() as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_rating BEFORE UPDATE ON selection_rule_settings
+               WHEN NEW.rule_id = 'selection.rating' BEGIN
+               SELECT RAISE(ABORT, 'internal detail'); END"""
+        )
+
+    with pytest.raises(SelectionRuleConfigurationError, match="konnte nicht gespeichert"):
+        service.update(RATING_RULE_ID, enabled=False, weight=0.5)
+    assert SelectionRuleSettingsRepository(database).load() == DEFAULT_SELECTION_SCORING_SETTINGS
 
 
 def test_repository_validates_writes_and_falls_back_per_damaged_row(tmp_path: Path) -> None:
@@ -165,7 +252,10 @@ def test_repository_validates_writes_and_falls_back_per_damaged_row(tmp_path: Pa
             (RATING_RULE_ID,),
         )
         connection.execute(
-            "INSERT INTO selection_rule_settings VALUES (?, 1, 1, 1, CURRENT_TIMESTAMP)",
+            """INSERT INTO selection_rule_settings
+               (rule_id, rule_kind, config_version, enabled, configurable, weight,
+                default_enabled, default_weight, scope)
+               VALUES (?, 'SOFT_WEIGHT', 1, 1, 1, 1, 1, 1, 'AUTOMATIC_SELECTION')""",
             ("selection.future",),
         )
         connection.execute(
