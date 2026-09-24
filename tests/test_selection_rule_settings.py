@@ -222,6 +222,30 @@ def test_service_translates_atomic_database_failure(tmp_path: Path) -> None:
     assert SelectionRuleSettingsRepository(database).load() == DEFAULT_SELECTION_SCORING_SETTINGS
 
 
+def test_service_saves_complete_form_atomically_and_returns_effective_snapshot(
+    tmp_path: Path,
+) -> None:
+    database, _ = _database(tmp_path / "service-complete-save.db")
+    repository = SelectionRuleSettingsRepository(database)
+    service = SelectionRuleSettingsService(repository)
+    changed = SelectionScoringSettings(
+        SoftRuleSetting(PLAY_COUNT_RULE_ID, False, 20.0),
+        SoftRuleSetting(RATING_RULE_ID, True, 0.5),
+        SoftRuleSetting(GENRE_DIVERSITY_RULE_ID, True, 0.5),
+        SoftRuleSetting(BPM_CONTINUITY_RULE_ID, True, 1.0),
+        SoftRuleSetting(ENERGY_CONTINUITY_RULE_ID, True, 2.0),
+        SoftRuleSetting(MOOD_CONTINUITY_RULE_ID, True, 1.0),
+    )
+
+    snapshot = service.save(changed)
+
+    assert repository.load() == changed
+    assert snapshot.rule(PLAY_COUNT_RULE_ID).enabled is False
+    assert snapshot.rule(RATING_RULE_ID).weight == 0.5
+    assert snapshot.rule("core.track_exists").enabled is True
+    assert snapshot.rule("core.track_exists").configurable is False
+
+
 def test_repository_validates_writes_and_falls_back_per_damaged_row(tmp_path: Path) -> None:
     database, _ = _database(tmp_path / "validation.db")
     repository = SelectionRuleSettingsRepository(database)

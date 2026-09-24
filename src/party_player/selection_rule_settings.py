@@ -289,7 +289,22 @@ class SelectionRuleSettingsService:
         self._repository = repository
 
     def current(self) -> EffectiveSelectionRuleConfiguration:
-        return self._repository.load_configuration()
+        try:
+            return self._repository.load_configuration()
+        except sqlite3.Error as error:
+            raise SelectionRuleConfigurationError(
+                "Die Auswahlregel-Konfiguration konnte nicht geladen werden"
+            ) from error
+
+    def save(self, settings: SelectionScoringSettings) -> EffectiveSelectionRuleConfiguration:
+        """Persist one complete validated form and return the effective snapshot."""
+        try:
+            self._repository.save(settings)
+            return self._repository.load_configuration()
+        except sqlite3.Error as error:
+            raise SelectionRuleConfigurationError(
+                "Die Auswahlregel-Konfiguration konnte nicht gespeichert werden"
+            ) from error
 
     def update(self, rule_id: str, *, enabled: bool, weight: float | None) -> None:
         current = self.current().rule(rule_id)
@@ -311,3 +326,11 @@ class SelectionRuleSettingsService:
             raise SelectionRuleConfigurationError(
                 "Die Standardkonfiguration konnte nicht wiederhergestellt werden"
             ) from error
+
+
+def selection_rule_weight_limits(rule_id: str) -> tuple[float, float]:
+    """Return the single authoritative bounds for a configurable soft rule."""
+    try:
+        return _SOFT_LIMITS[rule_id]
+    except KeyError as error:
+        raise ValueError("Unbekannte oder unveränderliche Auswahlregel") from error

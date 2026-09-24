@@ -1,17 +1,22 @@
 """Controller boundary for automatic-selection rule settings."""
 
 from party_player.selection_rule_settings import (
-    SelectionRuleSettingsRepository,
+    DEFAULT_SELECTION_RULE_CONFIGURATION,
+    EffectiveSelectionRuleConfiguration,
     SelectionScoringSettings,
+    SelectionRuleSettingsService,
 )
 
 
 class SelectionRuleSettingsController:
-    def __init__(self, repository: SelectionRuleSettingsRepository) -> None:
-        self._repository = repository
+    def __init__(self, service: SelectionRuleSettingsService) -> None:
+        self._service = service
 
-    def load(self) -> SelectionScoringSettings:
-        return self._repository.load()
+    def load(self) -> EffectiveSelectionRuleConfiguration:
+        return self._service.current()
 
-    def save(self, settings: SelectionScoringSettings) -> None:
-        self._repository.save(settings)
+    def save(self, settings: SelectionScoringSettings) -> EffectiveSelectionRuleConfiguration:
+        return self._service.save(settings)
+
+    def defaults(self) -> EffectiveSelectionRuleConfiguration:
+        return DEFAULT_SELECTION_RULE_CONFIGURATION

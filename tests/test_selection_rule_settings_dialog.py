@@ -5,9 +5,11 @@ from typing import Any, cast
 import pytest
 
 from party_player.selection_rule_settings import (
+    DEFAULT_SELECTION_RULE_CONFIGURATION,
     PLAY_COUNT_RULE_ID,
     RATING_RULE_ID,
     SelectionScoringSettings,
+    SelectionRuleConfigurationError,
     SoftRuleSetting,
 )
 from party_player.selection_continuity import (
@@ -19,14 +21,18 @@ from party_player.selection_continuity import (
 from party_player.ui.selection_rule_settings_dialog import (
     STRENGTH_WEIGHTS,
     SelectionRuleFormValues,
+    SelectionRuleMessageKind,
     SelectionRuleSettingsDialog,
     form_values,
+    form_values_from_snapshot,
     selection_rule_dialog_dimensions,
+    selection_rule_message_color,
     strength_for_weight,
     validate_form,
     weight_for_strength,
 )
 from party_player.ui import main_window
+from party_player.ui import theme
 from party_player.ui.main_window import MainWindow
 
 
@@ -46,10 +52,12 @@ class _Widget:
         self.text = ""
         self.state = "normal"
         self.focused = False
+        self.text_color: object | None = None
 
     def configure(self, **values: object) -> None:
         self.text = str(values.get("text", self.text))
         self.state = str(values.get("state", self.state))
+        self.text_color = values.get("text_color", self.text_color)
 
     def focus_set(self) -> None:
         self.focused = True
@@ -60,10 +68,17 @@ class _Controller:
         self.error = error
         self.saved: list[object] = []
 
-    def save(self, settings: object) -> None:
+    def save(self, settings: object) -> object:
         if self.error is not None:
             raise self.error
         self.saved.append(settings)
+        return DEFAULT_SELECTION_RULE_CONFIGURATION
+
+    def load(self) -> object:
+        return DEFAULT_SELECTION_RULE_CONFIGURATION
+
+    def defaults(self) -> object:
+        return DEFAULT_SELECTION_RULE_CONFIGURATION
 
 
 def test_visible_program_options_build_selection_settings_button(monkeypatch: Any) -> None:
@@ -128,6 +143,9 @@ class _Dialog:
         self._message = _Widget()
         self._transition_error = _Widget()
         self._transition_menus = (_Widget(), _Widget(), _Widget(), _Widget())
+        self._save_button = _Widget()
+        self._loaded = True
+        self._message_kind = SelectionRuleMessageKind.INFORMATION
         self.closed = False
 
     def _current_values(self) -> SelectionRuleFormValues:
@@ -166,6 +184,9 @@ class _Dialog:
 
     def _refresh_form(self) -> None:
         SelectionRuleSettingsDialog._refresh_form(cast(Any, self))
+
+    def _show_message(self, text: str, kind: SelectionRuleMessageKind) -> None:
+        SelectionRuleSettingsDialog._show_message(cast(Any, self), text, kind)
 
     def _close(self) -> None:
         self.closed = True
@@ -218,6 +239,16 @@ def test_invalid_input_is_explained_at_the_affected_field(
     assert bool(result.rating_error) is (field == "rating")
 
 
+def test_validation_errors_keep_semantic_error_color() -> None:
+    dialog = _Dialog()
+    dialog._play_weight.set("4")
+
+    dialog._refresh_form()
+
+    assert dialog._play_error.text == "Zulässig sind Werte von 5 bis 100."
+    assert dialog._play_error.text_color == theme.ERROR
+
+
 def test_save_persists_all_values_together_and_cancel_does_not_save() -> None:
     controller = _Controller()
     saved = _Dialog(controller)
@@ -242,30 +273,107 @@ def test_save_persists_all_values_together_and_cancel_does_not_save() -> None:
     assert settings.bpm_continuity == SoftRuleSetting(BPM_CONTINUITY_RULE_ID, True, 1.0)
     assert settings.energy_continuity == SoftRuleSetting(ENERGY_CONTINUITY_RULE_ID, True, 2.0)
     assert settings.mood_continuity == SoftRuleSetting(MOOD_CONTINUITY_RULE_ID, False, 1.0)
-    assert saved.closed and cancelled.closed
+    assert not saved.closed and cancelled.closed
+    assert "wurden gespeichert" in saved._message.text
+    assert saved._message_kind is SelectionRuleMessageKind.SUCCESS
+    assert saved._message.text_color == theme.SUCCESS
 
 
-def test_defaults_only_change_form_until_save() -> None:
+def test_defaults_only_change_form_until_save(monkeypatch: Any) -> None:
     controller = _Controller()
     dialog = _Dialog(controller)
     dialog._play_weight.set("20")
 
+    monkeypatch.setattr(
+        "party_player.ui.selection_rule_settings_dialog.messagebox.askyesno",
+        lambda *_args, **_kwargs: True,
+    )
     SelectionRuleSettingsDialog._restore_defaults(cast(Any, dialog))
 
     assert dialog._play_weight.get() == "10"
     assert controller.saved == []
     assert "zum Übernehmen speichern" in dialog._message.text
+    assert dialog._message_kind is SelectionRuleMessageKind.INFORMATION
+    assert dialog._message.text_color == theme.TEXT_MUTED
 
 
 def test_storage_error_keeps_dialog_open_and_previous_values_untouched() -> None:
-    controller = _Controller(RuntimeError("Datenbank nicht erreichbar"))
+    controller = _Controller(SelectionRuleConfigurationError("Datenbank nicht erreichbar"))
     dialog = _Dialog(controller)
 
     SelectionRuleSettingsDialog._save(cast(Any, dialog))
 
     assert not dialog.closed
     assert controller.saved == []
-    assert "bisherigen Einstellungen bleiben erhalten" in dialog._message.text
+    assert "bisherigen Einstellungen bleiben vollständig erhalten" in dialog._message.text
+    assert dialog._message_kind is SelectionRuleMessageKind.ERROR
+    assert dialog._message.text_color == theme.ERROR
+
+
+def test_load_error_disables_save_and_uses_error_state() -> None:
+    dialog = _Dialog()
+    dialog._loaded = False
+    dialog._controller.load = lambda: (_ for _ in ()).throw(RuntimeError("nicht lesbar"))
+
+    SelectionRuleSettingsDialog._load_settings(cast(Any, dialog))
+
+    assert not dialog._loaded
+    assert dialog._save_button.state == "disabled"
+    assert "nicht geladen" in dialog._message.text
+    assert dialog._message_kind is SelectionRuleMessageKind.ERROR
+    assert dialog._message.text_color == theme.ERROR
+
+
+def test_later_message_replaces_previous_semantics_and_text() -> None:
+    dialog = _Dialog(_Controller(SelectionRuleConfigurationError("nicht erreichbar")))
+    SelectionRuleSettingsDialog._save(cast(Any, dialog))
+    assert dialog._message_kind is SelectionRuleMessageKind.ERROR
+
+    dialog._controller = _Controller()
+    SelectionRuleSettingsDialog._save(cast(Any, dialog))
+
+    assert dialog._message.text == "Auswahlregel-Einstellungen wurden gespeichert."
+    assert dialog._message_kind is SelectionRuleMessageKind.SUCCESS
+    assert dialog._message.text_color == theme.SUCCESS
+
+
+def test_semantic_message_colors_reuse_theme_tokens() -> None:
+    assert selection_rule_message_color(SelectionRuleMessageKind.SUCCESS) == theme.SUCCESS
+    assert selection_rule_message_color(SelectionRuleMessageKind.INFORMATION) == theme.TEXT_MUTED
+    assert selection_rule_message_color(SelectionRuleMessageKind.ERROR) == theme.ERROR
+
+
+def test_cancelled_default_confirmation_keeps_local_values(monkeypatch: Any) -> None:
+    dialog = _Dialog()
+    dialog._play_weight.set("20")
+    monkeypatch.setattr(
+        "party_player.ui.selection_rule_settings_dialog.messagebox.askyesno",
+        lambda *_args, **_kwargs: False,
+    )
+
+    SelectionRuleSettingsDialog._restore_defaults(cast(Any, dialog))
+
+    assert dialog._play_weight.get() == "20"
+    assert dialog._controller.saved == []
+
+
+def test_complete_snapshot_is_projected_without_exposing_hard_rules() -> None:
+    values = form_values_from_snapshot(DEFAULT_SELECTION_RULE_CONFIGURATION)
+
+    assert values.play_count_enabled
+    assert values.play_count_weight == "10"
+    assert values.rating_enabled
+    assert not values.genre_enabled
+
+
+def test_unloaded_dialog_cannot_save() -> None:
+    controller = _Controller()
+    dialog = _Dialog(controller)
+    dialog._loaded = False
+
+    SelectionRuleSettingsDialog._save(cast(Any, dialog))
+
+    assert controller.saved == []
 
 
 def test_transition_strengths_are_discrete_and_disabled_by_default() -> None:
