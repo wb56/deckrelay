@@ -11,6 +11,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Added
 
+- Auswahlregel-Einstellungen werden über die persistente Service-Konfiguration
+  verwaltet und können kontrolliert auf sichere Standardwerte zurückgesetzt
+  werden; das bisherige Standard-Auswahlverhalten bleibt unverändert.
 - Die Auswahlregel-Konfiguration wird vollständig persistent registriert; sichere
   Standardwerte erhalten das bisherige Auswahlverhalten, eine neue Oberfläche
   ist mit diesem Teilblock nicht verbunden.

@@ -42,3 +42,15 @@ Die Migration übernimmt vorhandene Soft-Rule-Werte unverändert, ergänzt
 fehlende Standardzeilen und registriert die Schutzregeln in derselben
 Transaktion. Ältere Backups bleiben migrationspflichtig; das Backupformat
 selbst ändert sich nicht.
+
+Die Einstellungsoberfläche lädt beim Öffnen genau einen vollständigen Snapshot
+über den Service. Bearbeitbar sind Abspielhäufigkeit (5 bis 100), Bewertung (0
+bis 1) sowie die bereits wirksamen Regeln für Genre, BPM, Energie und Stimmung
+(jeweils 0 bis 2). Schutzregeln erscheinen nicht als Schalter; ein kompakter
+Hinweis erklärt ihre unveränderliche Wirkung. Eingaben, Aktivierungen und das
+Wiederherstellen der Standardwerte bleiben bis zum ausdrücklichen Speichern im
+lokalen Dialogzustand. Abbrechen und Fensterschließen verwerfen sie. Speichern
+übergibt alle sechs Werte gemeinsam an den Service und lädt anschließend den
+bestätigten effektiven Snapshot. Neue Auswahl- und Planungsvorgänge verwenden
+die gespeicherte Konfiguration; laufende Wiedergaben und bereits getroffene
+Entscheidungen werden nicht rückwirkend verändert.
