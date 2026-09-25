@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable
 
 from party_player.enums import SessionStatus
-from party_player.models import PartySession
+from party_player.models import PartySession, SessionRecoverySummary
 from party_player.queue_service import QueueService
 from party_player.repository import PartyPlayerRepository
 
@@ -13,6 +13,7 @@ class PartySessionService:
     def __init__(self, repository: PartyPlayerRepository) -> None:
         self._repository = repository
         self._discard_automatic_plan: Callable[[int], None] | None = None
+        self.last_recovery_summary: SessionRecoverySummary | None = None
 
     def bind_automatic_plan_discard(self, callback: Callable[[int], None]) -> None:
         self._discard_automatic_plan = callback
@@ -21,6 +22,7 @@ class PartySessionService:
         return self._repository.create_session(name)
 
     def restore_or_start(self, restore: bool = True) -> PartySession:
+        self.last_recovery_summary = None
         previous = self._repository.latest_unfinished_session() if restore else None
         if previous is None:
             fresh = self.start()
@@ -33,6 +35,13 @@ class PartySessionService:
                         fresh.session_id,
                     )
                     if copied:
+                        self.last_recovery_summary = SessionRecoverySummary(
+                            restored_session_id=fresh.session_id,
+                            pending_entries=copied,
+                            reset_preparations=0,
+                            interrupted_playbacks=0,
+                            copied_from_finished_session=True,
+                        )
                         self._repository.set_session_status(
                             fresh.session_id, SessionStatus.RECOVERED
                         )
@@ -44,7 +53,7 @@ class PartySessionService:
                             settings_snapshot=fresh.settings_snapshot,
                         )
             return fresh
-        QueueService.recover_persisted_session(
+        self.last_recovery_summary = QueueService.recover_persisted_session(
             self._repository,
             previous.session_id,
         )
