@@ -40,7 +40,14 @@ from party_player.source_availability_monitor import SourceAvailabilityMonitor
 from party_player.equalizer_resolver import EqualizerResolver
 from party_player.enums import DeckState, PlayerMode, QueueStatus, SessionStatus
 from party_player.loudness import LoudnessRepository, LoudnessService
-from party_player.models import Deck, QueueEntry, QueueStats, SavedQueue, Track
+from party_player.models import (
+    Deck,
+    QueueEntry,
+    QueueStats,
+    SavedQueue,
+    SessionRecoverySummary,
+    Track,
+)
 from party_player.one_deck_mode import AudioOperatingMode
 from party_player.queue_service import QueueService
 from party_player.queue_view_events import QueueViewEvent, QueueViewEventType
@@ -55,6 +62,7 @@ from party_player.repositories.track_repository import TrackRepository
 from party_player.repository import PartyPlayerRepository
 from party_player.services.library_service import LibraryService
 from party_player.saved_queue_service import SavedQueueService
+from party_player.session_service import PartySessionService
 from party_player.transition_controller import TransitionState
 from party_player.track_selection import SelectionDecision
 
@@ -470,6 +478,29 @@ def test_initialize_marks_only_queue_entries_present_in_recovered_session(
     controller.add_catalog_track_to_queue(2)
     added_later = controller._queue_service.entries()[-1]
     assert added_later.queue_id not in view.restored_queue_ids
+
+
+def test_initialize_explains_recovered_queue_and_manual_interruption_decision(
+    tmp_path: Path,
+) -> None:
+    controller, view = build_controller(tmp_path, track_count=2)
+    session_service = PartySessionService(controller._queue_service._repository)
+    session_service.last_recovery_summary = SessionRecoverySummary(
+        restored_session_id=1,
+        pending_entries=2,
+        reset_preparations=1,
+        interrupted_playbacks=1,
+    )
+    controller._session_service = session_service
+
+    controller.initialize()
+
+    warning = view.queue_warnings[-1]
+    assert "2 offene Queue-Titel übernommen" in warning
+    assert "1 vorbereitete Titel sicher zurückgesetzt" in warning
+    assert "nicht erneut eingeplant" in warning
+    assert "manuelle Entscheidung" in warning
+    assert "Wiedergabe und Automatik bleiben aus" in warning
 
 
 def test_unresolved_emergency_incident_is_shown_during_initialization(
