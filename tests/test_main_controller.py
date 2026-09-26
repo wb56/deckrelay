@@ -1741,11 +1741,11 @@ def test_background_preload_applies_gain_before_automatic_playback(
 
     controller.add_catalog_track_to_queue(1)
     controller.start_automatic_queue()
-    for _ in range(100):
-        controller._drain_background_callbacks()
-        if controller.deck_a.model.state.value == "playing":
-            break
-        sleep(0.01)
+    drain_background_until(
+        controller,
+        lambda: controller.deck_a.model.state == DeckState.PLAYING,
+        description="Background-Preload mit Lautheitsanpassung",
+    )
 
     expected_factor = 10 ** (-6 / 20)
     backend = controller.deck_a.backend
@@ -1784,11 +1784,11 @@ def test_background_preload_applies_equalizer_once_before_ready(
     )
 
     controller.add_catalog_track_to_queue(1)
-    for _ in range(200):
-        controller._drain_background_callbacks()
-        if controller.deck_a.model.loaded_track is not None:
-            break
-        sleep(0.01)
+    drain_background_until(
+        controller,
+        lambda: events[:2] == ["apply", "ready"],
+        description="Background-Preload mit Equalizer",
+    )
 
     assert events[:2] == ["apply", "ready"]
     assert backend.equalizer_apply_count == 1
@@ -1843,11 +1843,14 @@ def test_equalizer_failure_does_not_block_background_preload(
 
     monkeypatch.setattr(backend, "apply_equalizer", fail_enabled_equalizer)
     controller.add_catalog_track_to_queue(1)
-    for _ in range(200):
-        controller._drain_background_callbacks()
-        if controller.deck_a.model.loaded_track is not None:
-            break
-        sleep(0.01)
+    drain_background_until(
+        controller,
+        lambda: (
+            controller.deck_a.model.loaded_track is not None
+            and controller.deck_a.model.equalizer_source == "ERROR"
+        ),
+        description="Background-Preload mit Equalizer-Rückfall",
+    )
 
     assert controller.deck_a.model.loaded_track is not None
     assert controller.deck_a.model.state == DeckState.LOADED
