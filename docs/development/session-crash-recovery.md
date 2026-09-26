@@ -54,3 +54,28 @@ Schritts.
 Eine reale Prüfung von stummem Deck-Preload, VLC-Ausgabe und Audiogeräten bleibt bis
 zur tatsächlichen Durchführung **offen**. Automatisierte Tests mit dem Fake-Backend
 ersetzen diese Prüfung nicht.
+
+## Manueller Abnahmeversuch vom 26. September 2026
+
+Geprüfter Prüfstand war ausschließlich der Branch
+`feature/2.0-session-crash-recovery` auf Commit
+`9237ff5f7bbb08453c4d83351d05977eafcc3c34`. Der isolierte Recovery-Datensatz
+wurde mit einem als `playing` markierten Eintrag auf Deck A und einem als `ready`
+markierten Eintrag auf Deck B vorbereitet. DeckRelay wurde aus genau diesem
+Worktree mit VLC `3.0.23 Vetinari` gestartet.
+
+Die am Arbeitsplatz bereitgestellte Windows-Automationsschnittstelle lieferte
+jedoch keine Anwendungsfenster (`apps: []`), obwohl der DeckRelay-Prozess lief.
+Dadurch waren weder die GUI-Recovery-Meldung noch die sichtbaren Wiedergabe- und
+Automatikzustände tatsächlich beobachtbar. Ein physischer Audio-Stream stand der
+Prüfinstanz ebenfalls nicht zur Verfügung; es wurde daher kein Audiogerät als
+gehörter Ausgang bestätigt. Backend-, Log- und Datenbankzustände werden
+ausdrücklich nicht als Ersatz für diese Sicht- und Hörnachweise gewertet.
+
+Damit bleiben die folgenden manuellen Nachweise **offen**:
+
+- sichtbare Recovery-Meldung und Übereinstimmung mit dem wiederhergestellten Zustand;
+- sichtbare Bestätigung, dass Wiedergabe und Automatik nicht selbsttätig starten;
+- hörbare Stille am gewählten physischen Ausgang bis zu einer bewussten Wiedergabeaktion.
+
+PR #42 bleibt bis zu einer tatsächlich beobachteten Wiederholung dieses Laufs Draft.
