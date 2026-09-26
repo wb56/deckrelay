@@ -179,6 +179,25 @@ Bei einem Fehler sind Zeitpunkt, Deck, Plan-ID, Queue-ID, sichtbare Meldung und
 reproduzierbare Schritte festzuhalten; erst nach Korrektur und erneutem Hören
 darf das betreffende Szenario geschlossen werden.
 
+### Erneuter manueller Abnahmeversuch vom 26. September 2026
+
+Der getrennte E8-Prüfstand wurde auf Branch
+`feature/2.0-selection-e8-acceptance` und Commit
+`2c20a0916df1f883ff889904b3ffe15fb5944136` verifiziert. Ergebnisse aus dem
+PR-#42-Recovery-Prüfstand wurden nicht übernommen.
+
+Die bereitgestellte Windows-Automationsschnittstelle meldete keine steuerbaren
+Anwendungsfenster (`apps: []`), obwohl sich Anwendungen per Prozessstart auf dem
+Windows-Rechner ausführen ließen. Zusätzlich stand der Prüfinstanz kein hörbarer
+Audio-Stream des physischen Ausgangs zur Verfügung. Deshalb wurden die fünf
+Hörszenarien nicht als durchgeführt protokolliert; insbesondere gibt es keine
+belastbare Beobachtung zu Stille, Knacken, Aussetzern, Abbrüchen oder dem Verhalten
+des Gegendecks. Alle fünf Tabellenzeilen bleiben unverändert **offen**.
+
+Eine Wiederholung muss auf demselben oder einem neu exakt protokollierten Commit
+mit sichtbarer GUI, realem VLC, echten Audiodateien und einem benannten, tatsächlich
+gehörten Audiogerät erfolgen.
+
 Akzeptiert ist der Lauf nur bei bedienbarer GUI ohne Aussetzer, unveränderter
 Quellenpriorität, exakter Plan-/Queue-Identität nach Neustart, verständlichen
 Fehlermeldungen ohne technische Pfade, erfolgreicher Recovery und ohne hörbares
