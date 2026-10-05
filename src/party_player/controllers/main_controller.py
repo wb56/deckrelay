@@ -2644,6 +2644,8 @@ class MainController:
         )
         if not available:
             self._handle_audio_output_device_loss(configured_device)
+        if self.audio_output_device_recovery_state() == "device_lost":
+            self._view.show_audio_devices(devices, configured_device)
 
     def _handle_audio_output_device_loss(self, device_id: str) -> None:
         """Enter a silent, operator-controlled state after explicit device loss."""

@@ -1,3 +1,5 @@
+import pytest
+
 from party_player.ui.main_window import (
     MainWindow,
     _center_panel_grid_options,
@@ -77,6 +79,31 @@ class ConfigureDouble:
 
     def configure(self, **values: object) -> None:
         self.values.update(values)
+
+
+@pytest.mark.parametrize(
+    "state,menu,retry,confirm",
+    [
+        ("normal", "normal", "disabled", "disabled"),
+        ("device_lost", "normal", "normal", "disabled"),
+        ("ready_for_confirmation", "disabled", "disabled", "normal"),
+    ],
+)
+def test_audio_device_recovery_controls(state: str, menu: str, retry: str, confirm: str) -> None:
+    window = object.__new__(MainWindow)
+    window._audio_device_menu = ConfigureDouble()
+    window._audio_device_retry_button = ConfigureDouble()
+    window._audio_device_confirm_button = ConfigureDouble()
+    window._audio_device_recovery_label = ConfigureDouble()
+    window._presentation_status = GlobalStatusState()
+    window._render_global_status = lambda: None
+    window._force_live_workspace = lambda _reason: None
+
+    MainWindow.show_audio_device_recovery(window, state, "Audio-Recovery")
+
+    assert window._audio_device_menu.values["state"] == menu
+    assert window._audio_device_retry_button.values["state"] == retry
+    assert window._audio_device_confirm_button.values["state"] == confirm
 
 
 class GridConfigureDouble:
