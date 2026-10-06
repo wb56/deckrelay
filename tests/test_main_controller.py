@@ -2953,6 +2953,44 @@ def test_audio_device_recovery_refreshes_available_devices(tmp_path: Path) -> No
     assert controller.audio_output_device_recovery_state() == "device_lost"
 
 
+@pytest.mark.parametrize("already_lost", [False, True])
+def test_audio_device_health_ignores_empty_enumeration(tmp_path: Path, already_lost: bool) -> None:
+    controller, view = build_controller(tmp_path)
+    controller._settings = SimpleNamespace(audio_output_device=lambda: "usb-dac")
+    controller._deck_health_monitor = DeckHealthMonitor(EmergencyStateService())
+    devices = [("speakers", "Lautsprecher")]
+    if not already_lost:
+        devices.append(("usb-dac", "USB DAC"))
+    view.show_audio_devices(devices, "usb-dac")
+    controller.deck_a.backend.output_devices = devices
+    controller._check_audio_device_health()
+    expected_state = "device_lost" if already_lost else "normal"
+    previous_view = view.audio_devices
+    controller.deck_a.backend.output_devices = []
+
+    for _ in range(2):
+        controller._next_audio_device_health_check = 0.0
+        controller._check_audio_device_health()
+
+        assert controller.audio_output_device_recovery_state() == expected_state
+        assert controller._recovery_return_validation_required is already_lost
+        assert controller.deck_a.emergency_muted is already_lost
+        assert controller.deck_b.emergency_muted is already_lost
+        assert view.audio_devices is previous_view
+        assert controller._settings.audio_output_device() == "usb-dac"
+
+    # A real inventory missing the configured device still triggers recovery
+    # immediately, and publishes the newly available replacement devices.
+    controller.deck_a.backend.output_devices = [("new-dac", "Neues Gerät")]
+    controller._next_audio_device_health_check = 0.0
+    controller._check_audio_device_health()
+
+    assert controller.audio_output_device_recovery_state() == "device_lost"
+    assert controller.deck_a.emergency_muted
+    assert controller.deck_b.emergency_muted
+    assert view.audio_devices == ([("new-dac", "Neues Gerät")], "usb-dac")
+
+
 def test_master_mute_is_applied_to_decks_and_overlay(tmp_path: Path) -> None:
     controller, _view = build_controller(tmp_path)
     overlay_mutes: list[bool] = []
