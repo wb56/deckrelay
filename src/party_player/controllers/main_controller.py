@@ -2638,12 +2638,18 @@ class MainController:
                 "A", "Audiogeräte prüfen", False, str(exc)
             )
             return
+        if not devices:
+            # An empty VLC enumeration is inconclusive, not a device-loss inventory.
+            # Retain the last displayed devices and the existing recovery state.
+            return
         configured_device = self._settings.audio_output_device()
         available = self._deck_health_monitor.report_output_device(
             configured_device, {device_id for device_id, _name in devices}
         )
         if not available:
             self._handle_audio_output_device_loss(configured_device)
+        if self.audio_output_device_recovery_state() == "device_lost":
+            self._view.show_audio_devices(devices, configured_device)
 
     def _handle_audio_output_device_loss(self, device_id: str) -> None:
         """Enter a silent, operator-controlled state after explicit device loss."""

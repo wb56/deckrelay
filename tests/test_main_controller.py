@@ -53,6 +53,7 @@ from party_player.repositories.equalizer_repository import (
 )
 from party_player.repositories.track_repository import TrackRepository
 from party_player.repository import PartyPlayerRepository
+from party_player.settings_service import SettingsService
 from party_player.services.library_service import LibraryService
 from party_player.saved_queue_service import SavedQueueService
 from party_player.transition_controller import TransitionState
@@ -2873,6 +2874,121 @@ def test_lost_audio_device_mutes_until_same_device_is_confirmed(tmp_path: Path) 
     assert controller.is_automatic_queue_paused()
     assert "Automatik bleibt" in view.queue_warnings[-1]
     assert view.audio_device_recovery == ("normal", "Audioausgabe bereit")
+
+
+def test_audio_device_recovery_with_replacement_device(tmp_path: Path) -> None:
+    controller, _view = build_controller(tmp_path)
+    database = Database(tmp_path / "test.db")
+    settings = SettingsService(PartyPlayerRepository(database))
+    settings.set_audio_output_device("usb-dac")
+    controller._settings = settings
+    controller._deck_health_monitor = DeckHealthMonitor(EmergencyStateService())
+    overlay_devices: list[str] = []
+    overlay_mutes: list[bool] = []
+    controller.bind_overlay_output_device(overlay_devices.append)
+    controller.bind_overlay_master_mute(overlay_mutes.append)
+    controller.deck_a.backend.output_devices = [("speakers", "Lautsprecher")]
+    controller._check_audio_device_health()
+
+    assert controller.audio_output_device_recovery_state() == "device_lost"
+    assert not controller.confirm_audio_output_device_recovered()
+    controller.set_audio_output_device("speakers")
+
+    assert SettingsService(PartyPlayerRepository(database)).audio_output_device() == "speakers"
+    assert controller.deck_a.backend.output_device == "speakers"
+    assert controller.deck_b.backend.output_device == "speakers"
+    assert overlay_devices == ["speakers"]
+    assert controller.deck_a.emergency_muted
+    assert controller.deck_b.emergency_muted
+    assert overlay_mutes[-1] is True
+    assert controller.audio_output_device_recovery_state() == "device_lost"
+    assert controller.retry_audio_output_device()
+    assert controller.audio_output_device_recovery_state() == "ready_for_confirmation"
+    assert controller.deck_a.emergency_muted
+    assert controller.confirm_audio_output_device_recovered()
+    assert controller.audio_output_device_recovery_state() == "normal"
+    assert not controller.deck_a.emergency_muted
+    assert not controller.deck_b.emergency_muted
+    assert overlay_mutes[-1] is False
+
+
+def test_audio_device_recovery_rejects_unavailable_replacement(tmp_path: Path) -> None:
+    controller, _view = build_controller(tmp_path)
+    settings = SettingsService(PartyPlayerRepository(Database(tmp_path / "test.db")))
+    settings.set_audio_output_device("usb-dac")
+    controller._settings = settings
+    controller._deck_health_monitor = DeckHealthMonitor(EmergencyStateService())
+    overlay_mutes: list[bool] = []
+    controller.bind_overlay_master_mute(overlay_mutes.append)
+    controller.deck_a.backend.output_devices = [("speakers", "Lautsprecher")]
+    controller._check_audio_device_health()
+    controller.set_audio_output_device("missing-replacement")
+
+    assert not controller.retry_audio_output_device()
+    assert not controller.confirm_audio_output_device_recovered()
+    assert controller.audio_output_device_recovery_state() == "device_lost"
+    assert controller.deck_a.emergency_muted
+    assert controller.deck_b.emergency_muted
+    assert overlay_mutes[-1] is True
+
+
+def test_audio_device_recovery_refreshes_available_devices(tmp_path: Path) -> None:
+    controller, view = build_controller(tmp_path)
+    controller._settings = SimpleNamespace(audio_output_device=lambda: "usb-dac")
+    controller._deck_health_monitor = DeckHealthMonitor(EmergencyStateService())
+    controller.deck_a.backend.output_devices = [("speakers", "Lautsprecher")]
+    controller._check_audio_device_health()
+
+    assert view.audio_devices == ([("speakers", "Lautsprecher")], "usb-dac")
+    controller.deck_a.backend.output_devices.append(("new-dac", "Neues Gerät"))
+    controller._next_audio_device_health_check = 0.0
+    controller._check_audio_device_health()
+
+    assert view.audio_devices == (
+        [("speakers", "Lautsprecher"), ("new-dac", "Neues Gerät")],
+        "usb-dac",
+    )
+    assert all(device_id != "usb-dac" for device_id, _name in view.audio_devices[0])
+    assert not controller.retry_audio_output_device()
+    assert controller.audio_output_device_recovery_state() == "device_lost"
+
+
+@pytest.mark.parametrize("already_lost", [False, True])
+def test_audio_device_health_ignores_empty_enumeration(tmp_path: Path, already_lost: bool) -> None:
+    controller, view = build_controller(tmp_path)
+    controller._settings = SimpleNamespace(audio_output_device=lambda: "usb-dac")
+    controller._deck_health_monitor = DeckHealthMonitor(EmergencyStateService())
+    devices = [("speakers", "Lautsprecher")]
+    if not already_lost:
+        devices.append(("usb-dac", "USB DAC"))
+    view.show_audio_devices(devices, "usb-dac")
+    controller.deck_a.backend.output_devices = devices
+    controller._check_audio_device_health()
+    expected_state = "device_lost" if already_lost else "normal"
+    previous_view = view.audio_devices
+    controller.deck_a.backend.output_devices = []
+
+    for _ in range(2):
+        controller._next_audio_device_health_check = 0.0
+        controller._check_audio_device_health()
+
+        assert controller.audio_output_device_recovery_state() == expected_state
+        assert controller._recovery_return_validation_required is already_lost
+        assert controller.deck_a.emergency_muted is already_lost
+        assert controller.deck_b.emergency_muted is already_lost
+        assert view.audio_devices is previous_view
+        assert controller._settings.audio_output_device() == "usb-dac"
+
+    # A real inventory missing the configured device still triggers recovery
+    # immediately, and publishes the newly available replacement devices.
+    controller.deck_a.backend.output_devices = [("new-dac", "Neues Gerät")]
+    controller._next_audio_device_health_check = 0.0
+    controller._check_audio_device_health()
+
+    assert controller.audio_output_device_recovery_state() == "device_lost"
+    assert controller.deck_a.emergency_muted
+    assert controller.deck_b.emergency_muted
+    assert view.audio_devices == ([("new-dac", "Neues Gerät")], "usb-dac")
 
 
 def test_master_mute_is_applied_to_decks_and_overlay(tmp_path: Path) -> None:

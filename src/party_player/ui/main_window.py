@@ -4686,7 +4686,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         )
         self._audio_device_retry_button.configure(state="normal" if lost else "disabled")
         self._audio_device_confirm_button.configure(state="normal" if ready else "disabled")
-        self._audio_device_menu.configure(state="disabled" if lost or ready else "normal")
+        self._audio_device_menu.configure(state="disabled" if ready else "normal")
         self._presentation_status = replace(
             self._presentation_status, warning=message if lost or ready else ""
         )
