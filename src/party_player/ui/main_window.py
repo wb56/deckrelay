@@ -1466,6 +1466,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._compact_overlay_pads.grid_remove()
         self._compact_overlay_frame.grid_remove()
 
+        self._mixer_expanded = False
         mixer_container = ctk.CTkFrame(self, corner_radius=12)
         self._mixer_container = mixer_container
         mixer_container.grid(row=2, column=0, columnspan=3, padx=16, pady=(8, 16), sticky="ew")
@@ -4455,7 +4456,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
                 pady=(8, 16),
                 sticky="nsew",
             )
-            self._mixer_panel.grid()
+            self._render_mixer_panel(workspace)
             self._mixer_toggle.configure(text="Vorbereitung ausblenden ▲")
             self._layout_preparation_content(compact=False)
             return
@@ -4464,6 +4465,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._center_panel.grid(**_center_panel_grid_options(False))
         self._mixer_container.grid(**_mixer_container_grid_options(False))
         self._layout_preparation_content(compact=False)
+        self._render_mixer_panel(workspace)
         self._summary.grid(row=0, column=0, padx=12, pady=(12, 4), sticky="w")
         self._search_frame.grid(row=1, column=0, padx=12, pady=4, sticky="ew")
         self._catalog.grid(row=2, column=0, padx=12, pady=6, sticky="nsew")
@@ -4504,7 +4506,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         if _workspace_content(ResolvedPresentation.COMPACT, workspace) == "preparation":
             self._center_panel.grid_remove()
             self._mixer_container.grid(**_compact_preparation_container_grid_options())
-            self._mixer_panel.grid()
+            self._render_mixer_panel(workspace)
             self._mixer_toggle.configure(text="Vorbereitung ausblenden ▲")
             self._layout_preparation_content(compact=True)
             return
@@ -4513,6 +4515,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._layout_preparation_content(compact=True)
         else:
             self._mixer_container.grid_remove()
+        self._render_mixer_panel(workspace)
         self._center_panel.grid(**_center_panel_grid_options(True))
         rows = _compact_live_rows()
         self._compact_decks_frame.grid(
@@ -4669,7 +4672,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
     def _render_overlay(self) -> None:
         model = self._overlay_view_model()
         self._overlay_panel.render(model)
-        expanded = bool(self._mixer_panel.winfo_ismapped())
+        expanded = self._mixer_expanded
         self._mixer_toggle.configure(
             text=mixer_overlay_header_text(
                 expanded=expanded,
@@ -6462,11 +6465,17 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._controller.reset_played_queue_track(queue_id)
 
     def _toggle_mixer_panel(self) -> None:
-        if self._mixer_panel.winfo_ismapped():
-            self._mixer_panel.grid_remove()
-        else:
-            self._mixer_panel.grid()
+        self._mixer_expanded = not self._mixer_expanded
+        coordinator = self._presentation_coordinator
+        workspace = coordinator.state.workspace if coordinator is not None else Workspace.LIVE
+        self._render_mixer_panel(workspace)
         self._render_overlay()
+
+    def _render_mixer_panel(self, workspace: Workspace) -> None:
+        if workspace is Workspace.PREPARATION or self._mixer_expanded:
+            self._mixer_panel.grid()
+        else:
+            self._mixer_panel.grid_remove()
 
     def _toggle_diagnostic_panel(self) -> None:
         self._diagnostic_expanded = not self._diagnostic_expanded

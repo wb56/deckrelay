@@ -81,6 +81,20 @@ class ConfigureDouble:
         self.values.update(values)
 
 
+class MappedGridDouble:
+    def __init__(self, *, mapped: bool) -> None:
+        self.mapped = mapped
+
+    def grid(self, **_values: object) -> None:
+        self.mapped = True
+
+    def grid_remove(self) -> None:
+        self.mapped = False
+
+    def winfo_ismapped(self) -> bool:
+        return self.mapped
+
+
 @pytest.mark.parametrize(
     "state,menu,retry,confirm",
     [
@@ -175,6 +189,72 @@ def test_mixer_disclosure_remains_reachable_in_compact_layout() -> None:
     assert compact["row"] == large["row"] == 2
     assert compact["columnspan"] == large["columnspan"] == 3
     assert compact["pady"] == (0, 8)
+
+
+def test_mixer_disclosure_toggle_restores_panel_from_explicit_state() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = True
+    window._mixer_panel = MappedGridDouble(mapped=True)
+    window._presentation_coordinator = None
+    window._render_overlay = lambda: None
+
+    window._toggle_mixer_panel()
+    assert window._mixer_expanded is False
+    assert window._mixer_panel.mapped is False
+
+    window._toggle_mixer_panel()
+    assert window._mixer_expanded is True
+    assert window._mixer_panel.mapped is True
+
+
+def test_workspace_switch_does_not_replace_hidden_mixer_preference() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = False
+    window._mixer_panel = MappedGridDouble(mapped=False)
+
+    window._render_mixer_panel(Workspace.PREPARATION)
+    assert window._mixer_panel.mapped is True
+    assert window._mixer_expanded is False
+
+    window._render_mixer_panel(Workspace.LIVE)
+    assert window._mixer_panel.mapped is False
+    assert window._mixer_expanded is False
+
+
+def test_workspace_switch_preserves_visible_mixer_preference() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = True
+    window._mixer_panel = MappedGridDouble(mapped=True)
+
+    window._render_mixer_panel(Workspace.PREPARATION)
+    window._render_mixer_panel(Workspace.LIVE)
+
+    assert window._mixer_expanded is True
+    assert window._mixer_panel.mapped is True
+
+
+def test_large_compact_remapping_preserves_visible_mixer_preference() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = True
+    window._mixer_panel = MappedGridDouble(mapped=True)
+
+    window._mixer_panel.grid_remove()
+    window._render_mixer_panel(Workspace.LIVE)
+
+    assert window._mixer_expanded is True
+    assert window._mixer_panel.mapped is True
+
+
+def test_temporary_layout_visibility_does_not_mark_hidden_mixer_visible() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = False
+    window._mixer_panel = MappedGridDouble(mapped=False)
+
+    window._mixer_panel.grid()
+    window._render_mixer_panel(Workspace.LIVE)
+
+    assert window._mixer_expanded is False
+    assert window._mixer_panel.mapped is False
 
 
 def test_compact_jingle_pads_temporarily_use_mixer_footer_space() -> None:
