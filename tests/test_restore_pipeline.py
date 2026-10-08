@@ -2,14 +2,21 @@ from pathlib import Path
 import sqlite3
 from zipfile import ZipFile
 
+import pytest
+
 from party_player.backup_service import (
+    BackupOperationState,
     DATABASE_ARCHIVE_PATH,
     BackupService,
     RestoreMaterializer,
 )
 from party_player.database.connection import Database
 from party_player.performance_monitor import PerformanceMonitor
-from party_player.restore_commit import RestoreCommitService
+from party_player.restore_commit import (
+    RestoreCommitErrorCode,
+    RestoreCommitResult,
+    RestoreCommitService,
+)
 from party_player.restore_pipeline import AtomicRestorePipeline, RestorePipelineErrorCode
 from party_player.restore_safety import RestoreSafetyGate, RestoreSafetySnapshot
 
@@ -162,3 +169,89 @@ def test_pipeline_checks_safety_before_start_and_again_before_commit(
     assert result.safety_backup_path is not None
     assert commit_calls == 0
     assert snapshots == []
+
+
+@pytest.mark.parametrize(
+    "commit_result",
+    [
+        RestoreCommitResult(
+            True,
+            BackupOperationState.COMPLETED,
+            RestoreCommitErrorCode.NONE,
+            "ok",
+            restart_required=True,
+        ),
+        RestoreCommitResult(
+            False,
+            BackupOperationState.FAILED,
+            RestoreCommitErrorCode.EXCHANGE_FAILED,
+            "before mutation",
+        ),
+        RestoreCommitResult(
+            False,
+            BackupOperationState.FAILED,
+            RestoreCommitErrorCode.EXCHANGE_FAILED,
+            "rolled back",
+            rollback_performed=True,
+        ),
+    ],
+)
+def test_pipeline_removes_staging_file_set_only_after_confirmed_state(
+    temporary_database: Database,
+    tmp_path: Path,
+    commit_result: RestoreCommitResult,
+) -> None:
+    candidate = BackupService(temporary_database).create_backup(tmp_path / "candidate")
+    assert candidate.backup_path is not None
+    staged_paths: list[Path] = []
+
+    class CommitStub:
+        def commit(self, _preparation, _candidate, staged: Path) -> RestoreCommitResult:
+            staged_paths.extend((staged, Path(f"{staged}-wal"), Path(f"{staged}-shm")))
+            staged_paths[1].write_bytes(b"wal")
+            staged_paths[2].write_bytes(b"shm")
+            return commit_result
+
+    pipeline = AtomicRestorePipeline(
+        temporary_database.path,
+        BackupService(temporary_database),
+        CommitStub(),  # type: ignore[arg-type]
+    )
+
+    pipeline.execute(candidate.backup_path, tmp_path / "safety")
+
+    assert staged_paths
+    assert not any(path.exists() for path in staged_paths)
+
+
+def test_pipeline_preserves_complete_staging_file_set_after_unconfirmed_rollback(
+    temporary_database: Database,
+    tmp_path: Path,
+) -> None:
+    candidate = BackupService(temporary_database).create_backup(tmp_path / "candidate")
+    assert candidate.backup_path is not None
+    staged_paths: list[Path] = []
+
+    class CommitStub:
+        def commit(self, _preparation, _candidate, staged: Path) -> RestoreCommitResult:
+            staged_paths.extend((staged, Path(f"{staged}-wal"), Path(f"{staged}-shm")))
+            staged_paths[1].write_bytes(b"wal")
+            staged_paths[2].write_bytes(b"shm")
+            return RestoreCommitResult(
+                False,
+                BackupOperationState.FAILED,
+                RestoreCommitErrorCode.ROLLBACK_FAILED,
+                "rollback failed",
+                preserve_staging=True,
+            )
+
+    pipeline = AtomicRestorePipeline(
+        temporary_database.path,
+        BackupService(temporary_database),
+        CommitStub(),  # type: ignore[arg-type]
+    )
+
+    pipeline.execute(candidate.backup_path, tmp_path / "safety")
+
+    assert staged_paths
+    assert all(path.exists() for path in staged_paths)

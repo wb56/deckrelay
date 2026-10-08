@@ -3,8 +3,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import logging
+import os
 from pathlib import Path
 import random
+import sys
 from threading import Barrier
 
 import pytest
@@ -896,6 +898,47 @@ def test_stale_deck_release_does_not_clear_a_new_assignment(tmp_path: Path) -> N
     assert playing is not None
     assert playing.status == QueueStatus.PLAYING
     assert playing.loaded_deck == "B"
+
+
+def test_playing_and_deck_release_do_not_cache_connection_on_calling_thread(
+    tmp_path: Path,
+) -> None:
+    database = database_with_tracks(tmp_path / "short-lived-playing.db")
+    repository = PartyPlayerRepository(database)
+    session = repository.create_session("Short lived connection")
+    service = QueueService(repository, TrackRepository(database), session.session_id)
+    entry = service.add(1)
+    service.mark_preparing(entry.queue_id, "A")
+    service.mark_loaded(entry.queue_id, "A")
+
+    service.mark_playing(entry.queue_id)
+    assert not hasattr(database._local, "cached_connection")
+
+    assert service.release_playing_deck_assignment(entry.queue_id, "A")
+    assert not hasattr(database._local, "cached_connection")
+    current = service.entry(entry.queue_id)
+    assert current is not None
+    assert current.status is QueueStatus.PLAYING
+    assert current.loaded_deck is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows file-lock semantics")
+def test_queue_playing_paths_leave_database_replaceable_on_windows(tmp_path: Path) -> None:
+    database = database_with_tracks(tmp_path / "replaceable-playing.db")
+    repository = PartyPlayerRepository(database)
+    session = repository.create_session("Replaceable connection")
+    service = QueueService(repository, TrackRepository(database), session.session_id)
+    entry = service.add(1)
+    service.mark_preparing(entry.queue_id, "A")
+    service.mark_loaded(entry.queue_id, "A")
+    service.mark_playing(entry.queue_id)
+    assert service.release_playing_deck_assignment(entry.queue_id, "A")
+    moved = database.path.with_suffix(".moved")
+
+    os.replace(database.path, moved)
+    os.replace(moved, database.path)
+
+    assert database.path.is_file()
 
 
 @pytest.mark.parametrize("status", [QueueStatus.PREPARING, QueueStatus.READY])

@@ -73,6 +73,7 @@ class AtomicRestorePipeline:
                 "Eine Restore-Operation läuft bereits.",
             )
         staging = self._active_database.with_name(f".{self._active_database.name}.restore-staging")
+        preserve_staging = False
         try:
             blocked = self._evaluate_safety()
             if blocked is not None:
@@ -101,6 +102,7 @@ class AtomicRestorePipeline:
                 committed = self._commit.commit(
                     preparation, candidate_archive, materialized.database_path
                 )
+            preserve_staging = committed.preserve_staging
             return RestorePipelineResult(
                 committed.success,
                 committed.state,
@@ -120,10 +122,12 @@ class AtomicRestorePipeline:
                 ),
             )
         finally:
-            try:
-                staging.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if not preserve_staging:
+                for path in (staging, Path(f"{staging}-wal"), Path(f"{staging}-shm")):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             self._lock.release()
 
     def _evaluate_safety(

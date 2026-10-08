@@ -546,7 +546,7 @@ class PartyPlayerRepository:
     def mark_queue_playing(self, queue_id: int) -> QueueEntry:
         """Atomically start a prepared entry and release only its lifecycle lock."""
         played_at = datetime.now().isoformat()
-        with self._database.connect_cached() as connection:
+        with self._database.connect() as connection:
             cursor = connection.execute(
                 """UPDATE party_queue
                    SET status = ?,
@@ -618,7 +618,7 @@ class PartyPlayerRepository:
         have completed or reassigned the entry.  In that case this cleanup is
         obsolete and must not fail the GUI callback or clear the new owner.
         """
-        with self._database.connect_cached() as connection:
+        with self._database.connect() as connection:
             cursor = connection.execute(
                 """UPDATE party_queue
                    SET loaded_deck = NULL, updated_at = CURRENT_TIMESTAMP
