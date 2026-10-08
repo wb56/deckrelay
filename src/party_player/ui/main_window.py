@@ -66,6 +66,7 @@ from party_player.ui.deck_panels import (
     _equalizer_source_text,
 )
 from party_player.ui.overlay_panel import OverlayPanel
+from party_player.ui.mixer_panel import MixerPanel
 from party_player.ui.overlay_management_dialog import OverlayManagementDialog
 from party_player.ui.system_diagnostic_dialog import SystemDiagnosticDialog
 from party_player.ui.external_programs_dialog import ExternalProgramsDialog
@@ -595,8 +596,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             "Vererben": "inherit",
             "Equalizer aus": "disabled",
         }
-        self._updating_mixer = False
-        self._mixer_render_cache: dict[str, object] = {}
         self._overlay_controller: OverlayController | None = None
         self._overlay_service: OverlayService | None = None
         self._overlay_snapshot = OverlayCatalogSnapshot((), (), (None,) * 6, frozenset())
@@ -1029,51 +1028,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             font=(theme.FONT_FAMILY, 14),
         )
 
-        crossfader_bar = ctk.CTkFrame(center, corner_radius=10, border_width=1)
-        self._crossfader_bar = crossfader_bar
-        crossfader_bar.grid(row=3, column=0, padx=12, pady=(4, 8), sticky="ew")
-        crossfader_bar.grid_columnconfigure(1, weight=1)
-        self._deck_status_labels: dict[str, ctk.CTkLabel] = {}
-        self._deck_status_labels["A"] = ctk.CTkLabel(
-            crossfader_bar,
-            text="DECK A\nKeine Titel geladen",
-            width=145,
-            font=("Segoe UI", 13, "bold"),
-            text_color="#999999",
-        )
-        self._deck_status_labels["A"].grid(row=0, column=0, padx=(12, 8), pady=8)
-        fader_frame = ctk.CTkFrame(crossfader_bar, fg_color="transparent")
-        fader_frame.grid(row=0, column=1, padx=4, pady=6, sticky="ew")
-        fader_frame.grid_columnconfigure(0, weight=1)
-        self._crossfader_label = ctk.CTkLabel(
-            fader_frame, text="Crossfader · 50%", font=("Segoe UI", 14, "bold")
-        )
-        self._crossfader_label.grid(row=0, column=0, pady=(0, 2))
-        self._crossfader = ctk.CTkSlider(fader_frame, from_=0, to=1, command=self._crossfade)
-        self._crossfader.grid(row=1, column=0, sticky="ew")
-        self._crossfader._canvas.configure(takefocus=True)
-        self._crossfader.bind("<Button-1>", lambda _event: self._crossfader.focus_set())
-        self._crossfader.bind("<Left>", lambda _event: self._move_crossfader_by_keyboard(-0.05))
-        self._crossfader.bind("<Right>", lambda _event: self._move_crossfader_by_keyboard(0.05))
-        self._crossfader.bind("<Home>", lambda _event: self._set_crossfader_by_keyboard(0.0))
-        self._crossfader.bind("<End>", lambda _event: self._set_crossfader_by_keyboard(1.0))
-        self._crossfader.bind(
-            "<FocusIn>",
-            lambda _event: self._crossfader.configure(border_color="#55aaff", border_width=2),
-        )
-        self._crossfader.bind(
-            "<FocusOut>",
-            lambda _event: self._crossfader.configure(border_width=0),
-        )
-        self._deck_status_labels["B"] = ctk.CTkLabel(
-            crossfader_bar,
-            text="DECK B\nKeine Titel geladen",
-            width=145,
-            font=("Segoe UI", 13, "bold"),
-            text_color="#999999",
-        )
-        self._deck_status_labels["B"].grid(row=0, column=2, padx=(8, 12), pady=8)
-
         workspace_splitter = ctk.CTkFrame(
             center,
             height=34,
@@ -1467,145 +1421,49 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._compact_overlay_frame.grid_remove()
 
         self._mixer_expanded = False
-        mixer_container = ctk.CTkFrame(self, corner_radius=12)
-        self._mixer_container = mixer_container
-        mixer_container.grid(row=2, column=0, columnspan=3, padx=16, pady=(8, 16), sticky="ew")
-        mixer_container.grid_columnconfigure(0, weight=1)
-        mixer_container.grid_rowconfigure(1, weight=1)
-        self._mixer_toggle = ctk.CTkButton(
-            mixer_container,
-            text="Mixer einblenden ▼",
-            height=30,
-            fg_color="transparent",
-            command=self._toggle_mixer_panel,
+        self._mixer_component = MixerPanel(
+            self,
+            center,
+            on_toggle=self._toggle_mixer_panel,
+            on_overlay_stop=self._stop_overlay,
+            on_crossfade=self._crossfade,
+            on_crossfade_step=self._move_crossfader_by_keyboard,
+            on_crossfade_set=self._set_crossfader_by_keyboard,
+            on_master=self._master_changed,
+            on_mute=self._toggle_mute,
+            on_player_mode=self._player_mode_changed,
+            on_fade_duration=self._fade_duration_changed,
+            on_fade_stop=self._fade_stop_changed,
+            on_fullscreen_start=self._fullscreen_start_changed,
+            on_automatic_plan=self._show_automatic_preview,
         )
-        self._mixer_toggle.grid(row=0, column=0, padx=8, pady=4, sticky="ew")
-        self._mixer_overlay_stop = ctk.CTkButton(
-            mixer_container,
-            text="■ Stop",
-            width=84,
-            height=30,
-            fg_color=theme.DANGER,
-            hover_color=theme.DANGER_HOVER,
-            command=self._stop_overlay,
-        )
-        self._mixer_overlay_stop.grid(row=0, column=1, padx=(0, 8), pady=4)
-        self._mixer_overlay_stop.grid_remove()
-        self._static_tooltips.extend(
-            (
-                Tooltip(
-                    self._mixer_toggle,
-                    "Mixer öffnen oder schließen; aktive Jingles bleiben hier sichtbar",
-                ),
-                Tooltip(
-                    self._mixer_overlay_stop,
-                    "Aktiven Jingle mit kurzem Sicherheitsfade sofort stoppen",
-                ),
-            )
-        )
-        self._mixer_panel = ctk.CTkScrollableFrame(
-            mixer_container, fg_color="transparent", corner_radius=0
-        )
-        self._mixer_panel.grid(row=1, column=0, sticky="nsew")
+        self._static_tooltips.extend(self._mixer_component.tooltips)
+        self._mixer_container = self._mixer_component.container
+        self._mixer_toggle = self._mixer_component.toggle
+        self._mixer_overlay_stop = self._mixer_component.overlay_stop
+        self._mixer_panel = self._mixer_component.body
+        self._crossfader_bar = self._mixer_component.crossfader_bar
+        self._crossfader = self._mixer_component.crossfader
+        self._crossfader_label = self._mixer_component.crossfader_label
+        self._deck_status_labels = self._mixer_component.deck_status_labels
+        self._preparation_status_group = self._mixer_component.status_group
+        self._preparation_mode_status = self._mixer_component.mode_status
+        self._preparation_source_status = self._mixer_component.source_status
+        self._preparation_queue_status = self._mixer_component.queue_status
+        self._preparation_automatic_status = self._mixer_component.automatic_status
+        self._automatic_plan_status = self._mixer_component.automatic_plan_status
+        self._automatic_plan_button = self._mixer_component.automatic_plan_button
+        self._preparation_playback_group = self._mixer_component.playback_group
+        self._master = self._mixer_component.master
+        self._master_label = self._mixer_component.master_label
+        self._mute_button = self._mixer_component.mute_button
+        self._player_mode = self._mixer_component.player_mode
+        self._fade_duration = self._mixer_component.fade_duration
+        self._fade_duration_label = self._mixer_component.fade_duration_label
+        self._fade_stop_switch = self._mixer_component.fade_stop_switch
+        self._fullscreen_start_switch = self._mixer_component.fullscreen_start_switch
         mixer = self._mixer_panel
-        mixer.grid_columnconfigure(0, weight=1, uniform="mixer_groups")
-        mixer.grid_columnconfigure(1, weight=1, uniform="mixer_groups")
-
-        status_group = ctk.CTkFrame(mixer, corner_radius=8)
-        self._preparation_status_group = status_group
-        status_group.grid(row=0, column=0, columnspan=2, padx=12, pady=(4, 6), sticky="ew")
-        for column in range(4):
-            status_group.grid_columnconfigure(column, weight=1)
-        ctk.CTkLabel(
-            status_group,
-            text="BETRIEBSZUSTAND",
-            font=(theme.FONT_FAMILY, 13, "bold"),
-        ).grid(row=0, column=0, columnspan=4, padx=12, pady=(10, 4), sticky="w")
-        self._preparation_mode_status = ctk.CTkLabel(
-            status_group, text="Betriebsart: HALBAUTOMATISCH", anchor="w"
-        )
-        self._preparation_source_status = ctk.CTkLabel(status_group, text="Quelle: —", anchor="w")
-        self._preparation_queue_status = ctk.CTkLabel(
-            status_group, text="Queue: 0 Titel", anchor="w"
-        )
-        self._preparation_automatic_status = ctk.CTkLabel(
-            status_group, text="Automatik: bereit", anchor="w"
-        )
-        for column, widget in enumerate(
-            (
-                self._preparation_mode_status,
-                self._preparation_source_status,
-                self._preparation_queue_status,
-                self._preparation_automatic_status,
-            )
-        ):
-            widget.grid(row=1, column=column, padx=12, pady=(2, 10), sticky="ew")
-        self._automatic_plan_status = ctk.CTkLabel(
-            status_group, text="Fortlaufende Automatik: Wird geladen …", anchor="w"
-        )
-        self._automatic_plan_status.grid(
-            row=2, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew"
-        )
-        self._automatic_plan_button = ctk.CTkButton(
-            status_group,
-            text="Automatik anpassen…",
-            width=150,
-            command=self._show_automatic_preview,
-        )
-        self._automatic_plan_button.grid(row=2, column=3, padx=12, pady=(0, 10), sticky="e")
-
-        playback_group = ctk.CTkFrame(mixer, corner_radius=8)
-        self._preparation_playback_group = playback_group
-        playback_group.grid(row=1, column=0, padx=(12, 6), pady=(4, 6), sticky="nsew")
-        playback_group.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(
-            playback_group,
-            text="WIEDERGABE UND AUTOMATIK",
-            font=(theme.FONT_FAMILY, 13, "bold"),
-        ).grid(row=0, column=0, columnspan=4, padx=12, pady=(10, 6), sticky="w")
-        self._master = ctk.CTkSlider(playback_group, from_=0, to=1, command=self._master_changed)
-        self._master.grid(row=1, column=0, columnspan=2, padx=(12, 6), pady=5, sticky="ew")
-        self._master_label = ctk.CTkLabel(playback_group, text="Master 80%", width=82)
-        self._master_label.grid(row=1, column=2, padx=4, pady=5)
-        self._mute_button = ctk.CTkButton(
-            playback_group, text="Stumm", width=72, command=self._toggle_mute
-        )
-        self._mute_button.grid(row=1, column=3, padx=(4, 12), pady=5)
-        self._player_mode = ctk.CTkSegmentedButton(
-            playback_group,
-            values=["MANUELL", "HALBAUTOMATISCH", "AUTOMATISCH"],
-            command=self._player_mode_changed,
-        )
-        self._player_mode.set("HALBAUTOMATISCH")
-        self._player_mode.grid(row=2, column=0, columnspan=4, padx=12, pady=5, sticky="ew")
-        ctk.CTkLabel(playback_group, text="Fade-Dauer").grid(row=3, column=0, padx=(12, 4), pady=5)
-        self._fade_duration = ctk.CTkSlider(
-            playback_group,
-            from_=1,
-            to=30,
-            number_of_steps=29,
-            command=self._fade_duration_changed,
-        )
-        self._fade_duration.set(5)
-        self._fade_duration.grid(row=3, column=1, padx=4, pady=5, sticky="ew")
-        self._fade_duration_label = ctk.CTkLabel(playback_group, text="5 s", width=44)
-        self._fade_duration_label.grid(row=3, column=2, padx=4, pady=5)
-        self._fade_stop_switch = ctk.CTkSwitch(
-            playback_group,
-            text="Nach Fade-out stoppen",
-            command=self._fade_stop_changed,
-        )
-        self._fade_stop_switch.grid(
-            row=4, column=0, columnspan=2, padx=12, pady=(5, 10), sticky="w"
-        )
-        self._fullscreen_start_switch = ctk.CTkSwitch(
-            playback_group,
-            text="Vollbild beim Start",
-            command=self._fullscreen_start_changed,
-        )
-        self._fullscreen_start_switch.grid(
-            row=4, column=2, columnspan=2, padx=(4, 12), pady=(5, 10), sticky="w"
-        )
+        playback_group = self._preparation_playback_group
 
         options_group = ctk.CTkFrame(mixer, corner_radius=8)
         self._preparation_safety_group = options_group
@@ -5713,41 +5571,20 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._cover_images.pop(deck_id, None)
 
     def show_mixer(self, crossfader: float, master: float) -> None:
-        self._updating_mixer = True
-        self.show_crossfader(crossfader)
-        master_percent = round(master * 100)
-        if self._mixer_render_cache.get("master_percent") != master_percent:
-            self._master.set(master)
-            self._master_label.configure(text=f"Master {master_percent}%")
-            self._mixer_render_cache["master_percent"] = master_percent
-        mute_text = "Ton an" if master == 0 else "Stumm"
-        if self._mixer_render_cache.get("mute_text") != mute_text:
-            self._mute_button.configure(text=mute_text)
-            self._mixer_render_cache["mute_text"] = mute_text
-        self._updating_mixer = False
+        self._mixer_component.render_mixer(crossfader, master)
 
     def show_crossfader(self, crossfader: float) -> None:
         """Update only the visible crossfade fields and skip identical percentages."""
-        percent = round(crossfader * 100)
-        if self._mixer_render_cache.get("crossfade_percent") == percent:
+        percent = self._mixer_component.render_crossfader(crossfader)
+        if percent is None:
             return
-        self._updating_mixer = True
-        self._crossfader.set(crossfader)
-        self._crossfader_label.configure(text=f"Crossfader · {percent}%")
         self._presentation_status = replace(
             self._presentation_status, transition=f"Übergang {percent}%"
         )
         self._render_global_status()
-        self._mixer_render_cache["crossfade_percent"] = percent
-        self._updating_mixer = False
 
     def show_fade_settings(self, duration: float, stop_after: bool) -> None:
-        self._fade_duration.set(duration)
-        self._fade_duration_label.configure(text=f"{duration:.0f} s")
-        if stop_after:
-            self._fade_stop_switch.select()
-        else:
-            self._fade_stop_switch.deselect()
+        self._mixer_component.render_fade_settings(duration, stop_after)
 
     def show_player_mode(self, mode: str) -> None:
         labels = {
@@ -5756,8 +5593,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             "automatic": "AUTOMATISCH",
         }
         label = labels.get(mode, "MANUELL")
-        self._player_mode.set(label)
-        self._preparation_mode_status.configure(text=f"Betriebsart: {label}")
+        self._mixer_component.render_player_mode(label)
 
     def show_automatic_playback(self, active: bool) -> None:
         self._automatic_queue_active = active
@@ -6472,10 +6308,10 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._render_overlay()
 
     def _render_mixer_panel(self, workspace: Workspace) -> None:
-        if workspace is Workspace.PREPARATION or self._mixer_expanded:
-            self._mixer_panel.grid()
-        else:
-            self._mixer_panel.grid_remove()
+        self._mixer_component.render_visibility(
+            workspace_is_preparation=workspace is Workspace.PREPARATION,
+            expanded=self._mixer_expanded,
+        )
 
     def _toggle_diagnostic_panel(self) -> None:
         self._diagnostic_expanded = not self._diagnostic_expanded
@@ -6982,22 +6818,20 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._controller.add_playlist_track_to_queue(track_id)
 
     def _crossfade(self, value: float) -> None:
-        if not self._updating_mixer and self._controller is not None:
+        if self._controller is not None:
             self._controller.set_crossfader(float(value))
 
     def _move_crossfader_by_keyboard(self, change: float) -> str:
-        return self._set_crossfader_by_keyboard(self._crossfader.get() + change)
+        return self._set_crossfader_by_keyboard(self._mixer_component.move_crossfader(change))
 
     def _set_crossfader_by_keyboard(self, value: float) -> str:
-        position = max(0.0, min(float(value), 1.0))
-        self._crossfader.set(position)
-        self._crossfader_label.configure(text=f"Crossfader · {position:.0%}")
+        position = self._mixer_component.set_crossfader(value)
         if self._controller is not None:
             self._controller.set_crossfader(position)
         return "break"
 
     def _master_changed(self, value: float) -> None:
-        if not self._updating_mixer and self._controller is not None:
+        if self._controller is not None:
             self._controller.set_master_volume(float(value))
 
     def _audio_device_changed(self, label: str) -> None:
@@ -7088,22 +6922,20 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._controller.toggle_mute()
 
     def _fade_duration_changed(self, value: float) -> None:
-        duration = round(float(value))
-        self._fade_duration_label.configure(text=f"{duration} s")
         if self._controller is not None:
-            self._controller.set_fade_duration(duration)
+            self._controller.set_fade_duration(round(float(value)))
 
-    def _fade_stop_changed(self) -> None:
+    def _fade_stop_changed(self, selected: bool) -> None:
         if self._controller is not None:
-            self._controller.set_fade_out_stops_deck(bool(self._fade_stop_switch.get()))
+            self._controller.set_fade_out_stops_deck(selected)
 
     def _restore_session_changed(self) -> None:
         if self._controller is not None:
             self._controller.set_restore_last_session(bool(self._restore_session_switch.get()))
 
-    def _fullscreen_start_changed(self) -> None:
+    def _fullscreen_start_changed(self, selected: bool) -> None:
         if self._controller is not None:
-            self._controller.set_fullscreen_on_start(bool(self._fullscreen_start_switch.get()))
+            self._controller.set_fullscreen_on_start(selected)
 
     def _file_browser_changed(self) -> None:
         if self._controller is not None:
