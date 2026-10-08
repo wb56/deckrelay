@@ -3662,6 +3662,9 @@ def test_transition_completion_does_not_wait_for_persistence_and_preloads_next(
     assert len(executor.tasks) == 2
     assert controller._queue_service.entry(queue_id).status == QueueStatus.PLAYING  # type: ignore[union-attr]
 
+    assert controller.deck_a.model.loaded_track is None
+    executor.run_all()
+    assert controller._queue_service.entry(queue_id).status == QueueStatus.PLAYED  # type: ignore[union-attr]
     for _ in range(100):
         controller._drain_background_callbacks()
         if controller.deck_a.model.loaded_track is not None:
@@ -3669,8 +3672,93 @@ def test_transition_completion_does_not_wait_for_persistence_and_preloads_next(
         sleep(0.01)
     assert controller.deck_a.model.loaded_track is not None
     assert controller.deck_a.model.loaded_track.id == 3
+
+
+def test_transition_completion_defers_atomic_queue_finish_to_persistence_worker(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    executor = ManualExecutor()
+    controller, _view = build_controller(tmp_path, persistence_executor=executor)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller.deck_action("A", "play")
+    track = controller.deck_a.model.loaded_track
+    queue_id = controller._deck_queue_ids["A"]
+    assert track is not None and queue_id is not None
+    calls: list[tuple[int, str]] = []
+    original_complete = controller._queue_service.complete_playing_for_deck
+
+    def observed_complete(observed_queue_id: int, deck_id: str) -> bool:
+        calls.append((observed_queue_id, deck_id))
+        return original_complete(observed_queue_id, deck_id)
+
+    monkeypatch.setattr(
+        controller._queue_service,
+        "complete_playing_for_deck",
+        observed_complete,
+    )
+    monkeypatch.setattr(
+        controller._queue_service,
+        "release_playing_deck_assignment",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("transition completion must not persist on the GUI thread")
+        ),
+    )
+
+    controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
+
+    assert calls == []
+    persisted_before_worker = controller._queue_service.entry(queue_id)
+    assert persisted_before_worker is not None
+    assert persisted_before_worker.status is QueueStatus.PLAYING
+    assert persisted_before_worker.loaded_deck == "A"
+
     executor.run_all()
-    assert controller._queue_service.entry(queue_id).status == QueueStatus.PLAYED  # type: ignore[union-attr]
+
+    assert calls == [(queue_id, "A")]
+    persisted = controller._queue_service.entry(queue_id)
+    assert persisted is not None
+    assert persisted.status is QueueStatus.PLAYED
+    assert persisted.loaded_deck is None
+
+
+def test_atomic_queue_finish_keeps_persistence_retry(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    executor = ManualExecutor()
+    controller, _view = build_controller(tmp_path, persistence_executor=executor)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller.deck_action("A", "play")
+    track = controller.deck_a.model.loaded_track
+    queue_id = controller._deck_queue_ids["A"]
+    assert track is not None and queue_id is not None
+    original_complete = controller._queue_service.complete_playing_for_deck
+    attempts = 0
+
+    def transient_failure(observed_queue_id: int, deck_id: str) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return original_complete(observed_queue_id, deck_id)
+
+    monkeypatch.setattr(
+        controller._queue_service,
+        "complete_playing_for_deck",
+        transient_failure,
+    )
+
+    controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
+    executor.run_all()
+
+    assert attempts == 3
+    persisted = controller._queue_service.entry(queue_id)
+    assert persisted is not None
+    assert persisted.status is QueueStatus.PLAYED
+    assert persisted.loaded_deck is None
 
 
 def test_slow_deck_cleanup_cannot_delay_crossfade_target_or_incoming_audio(

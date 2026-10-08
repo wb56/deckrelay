@@ -900,6 +900,44 @@ def test_stale_deck_release_does_not_clear_a_new_assignment(tmp_path: Path) -> N
     assert playing.loaded_deck == "B"
 
 
+def test_playing_completion_atomically_finishes_matching_deck_assignment(
+    tmp_path: Path,
+) -> None:
+    database = database_with_tracks(tmp_path / "atomic-playing-completion.db")
+    repository = PartyPlayerRepository(database)
+    session = repository.create_session("Atomic completion")
+    service = QueueService(repository, TrackRepository(database), session.session_id)
+    entry = service.add(1)
+    service.mark_preparing(entry.queue_id, "A")
+    service.mark_loaded(entry.queue_id, "A")
+    service.mark_playing(entry.queue_id)
+
+    assert service.complete_playing_for_deck(entry.queue_id, "A")
+
+    completed = service.entry(entry.queue_id)
+    assert completed is not None
+    assert completed.status is QueueStatus.PLAYED
+    assert completed.loaded_deck is None
+
+
+def test_stale_playing_completion_does_not_change_reassigned_deck(tmp_path: Path) -> None:
+    database = database_with_tracks(tmp_path / "stale-atomic-completion.db")
+    repository = PartyPlayerRepository(database)
+    session = repository.create_session("Stale atomic completion")
+    service = QueueService(repository, TrackRepository(database), session.session_id)
+    entry = service.add(1)
+    service.mark_preparing(entry.queue_id, "B")
+    service.mark_loaded(entry.queue_id, "B")
+    service.mark_playing(entry.queue_id)
+
+    assert not service.complete_playing_for_deck(entry.queue_id, "A")
+
+    current = service.entry(entry.queue_id)
+    assert current is not None
+    assert current.status is QueueStatus.PLAYING
+    assert current.loaded_deck == "B"
+
+
 def test_playing_and_deck_release_do_not_cache_connection_on_calling_thread(
     tmp_path: Path,
 ) -> None:

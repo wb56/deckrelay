@@ -634,6 +634,30 @@ class PartyPlayerRepository:
             )
         return cursor.rowcount == 1
 
+    def complete_playing_queue_entry(self, queue_id: int, expected_deck: str) -> QueueEntry | None:
+        """Atomically finish only the playing entry still owned by the expected deck."""
+        played_at = datetime.now().isoformat()
+        with self._database.connect() as connection:
+            cursor = connection.execute(
+                """UPDATE party_queue
+                   SET status = ?, loaded_deck = NULL,
+                       played_at = COALESCE(?, played_at),
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = ? AND loaded_deck = ?""",
+                (
+                    QueueStatus.PLAYED.value,
+                    played_at,
+                    queue_id,
+                    QueueStatus.PLAYING.value,
+                    expected_deck,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._get_queue_entry_row(connection, queue_id)
+        assert row is not None
+        return self._queue_from_row(row)
+
     @staticmethod
     def _validate_priority(priority: int) -> int:
         if isinstance(priority, bool) or not 0 <= priority <= 999:

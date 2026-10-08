@@ -9,7 +9,7 @@ import sqlite3
 import tracemalloc
 from time import monotonic, sleep
 from pathlib import Path
-from threading import Lock, Thread, current_thread, main_thread
+from threading import Event, Lock, Thread, current_thread, main_thread
 from collections.abc import Callable
 from typing import Protocol, TypeVar
 from uuid import uuid4
@@ -4849,22 +4849,6 @@ class MainController:
                         warning_threshold_ms=10.0,
                     ):
                         outgoing_cleanup = outgoing.detach_for_cleanup()
-                    if outgoing_queue_id is not None:
-                        with self._performance.measure(
-                            "transition_completion.stop_outgoing.release_assignment",
-                            warning_threshold_ms=10.0,
-                        ):
-                            released = self._queue_service.release_playing_deck_assignment(
-                                outgoing_queue_id,
-                                outgoing.model.deck_id,
-                            )
-                        if not released:
-                            self._logger.info(
-                                "Veraltete Deckfreigabe für Queue-Eintrag %s "
-                                "auf Deck %s übersprungen",
-                                outgoing_queue_id,
-                                outgoing.model.deck_id,
-                            )
                     self._deck_queue_ids[outgoing.model.deck_id] = None
                     with self._performance.measure(
                         "transition_completion.stop_outgoing.clear_cover",
@@ -4910,7 +4894,10 @@ class MainController:
                     for index, entry in enumerate(self._queue_entries_cache):
                         if entry.queue_id in queue_ids:
                             updated_entry = replace(
-                                entry, status=QueueStatus.PLAYED, played_at=datetime.now()
+                                entry,
+                                status=QueueStatus.PLAYED,
+                                played_at=datetime.now(),
+                                loaded_deck=None,
                             )
                             self._queue_entries_cache[index] = updated_entry
                             self._queue_entries_by_id_cache[entry.queue_id] = updated_entry
@@ -4952,19 +4939,25 @@ class MainController:
             with self._performance.measure(
                 "transition_completion.prepare_next", warning_threshold_ms=5.0
             ):
+                cleanup_complete = Event()
                 if outgoing_cleanup is None:
-                    self._view.schedule(0, self._auto_load)
+                    cleanup_complete.set()
+                    if not queue_ids:
+                        self._view.schedule(0, self._auto_load)
                 else:
 
                     def cleanup_outgoing_deck() -> None:
                         assert outgoing_cleanup is not None
-                        with self._performance.measure(
-                            "worker.transition_cleanup.backend_stop",
-                            warning_threshold_ms=250.0,
-                            context={"deck_id": outgoing.model.deck_id},
-                        ):
-                            outgoing_cleanup()
-                        if not self._closed:
+                        try:
+                            with self._performance.measure(
+                                "worker.transition_cleanup.backend_stop",
+                                warning_threshold_ms=250.0,
+                                context={"deck_id": outgoing.model.deck_id},
+                            ):
+                                outgoing_cleanup()
+                        finally:
+                            cleanup_complete.set()
+                        if not queue_ids and not self._closed:
                             self._publish_gui_callback(
                                 self._auto_load,
                                 "transition_cleanup_autoload",
@@ -4991,7 +4984,11 @@ class MainController:
                 warning_threshold_ms=10.0,
             ):
                 for queue_id in queue_ids:
-                    self._enqueue_queue_persist(queue_id, outgoing.model.deck_id)
+                    self._enqueue_queue_persist(
+                        queue_id,
+                        outgoing.model.deck_id,
+                        cleanup_complete=cleanup_complete,
+                    )
             self._diagnostic_scenario.transition_completed()
         finally:
             self._transition_completion_pending = False
@@ -5041,7 +5038,13 @@ class MainController:
         if not accepted:
             self._diagnostic_scenario.persistence_failed()
 
-    def _enqueue_queue_persist(self, queue_id: int, deck_id: str) -> None:
+    def _enqueue_queue_persist(
+        self,
+        queue_id: int,
+        deck_id: str,
+        *,
+        cleanup_complete: Event | None = None,
+    ) -> None:
         """Persist the already-applied in-memory queue completion serially."""
         self._diagnostic_scenario.persistence_submitted()
         playback_generation = self._queue_playback_generations.get(queue_id, 0)
@@ -5072,11 +5075,30 @@ class MainController:
                                 self._queue_playback_generations.get(queue_id, 0)
                                 == playback_generation
                             ):
-                                self._retry_persistence(
-                                    lambda: self._queue_service.mark_finished(
-                                        queue_id, QueueStatus.PLAYED
+                                completed = False
+
+                                def complete_queue_entry() -> None:
+                                    nonlocal completed
+                                    completed = self._queue_service.complete_playing_for_deck(
+                                        queue_id, deck_id
                                     )
-                                )
+
+                                self._retry_persistence(complete_queue_entry)
+                                if not completed:
+                                    self._logger.info(
+                                        "Veralteter Queue-Abschluss für Eintrag %s "
+                                        "auf Deck %s verworfen",
+                                        queue_id,
+                                        deck_id,
+                                    )
+                                elif cleanup_complete is not None:
+                                    cleanup_complete.wait()
+                                    if not self._closed:
+                                        self._publish_gui_callback(
+                                            self._auto_load,
+                                            "transition_persist_autoload",
+                                            coalesce_key=f"autoload-{deck_id}",
+                                        )
                             else:
                                 self._logger.info(
                                     "Veralteter Queue-Abschluss für Eintrag %s verworfen",
