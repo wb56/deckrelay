@@ -1462,6 +1462,25 @@ class MainController:
         self._view.show_fade_settings(self.fade_duration, self.fade_out_stops_deck)
         if self._session is not None:
             self._view.show_session(self._session)
+        if self._session_service is not None:
+            recovery = self._session_service.last_recovery_summary
+            if recovery is not None:
+                message = (
+                    "Session wiederhergestellt: "
+                    f"{recovery.pending_entries} offene Queue-Titel übernommen"
+                )
+                if recovery.reset_preparations:
+                    message += (
+                        f", {recovery.reset_preparations} vorbereitete Titel "
+                        "sicher zurückgesetzt"
+                    )
+                if recovery.interrupted_playbacks:
+                    message += (
+                        f". {recovery.interrupted_playbacks} beim Absturz laufende Titel "
+                        "wurden abgebrochen und nicht erneut eingeplant; eine Wiederholung "
+                        "erfordert eine manuelle Entscheidung"
+                    )
+                self._view.show_queue_warning(message + ". Wiedergabe und Automatik bleiben aus.")
         if self._settings is not None:
             self._view.show_start_settings(
                 self._settings.restore_last_session(), self._settings.fullscreen_on_start()

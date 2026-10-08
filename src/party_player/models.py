@@ -107,6 +107,17 @@ class PartySession:
     settings_snapshot: str = "{}"
 
 
+@dataclass(frozen=True, slots=True)
+class SessionRecoverySummary:
+    """Operator-facing facts produced by one safe startup recovery."""
+
+    restored_session_id: int
+    pending_entries: int
+    reset_preparations: int
+    interrupted_playbacks: int
+    copied_from_finished_session: bool = False
+
+
 @dataclass(slots=True)
 class PartySettings:
     audio_backend: str = "vlc"

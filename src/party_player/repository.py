@@ -9,7 +9,7 @@ from typing import cast
 
 from party_player.database.connection import Database
 from party_player.enums import CompletionStatus, QueueSource, QueueStatus, SessionStatus
-from party_player.models import PartySession, QueueEntry
+from party_player.models import PartySession, QueueEntry, SessionRecoverySummary
 
 
 class PartyPlayerRepository:
@@ -83,10 +83,21 @@ class PartyPlayerRepository:
             ).fetchall()
         return {int(row["entity_id"]) for row in rows}
 
-    def recover_queue_after_restart(self, session_id: int) -> None:
+    def recover_queue_after_restart(self, session_id: int) -> SessionRecoverySummary:
         """Atomically turn volatile deck states into safe waiting entries."""
         recovered_at = datetime.now().isoformat()
         with self._database.connect() as connection:
+            counts = connection.execute(
+                """SELECT
+                       SUM(CASE WHEN status IN ('waiting', 'preparing', 'ready') THEN 1 ELSE 0 END)
+                           AS pending_entries,
+                       SUM(CASE WHEN status IN ('preparing', 'ready') THEN 1 ELSE 0 END)
+                           AS reset_preparations,
+                       SUM(CASE WHEN status = 'playing' THEN 1 ELSE 0 END)
+                           AS interrupted_playbacks
+                   FROM party_queue WHERE session_id = ?""",
+                (session_id,),
+            ).fetchone()
             connection.execute(
                 """INSERT INTO play_history
                    (session_id, track_id, deck_id, started_at, finished_at,
@@ -117,28 +128,12 @@ class PartyPlayerRepository:
             )
             connection.execute(
                 """UPDATE party_queue
-                   SET status = CASE
-                           WHEN status = 'playing' AND EXISTS (
-                               SELECT 1 FROM automatic_selection_plan_steps s
-                               WHERE s.executed_queue_entry_id = party_queue.id
-                           ) THEN 'skipped'
-                           ELSE 'waiting'
-                       END,
+                   SET status = CASE WHEN status = 'playing' THEN 'skipped' ELSE 'waiting' END,
                        loaded_deck = NULL,
-                       skip_reason = CASE
-                           WHEN status = 'playing' AND EXISTS (
-                               SELECT 1 FROM automatic_selection_plan_steps s
-                               WHERE s.executed_queue_entry_id = party_queue.id
-                           ) THEN 'Wiedergabe durch Neustart unterbrochen'
-                           ELSE skip_reason
-                       END,
-                       skip_code = CASE
-                           WHEN status = 'playing' AND EXISTS (
-                               SELECT 1 FROM automatic_selection_plan_steps s
-                               WHERE s.executed_queue_entry_id = party_queue.id
-                           ) THEN 'RECOVERY_INTERRUPTED_PLAYBACK'
-                           ELSE skip_code
-                       END,
+                       skip_reason = CASE WHEN status = 'playing'
+                           THEN 'Wiedergabe durch Neustart unterbrochen' ELSE skip_reason END,
+                       skip_code = CASE WHEN status = 'playing'
+                           THEN 'RECOVERY_INTERRUPTED_PLAYBACK' ELSE skip_code END,
                        locked = CASE
                            WHEN lock_source IN ('MANUAL', 'MANUAL_SYSTEM') THEN 1
                            ELSE 0
@@ -159,11 +154,23 @@ class PartyPlayerRepository:
                 (
                     session_id,
                     json.dumps(
-                        {"audio_started": False, "volatile_states_reset": True},
+                        {
+                            "audio_started": False,
+                            "volatile_states_reset": True,
+                            "pending_entries": int(counts["pending_entries"] or 0),
+                            "reset_preparations": int(counts["reset_preparations"] or 0),
+                            "interrupted_playbacks": int(counts["interrupted_playbacks"] or 0),
+                        },
                         sort_keys=True,
                     ),
                 ),
             )
+        return SessionRecoverySummary(
+            restored_session_id=session_id,
+            pending_entries=int(counts["pending_entries"] or 0),
+            reset_preparations=int(counts["reset_preparations"] or 0),
+            interrupted_playbacks=int(counts["interrupted_playbacks"] or 0),
+        )
 
     def latest_unfinished_session(self) -> PartySession | None:
         with self._database.connect() as connection:

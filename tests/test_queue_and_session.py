@@ -403,9 +403,12 @@ def test_restart_resets_volatile_queue_states_and_aborts_playing_entry(
 
     entries = {entry.queue_id: entry for entry in repository.list_queue(session.session_id)}
     assert entries[waiting.queue_id].status is QueueStatus.WAITING
-    for queue_id in (preparing.queue_id, ready.queue_id, playing.queue_id):
+    for queue_id in (preparing.queue_id, ready.queue_id):
         assert entries[queue_id].status is QueueStatus.WAITING
         assert entries[queue_id].loaded_deck is None
+    assert entries[playing.queue_id].status is QueueStatus.SKIPPED
+    assert entries[playing.queue_id].loaded_deck is None
+    assert entries[playing.queue_id].skip_code == "RECOVERY_INTERRUPTED_PLAYBACK"
     assert not entries[preparing.queue_id].locked
     assert entries[preparing.queue_id].lock_source == "NONE"
     assert entries[ready.queue_id].locked
@@ -429,6 +432,38 @@ def test_restart_resets_volatile_queue_states_and_aborts_playing_entry(
     ]
     assert recovered is not None
     assert '"audio_started": false' in str(recovered["details"])
+
+
+def test_crash_recovery_does_not_requeue_or_double_count_interrupted_playback(
+    tmp_path: Path,
+) -> None:
+    database = database_with_tracks(tmp_path / "idempotent-recovery.db")
+    repository = PartyPlayerRepository(database)
+    service = PartySessionService(repository)
+    session = service.start("Absturz")
+    interrupted = repository.add_queue_entry(session.session_id, 1)
+    queue = QueueService(repository, TrackRepository(database), session.session_id)
+    queue.mark_preparing(interrupted.queue_id, "A")
+    queue.mark_loaded(interrupted.queue_id, "A")
+    queue.mark_playing(interrupted.queue_id)
+
+    service.restore_or_start()
+    first_summary = service.last_recovery_summary
+    service.restore_or_start()
+    second_summary = service.last_recovery_summary
+
+    assert first_summary is not None
+    assert first_summary.interrupted_playbacks == 1
+    assert first_summary.pending_entries == 0
+    assert second_summary is not None
+    assert second_summary.interrupted_playbacks == 0
+    assert queue.get_next_candidate() is None
+    with database.connect() as connection:
+        history_count = connection.execute(
+            "SELECT COUNT(*) FROM play_history WHERE queue_id = ?",
+            (interrupted.queue_id,),
+        ).fetchone()[0]
+    assert history_count == 1
 
 
 def test_finished_session_is_not_restored(tmp_path: Path) -> None:
@@ -463,6 +498,9 @@ def test_pending_queue_from_finished_session_is_copied_to_new_session(tmp_path: 
     assert replacement.status == SessionStatus.RECOVERED
     assert [entry.track_id for entry in restored] == [2]
     assert restored[0].status == QueueStatus.WAITING
+    assert service.last_recovery_summary is not None
+    assert service.last_recovery_summary.copied_from_finished_session
+    assert service.last_recovery_summary.pending_entries == 1
 
 
 def test_session_recovery_can_be_disabled(tmp_path: Path) -> None:

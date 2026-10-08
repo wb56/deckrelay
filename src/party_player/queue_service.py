@@ -11,7 +11,7 @@ from typing import cast
 from party_player.deck_controller import DeckController
 from party_player.cue_points import CuePointService, ResolvedTrackBoundaries
 from party_player.enums import EmptyQueuePolicy, GuestPriority, QueueSource, QueueStatus
-from party_player.models import QueueEntry, SavedQueueEntry, Track
+from party_player.models import QueueEntry, SavedQueueEntry, SessionRecoverySummary, Track
 from party_player.repositories.track_repository import TrackRepository
 from party_player.repository import PartyPlayerRepository
 from party_player.track_selection import SelectionDecision, TrackSelectionService
@@ -93,9 +93,9 @@ class QueueService:
     def recover_persisted_session(
         repository: PartyPlayerRepository,
         session_id: int,
-    ) -> None:
+    ) -> SessionRecoverySummary:
         """Run restart recovery through the queue mutation boundary."""
-        repository.recover_queue_after_restart(session_id)
+        return repository.recover_queue_after_restart(session_id)
 
     @staticmethod
     def copy_persisted_pending_queue(
