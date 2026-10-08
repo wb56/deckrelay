@@ -75,6 +75,7 @@ from party_player.ui.database_backup_dialog import (
     choose_equalizer_conflict,
     choose_playlist_conflict,
 )
+from party_player.ui.backup_restore_ui_coordinator import BackupRestoreUiCoordinator
 from party_player.equalizer_transfer import EqualizerConflictStrategy
 from party_player.overlay_transfer import OverlayConflictStrategy
 from party_player.playlist_transfer import (
@@ -134,7 +135,6 @@ from party_player.backup_restore_controller import (
     BackupRestoreController,
     BackupRestoreOperation,
     BackupRestoreUiResult,
-    BackupRestoreUiState,
 )
 from party_player.ui.dialogs import (
     ask_silent_yes_no,
@@ -528,11 +528,24 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._automatic_selection_preview_dialog: AutomaticSelectionPreviewDialog | None = None
         self._automatic_selection_plan_dialog: AutomaticSelectionPlanDialog | None = None
         self._backup_restore_controller: BackupRestoreController | None = None
-        self._database_backup_dialog_generation = 0
-        self._database_operation_generation: int | None = None
-        self._default_backup_directory: Path | None = None
-        self._database_backup_dialog: DatabaseBackupDialog | None = None
         self._restart_requested = False
+        self._backup_restore_ui_coordinator = BackupRestoreUiCoordinator(
+            self,
+            playlist_export=self._request_playlist_export,
+            playlist_music_directory=self._request_playlist_music_directory,
+            playlist_import_preview=self._request_playlist_import_preview,
+            equalizer_export=self._request_equalizer_export,
+            equalizer_import_preview=self._request_equalizer_import_preview,
+            overlay_export=self._request_overlay_export,
+            overlay_import_preview=self._request_overlay_import_preview,
+            media_path_remap_preview=self._request_media_path_remap_preview,
+            vacuum=self._request_vacuum,
+            reindex=self._request_reindex,
+            preview_result=self._handle_backup_restore_preview_result,
+            refresh_equalizer_presets=self._refresh_equalizer_presets,
+            refresh_overlays=self.refresh_overlays,
+            request_restart=self._request_controlled_restart,
+        )
         self._cue_controller: CuePointController | None = None
         self._loudness_controller: LoudnessController | None = None
         self._metadata_analysis: MetadataAnalysisService | None = None
@@ -2229,60 +2242,17 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self, controller: BackupRestoreController, default_backup_directory: Path
     ) -> None:
         self._backup_restore_controller = controller
-        self._default_backup_directory = default_backup_directory
+        self._backup_restore_ui_coordinator.bind(controller, default_backup_directory)
 
     @property
     def restart_requested(self) -> bool:
         return self._restart_requested
 
     def _show_database_backup(self) -> None:
-        if self._backup_restore_controller is None:
-            return
-        current = self._database_backup_dialog
-        if current is not None:
-            try:
-                if current.winfo_exists():
-                    current.focus_force()
-                    return
-            except (RuntimeError, TclError):
-                pass
-        controller = self._backup_restore_controller
-        self._database_backup_dialog_generation += 1
-        generation = self._database_backup_dialog_generation
-
-        def close() -> None:
-            if self._database_backup_dialog_generation == generation:
-                self._database_backup_dialog_generation += 1
-                self._database_backup_dialog = None
-
-        self._database_backup_dialog = DatabaseBackupDialog(
-            self,
-            lambda: self._start_database_operation(self._request_default_backup),
-            lambda: self._start_database_operation(self._request_backup),
-            lambda: self._start_database_operation(self._request_restore),
-            lambda: self._start_database_operation(self._request_playlist_export),
-            self._request_playlist_music_directory,
-            lambda: self._start_database_operation(self._request_playlist_import_preview),
-            lambda: self._start_database_operation(self._request_equalizer_export),
-            lambda: self._start_database_operation(self._request_equalizer_import_preview),
-            lambda: self._start_database_operation(self._request_overlay_export),
-            lambda: self._start_database_operation(self._request_overlay_import_preview),
-            lambda: self._start_database_operation(self._request_media_path_remap_preview),
-            lambda: self._start_database_operation(controller.start_quick_check),
-            lambda: self._start_database_operation(controller.start_integrity_check),
-            lambda: self._start_database_operation(controller.start_analyze),
-            lambda: self._start_database_operation(self._request_vacuum),
-            lambda: self._start_database_operation(self._request_reindex),
-            controller.destructive_maintenance_safety,
-            controller.last_manual_backup(),
-            close,
-        )
+        self._backup_restore_ui_coordinator.show_dialog()
 
     def _start_database_operation(self, action: Callable[[], bool]) -> bool:
-        started = action()
-        if started:
-            self._database_operation_generation = self._database_backup_dialog_generation
-        return started
+        return self._backup_restore_ui_coordinator.start_operation(action)
 
     def _request_playlist_export(self) -> bool:
         controller = self._backup_restore_controller
@@ -2455,128 +2425,36 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         return controller.start_reindex()
 
     def _request_backup(self) -> bool:
-        if self._backup_restore_controller is None:
-            return False
-        selected = filedialog.askdirectory(title="Zielordner für DeckRelay-Backup wählen")
-        if selected:
-            return self._backup_restore_controller.start_backup(Path(selected))
-        return False
+        return self._backup_restore_ui_coordinator.request_backup()
 
     def _request_default_backup(self) -> bool:
-        if self._backup_restore_controller is None or self._default_backup_directory is None:
-            return False
-        return self._backup_restore_controller.start_backup(self._default_backup_directory)
+        return self._backup_restore_ui_coordinator.request_default_backup()
 
     def _request_restore(self) -> bool:
-        if self._backup_restore_controller is None:
-            return False
-        selected = filedialog.askopenfilename(
-            title="DeckRelay-Backup wiederherstellen",
-            filetypes=(
-                ("DeckRelay-Backup", "*.partyplayer-backup"),
-                ("Alle Dateien", "*.*"),
-            ),
-        )
-        if not selected:
-            return False
-        if not ask_silent_yes_no(
-            self,
-            "Backup wirklich wiederherstellen?",
-            "Beide Decks müssen gestoppt und alle Audioaktionen beendet sein. "
-            "Unmittelbar vor dem Austausch wird automatisch ein Sicherheitsbackup erstellt.\n\n"
-            "Nach erfolgreichem Restore muss DeckRelay neu gestartet werden.",
-        ):
-            return False
-        safety_directory = Path(selected).resolve().parent / "safety-backups"
-        return self._backup_restore_controller.start_restore(Path(selected), safety_directory)
+        return self._backup_restore_ui_coordinator.request_restore()
 
     def show_backup_restore_result(self, result: BackupRestoreUiResult) -> None:
-        dialog = self.__dict__.get("_database_backup_dialog")
-        dialog_generation = self.__dict__.get("_database_backup_dialog_generation", 0)
-        operation_generation = self.__dict__.get("_database_operation_generation", 0)
-        current_dialog = dialog is not None and operation_generation == dialog_generation
-        if current_dialog and dialog is not None:
-            try:
-                if dialog.winfo_exists():
-                    dialog.complete(result)
-            except (RuntimeError, TclError):
-                pass
-        if result.operation is BackupRestoreOperation.PLAYLIST_IMPORT_PREVIEW:
-            self._database_operation_generation = None
-            if current_dialog and dialog is not None:
-                self._handle_playlist_import_preview(result, dialog)
-            return
-        if result.operation is BackupRestoreOperation.MEDIA_PATH_REMAP_PREVIEW:
-            self._database_operation_generation = None
-            if current_dialog and dialog is not None:
-                self._handle_media_path_remap_preview(result, dialog)
-            return
-        if result.operation is BackupRestoreOperation.EQUALIZER_IMPORT_PREVIEW:
-            self._database_operation_generation = None
-            if current_dialog and dialog is not None:
-                self._handle_equalizer_import_preview(result, dialog)
-            return
-        if result.operation is BackupRestoreOperation.OVERLAY_IMPORT_PREVIEW:
-            self._database_operation_generation = None
-            if current_dialog and dialog is not None:
-                self._handle_overlay_import_preview(result, dialog)
-            return
-        if result.state is not BackupRestoreUiState.BUSY:
-            self._database_operation_generation = None
-        if result.state is BackupRestoreUiState.RESTART_REQUIRED:
-            restore = result.operation is BackupRestoreOperation.RESTORE
-            safety = f"\n\nSicherheitsbackup: {result.path}" if restore and result.path else ""
-            title = (
-                "Restore abgeschlossen – Neustart erforderlich"
-                if restore
-                else "Pfad-Neuzuordnung abgeschlossen – Neustart erforderlich"
-            )
-            if ask_silent_yes_no(
-                self,
-                title,
-                result.message + safety + "\n\nDeckRelay jetzt kontrolliert neu starten?",
-            ):
-                self._restart_requested = True
-                self._dispose_resources()
-                self.destroy()
-            return
-        if result.state is BackupRestoreUiState.COMPLETED:
-            title = {
-                BackupRestoreOperation.BACKUP: "Sicherung erfolgreich",
-                BackupRestoreOperation.MAINTENANCE: "Datenbankwartung abgeschlossen",
-                BackupRestoreOperation.PLAYLIST_EXPORT: "Playlist exportiert",
-                BackupRestoreOperation.PLAYLIST_IMPORT: "Playlist importiert",
-                BackupRestoreOperation.MEDIA_PATH_REMAP: "Medienpfade neu zugeordnet",
-                BackupRestoreOperation.EQUALIZER_EXPORT: "Equalizer-Preset exportiert",
-                BackupRestoreOperation.EQUALIZER_IMPORT: "Equalizer-Preset importiert",
-                BackupRestoreOperation.OVERLAY_EXPORT: "Overlays/Jingles exportiert",
-                BackupRestoreOperation.OVERLAY_IMPORT: "Overlays/Jingles importiert",
-            }.get(result.operation, "Datenoperation abgeschlossen")
-        else:
-            title = "Backup/Restore/Wartung nicht ausgeführt"
-        path = f"\n\nDatei: {result.path}" if result.path else ""
-        message = result.message
-        if (
-            result.operation is BackupRestoreOperation.BACKUP
-            and result.state is BackupRestoreUiState.COMPLETED
-        ):
-            message = "Die komplette Veranstaltungssicherung wurde erfolgreich erstellt."
-        show_silent_message(
-            self,
-            title,
-            message + path,
-            error=result.state is not BackupRestoreUiState.COMPLETED,
-        )
-        if (
-            result.operation is BackupRestoreOperation.EQUALIZER_IMPORT
-            and result.state is BackupRestoreUiState.COMPLETED
-        ):
-            self._refresh_equalizer_presets()
-        if (
-            result.operation is BackupRestoreOperation.OVERLAY_IMPORT
-            and result.state is BackupRestoreUiState.COMPLETED
-        ):
-            self.refresh_overlays()
+        self._backup_restore_ui_coordinator.show_result(result)
+
+    def _handle_backup_restore_preview_result(
+        self, result: BackupRestoreUiResult, dialog: DatabaseBackupDialog
+    ) -> bool:
+        handlers = {
+            BackupRestoreOperation.PLAYLIST_IMPORT_PREVIEW: self._handle_playlist_import_preview,
+            BackupRestoreOperation.MEDIA_PATH_REMAP_PREVIEW: self._handle_media_path_remap_preview,
+            BackupRestoreOperation.EQUALIZER_IMPORT_PREVIEW: self._handle_equalizer_import_preview,
+            BackupRestoreOperation.OVERLAY_IMPORT_PREVIEW: self._handle_overlay_import_preview,
+        }
+        handler = handlers.get(result.operation)
+        if handler is None:
+            return False
+        handler(result, dialog)
+        return True
+
+    def _request_controlled_restart(self) -> None:
+        self._restart_requested = True
+        self._dispose_resources()
+        self.destroy()
 
     def _refresh_equalizer_presets(self) -> None:
         controller = self._controller
@@ -7120,8 +6998,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         overlay_dialog = self.__dict__.get("_overlay_management_dialog")
         if overlay_dialog is not None and overlay_dialog.winfo_exists():
             overlay_dialog.destroy()
-        database_dialog = self.__dict__.get("_database_backup_dialog")
-        if database_dialog is not None and database_dialog.winfo_exists():
-            database_dialog.destroy()
+        backup_restore_ui = self.__dict__.get("_backup_restore_ui_coordinator")
+        if backup_restore_ui is not None:
+            backup_restore_ui.dispose()
         for deck_id in tuple(self._cover_images):
             self._clear_deck_cover(deck_id, "Kein Cover")
