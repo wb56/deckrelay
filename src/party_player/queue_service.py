@@ -734,6 +734,14 @@ class QueueService:
             deck_id,
         )
 
+    def complete_playing_for_deck(self, queue_id: int, deck_id: str) -> bool:
+        """Atomically finish the queue entry if the expected deck still owns it."""
+        updated = self._repository.complete_playing_queue_entry(queue_id, deck_id)
+        if updated is None:
+            return False
+        self._log_event("QUEUE_PLAYED", updated, "PLAYED")
+        return True
+
     def reconcile_deck_assignments(self, deck_a: DeckController, deck_b: DeckController) -> bool:
         """Reset persisted assignments that are not represented by the actual decks."""
         changed = False
