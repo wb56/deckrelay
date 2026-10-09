@@ -9,6 +9,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $OutputEncoding
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $GroupConfiguration = Join-Path $PSScriptRoot "test-groups.psd1"
@@ -16,7 +18,7 @@ $LogDirectory = Join-Path $ProjectRoot "logs\dev-tests"
 
 function Stop-DevTestRun {
     param([Parameter(Mandatory = $true)][string]$Message)
-    [Console]::Error.WriteLine("Fehler: $Message")
+    Write-Error -Message "Fehler: $Message" -ErrorAction Continue
     exit 2
 }
 
@@ -135,8 +137,8 @@ catch {
     $Stopwatch.Stop()
     $Message = "pytest-Startfehler: $($_.Exception.Message)"
     [System.IO.File]::WriteAllText($LogPath, $Message + [Environment]::NewLine)
-    [Console]::Error.WriteLine("Fehler: $Message")
-    [Console]::Error.WriteLine("Log: $LogPath")
+    Write-Error -Message "Fehler: $Message" -ErrorAction Continue
+    Write-Error -Message "Log: $LogPath" -ErrorAction Continue
     exit 2
 }
 finally {

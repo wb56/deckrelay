@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -72,22 +73,37 @@ print("3 passed in 0.12s")
 def run_script(
     project: Path, env: dict[str, str], *arguments: str
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
-            "pwsh",
-            "-NoLogo",
-            "-NoProfile",
-            "-File",
-            str(project / "scripts" / "Invoke-DevTests.ps1"),
-            *arguments,
-        ],
-        cwd=project,
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+    command = [
+        "pwsh",
+        "-NoLogo",
+        "-NoProfile",
+        "-File",
+        str(project / "scripts" / "Invoke-DevTests.ps1"),
+        *arguments,
+    ]
+    with tempfile.TemporaryDirectory() as capture_directory:
+        stdout_path = Path(capture_directory) / "stdout.txt"
+        stderr_path = Path(capture_directory) / "stderr.txt"
+        with (
+            stdout_path.open("w", encoding="utf-8") as stdout_file,
+            stderr_path.open("w", encoding="utf-8") as stderr_file,
+        ):
+            result = subprocess.run(
+                command,
+                cwd=project,
+                env=env,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+        return subprocess.CompletedProcess(
+            result.args,
+            result.returncode,
+            stdout_path.read_text(encoding="utf-8"),
+            stderr_path.read_text(encoding="utf-8"),
+        )
 
 
 def captured_args(project: Path) -> list[str]:
@@ -177,6 +193,7 @@ def test_quick_rejects_missing_test_path(
     result = run_script(project, env, "-Profile", "quick", "-Tests", "tests/missing.py")
 
     assert result.returncode != 0
+    assert result.stderr is not None, repr(result)
     assert "ungültiger oder fehlender testpfad" in (result.stdout + result.stderr).lower()
     assert not (project / "captured args.json").exists()
 
