@@ -25,6 +25,7 @@ from party_player.controllers.main_controller import (
     EmergencyDashboardViewModel,
     QueueViewUpdate,
     RecoveryReturnRequirement,
+    _TransitionAutoloadCoordinator,
 )
 from party_player.crossfader_service import CrossfaderService
 from party_player.cue_points import CuePointRepository, CuePointService
@@ -307,6 +308,37 @@ class ManualExecutor(Executor):
                 future.set_result(task())
             except Exception as exc:
                 future.set_exception(exc)
+
+
+@pytest.mark.parametrize(
+    ("cleanup_success", "persistence_success", "expected_calls"),
+    ((True, True, 1), (False, True, 0), (True, False, 0), (False, False, 0)),
+)
+def test_transition_autoload_coordination_requires_both_successes(
+    cleanup_success: bool,
+    persistence_success: bool,
+    expected_calls: int,
+) -> None:
+    calls: list[str] = []
+    coordinator = _TransitionAutoloadCoordinator({1}, lambda: calls.append("autoload"))
+
+    coordinator.cleanup_finished(cleanup_success)
+    coordinator.persistence_finished(1, persistence_success)
+
+    assert len(calls) == expected_calls
+
+
+def test_transition_autoload_coordination_ignores_duplicate_and_late_results() -> None:
+    calls: list[str] = []
+    coordinator = _TransitionAutoloadCoordinator({1}, lambda: calls.append("autoload"))
+
+    coordinator.persistence_finished(1, True)
+    coordinator.cleanup_finished(True)
+    coordinator.persistence_finished(1, True)
+    coordinator.cleanup_finished(True)
+    coordinator.persistence_finished(1, False)
+
+    assert calls == ["autoload"]
 
 
 def build_controller(
@@ -3687,6 +3719,7 @@ def test_transition_completion_defers_atomic_queue_finish_to_persistence_worker(
     queue_id = controller._deck_queue_ids["A"]
     assert track is not None and queue_id is not None
     calls: list[tuple[int, str]] = []
+    autoload_calls: list[str] = []
     original_complete = controller._queue_service.complete_playing_for_deck
 
     def observed_complete(observed_queue_id: int, deck_id: str) -> bool:
@@ -3705,6 +3738,7 @@ def test_transition_completion_defers_atomic_queue_finish_to_persistence_worker(
             AssertionError("transition completion must not persist on the GUI thread")
         ),
     )
+    monkeypatch.setattr(controller, "_auto_load", lambda: autoload_calls.append("autoload"))
 
     controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
 
@@ -3721,6 +3755,162 @@ def test_transition_completion_defers_atomic_queue_finish_to_persistence_worker(
     assert persisted is not None
     assert persisted.status is QueueStatus.PLAYED
     assert persisted.loaded_deck is None
+    for _ in range(100):
+        controller._drain_background_callbacks()
+        if autoload_calls:
+            break
+        sleep(0.01)
+    controller._drain_background_callbacks()
+    assert autoload_calls == ["autoload"]
+
+
+def test_failed_backend_cleanup_never_publishes_autoload(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    executor = ManualExecutor()
+    controller, _view = build_controller(tmp_path, persistence_executor=executor)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller.deck_action("A", "play")
+    track = controller.deck_a.model.loaded_track
+    queue_id = controller._deck_queue_ids["A"]
+    assert track is not None and queue_id is not None
+    cleanup_failed = Event()
+    autoload_calls: list[str] = []
+
+    def detach_with_failed_cleanup() -> Callable[[], None]:
+        def cleanup() -> None:
+            cleanup_failed.set()
+            raise RuntimeError("cleanup failed")
+
+        return cleanup
+
+    monkeypatch.setattr(controller.deck_a, "detach_for_cleanup", detach_with_failed_cleanup)
+    monkeypatch.setattr(controller, "_auto_load", lambda: autoload_calls.append("autoload"))
+
+    controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
+    executor.run_all()
+    assert cleanup_failed.wait(timeout=1)
+    controller._drain_background_callbacks()
+
+    assert autoload_calls == []
+
+
+@pytest.mark.parametrize("outcome", ("error", "rejected"))
+def test_unconfirmed_atomic_queue_finish_never_publishes_autoload(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    outcome: str,
+) -> None:
+    executor = ManualExecutor()
+    controller, _view = build_controller(tmp_path, persistence_executor=executor)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller.deck_action("A", "play")
+    track = controller.deck_a.model.loaded_track
+    queue_id = controller._deck_queue_ids["A"]
+    assert track is not None and queue_id is not None
+    autoload_calls: list[str] = []
+
+    def unconfirmed(_queue_id: int, _deck_id: str) -> bool:
+        if outcome == "error":
+            raise RuntimeError("persistence failed")
+        return False
+
+    monkeypatch.setattr(controller._queue_service, "complete_playing_for_deck", unconfirmed)
+    monkeypatch.setattr(controller, "_auto_load", lambda: autoload_calls.append("autoload"))
+
+    controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
+    executor.run_all()
+    for _ in range(100):
+        controller._drain_background_callbacks()
+        sleep(0.001)
+
+    assert autoload_calls == []
+
+
+def test_hanging_cleanup_does_not_block_persistence_worker_or_late_autoload(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    executor = ManualExecutor()
+    controller, _view = build_controller(tmp_path, persistence_executor=executor)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller.deck_action("A", "play")
+    track = controller.deck_a.model.loaded_track
+    queue_id = controller._deck_queue_ids["A"]
+    assert track is not None and queue_id is not None
+    cleanup_started = Event()
+    release_cleanup = Event()
+    later_job_ran: list[bool] = []
+    autoload_calls: list[str] = []
+
+    def detach_with_hanging_cleanup() -> Callable[[], None]:
+        def cleanup() -> None:
+            cleanup_started.set()
+            release_cleanup.wait(timeout=2)
+
+        return cleanup
+
+    monkeypatch.setattr(controller.deck_a, "detach_for_cleanup", detach_with_hanging_cleanup)
+    monkeypatch.setattr(controller, "_auto_load", lambda: autoload_calls.append("autoload"))
+
+    try:
+        controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
+        assert cleanup_started.wait(timeout=1)
+        executor.submit(lambda: later_job_ran.append(True))
+
+        executor.run_all()
+
+        assert later_job_ran == [True]
+        persisted = controller._queue_service.entry(queue_id)
+        assert persisted is not None and persisted.status is QueueStatus.PLAYED
+        controller.close(finish_session=False)
+    finally:
+        release_cleanup.set()
+    sleep(0.05)
+    controller._drain_background_callbacks()
+
+    assert autoload_calls == []
+
+
+def test_restore_quiesce_does_not_wait_for_hanging_audio_cleanup(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    controller, _view = build_controller(tmp_path)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller.deck_action("A", "play")
+    track = controller.deck_a.model.loaded_track
+    queue_id = controller._deck_queue_ids["A"]
+    participant = controller.restore_participant()
+    assert track is not None and queue_id is not None and participant is not None
+    cleanup_started = Event()
+    release_cleanup = Event()
+
+    def detach_with_hanging_cleanup() -> Callable[[], None]:
+        def cleanup() -> None:
+            cleanup_started.set()
+            release_cleanup.wait(timeout=2)
+
+        return cleanup
+
+    monkeypatch.setattr(controller.deck_a, "detach_for_cleanup", detach_with_hanging_cleanup)
+
+    try:
+        controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
+        assert cleanup_started.wait(timeout=1)
+
+        assert participant.block_new_work()
+        assert participant.drain(1.0)
+        assert participant.close_connections()
+        assert participant.resume()
+    finally:
+        controller.close(finish_session=False)
+        release_cleanup.set()
 
 
 def test_atomic_queue_finish_keeps_persistence_retry(
@@ -3956,7 +4146,9 @@ def test_slow_outgoing_stop_does_not_block_incoming_audio_or_completion(
     assert incoming_backend.is_playing()
 
 
-def test_delayed_completion_does_not_overwrite_restarted_queue_entry(tmp_path: Path) -> None:
+def test_delayed_completion_does_not_overwrite_restarted_queue_entry(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
     executor = ManualExecutor()
     controller, _view = build_controller(tmp_path, persistence_executor=executor)
     controller.initialize()
@@ -3965,6 +4157,8 @@ def test_delayed_completion_does_not_overwrite_restarted_queue_entry(tmp_path: P
     track = controller.deck_a.model.loaded_track
     queue_id = controller._deck_queue_ids["A"]
     assert track is not None and queue_id is not None
+    autoload_calls: list[str] = []
+    monkeypatch.setattr(controller, "_auto_load", lambda: autoload_calls.append("autoload"))
 
     controller._complete_automatic_transition(controller.deck_a, track.id, queue_id)
     controller.deck_a.load(track)
@@ -3975,6 +4169,8 @@ def test_delayed_completion_does_not_overwrite_restarted_queue_entry(tmp_path: P
     entry = controller._queue_service.entry(queue_id)
     assert entry is not None
     assert entry.status == QueueStatus.PLAYING
+    controller._drain_background_callbacks()
+    assert autoload_calls == []
 
 
 def test_transition_completion_guard_rejects_duplicate_execution(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@ import sqlite3
 import tracemalloc
 from time import monotonic, sleep
 from pathlib import Path
-from threading import Event, Lock, Thread, current_thread, main_thread
+from threading import Lock, Thread, current_thread, main_thread
 from collections.abc import Callable
 from typing import Protocol, TypeVar
 from uuid import uuid4
@@ -273,6 +273,48 @@ class MainView(Protocol):
     def confirm_replace(self, deck_id: str) -> bool: ...
     def confirm_queue_cue_change(self, status: str) -> bool: ...
     def schedule(self, delay_ms: int, callback: object) -> object: ...
+
+
+class _TransitionAutoloadCoordinator:
+    """Publish one autoload only after cleanup and all queue commits succeed."""
+
+    def __init__(self, queue_ids: set[int], publish: Callable[[], None]) -> None:
+        self._queue_ids = frozenset(queue_ids)
+        self._publish = publish
+        self._cleanup_result: bool | None = None
+        self._persistence_results: dict[int, bool] = {}
+        self._published = False
+        self._lock = Lock()
+
+    def cleanup_finished(self, success: bool) -> None:
+        callback = None
+        with self._lock:
+            if self._cleanup_result is not None:
+                return
+            self._cleanup_result = success
+            callback = self._ready_callback()
+        if callback is not None:
+            callback()
+
+    def persistence_finished(self, queue_id: int, success: bool) -> None:
+        callback = None
+        with self._lock:
+            if queue_id not in self._queue_ids or queue_id in self._persistence_results:
+                return
+            self._persistence_results[queue_id] = success
+            callback = self._ready_callback()
+        if callback is not None:
+            callback()
+
+    def _ready_callback(self) -> Callable[[], None] | None:
+        if self._published or self._cleanup_result is not True:
+            return None
+        if set(self._persistence_results) != set(self._queue_ids):
+            return None
+        if not all(self._persistence_results.values()):
+            return None
+        self._published = True
+        return self._publish
 
 
 class MainController:
@@ -4939,11 +4981,44 @@ class MainController:
             with self._performance.measure(
                 "transition_completion.prepare_next", warning_threshold_ms=5.0
             ):
-                cleanup_complete = Event()
+                with self._queue_playback_generation_lock:
+                    expected_generations = {
+                        queue_id: self._queue_playback_generations.get(queue_id, 0)
+                        for queue_id in queue_ids
+                    }
+
+                def publish_autoload() -> None:
+                    if self._closed:
+                        return
+
+                    def autoload_if_current() -> None:
+                        if self._closed:
+                            return
+                        with self._queue_playback_generation_lock:
+                            current = all(
+                                self._queue_playback_generations.get(queue_id, 0) == generation
+                                for queue_id, generation in expected_generations.items()
+                            )
+                        if (
+                            not current
+                            or self._deck_queue_ids.get(outgoing.model.deck_id) is not None
+                        ):
+                            self._logger.info(
+                                "Verspäteter Autoload für Deck %s wurde verworfen",
+                                outgoing.model.deck_id,
+                            )
+                            return
+                        self._auto_load()
+
+                    self._publish_gui_callback(
+                        autoload_if_current,
+                        "transition_completion_autoload",
+                        coalesce_key=f"autoload-{outgoing.model.deck_id}",
+                    )
+
+                autoload = _TransitionAutoloadCoordinator(queue_ids, publish_autoload)
                 if outgoing_cleanup is None:
-                    cleanup_complete.set()
-                    if not queue_ids:
-                        self._view.schedule(0, self._auto_load)
+                    autoload.cleanup_finished(True)
                 else:
 
                     def cleanup_outgoing_deck() -> None:
@@ -4955,14 +5030,15 @@ class MainController:
                                 context={"deck_id": outgoing.model.deck_id},
                             ):
                                 outgoing_cleanup()
-                        finally:
-                            cleanup_complete.set()
-                        if not queue_ids and not self._closed:
-                            self._publish_gui_callback(
-                                self._auto_load,
-                                "transition_cleanup_autoload",
-                                coalesce_key=f"autoload-{outgoing.model.deck_id}",
+                        except Exception:
+                            autoload.cleanup_finished(False)
+                            self._logger.exception(
+                                "Backend-Cleanup für Deck %s ist fehlgeschlagen; "
+                                "Autoload bleibt gesperrt",
+                                outgoing.model.deck_id,
                             )
+                            raise
+                        autoload.cleanup_finished(True)
 
                     self._start_worker(
                         cleanup_outgoing_deck,
@@ -4987,7 +5063,7 @@ class MainController:
                     self._enqueue_queue_persist(
                         queue_id,
                         outgoing.model.deck_id,
-                        cleanup_complete=cleanup_complete,
+                        autoload=autoload,
                     )
             self._diagnostic_scenario.transition_completed()
         finally:
@@ -5043,7 +5119,7 @@ class MainController:
         queue_id: int,
         deck_id: str,
         *,
-        cleanup_complete: Event | None = None,
+        autoload: _TransitionAutoloadCoordinator | None = None,
     ) -> None:
         """Persist the already-applied in-memory queue completion serially."""
         self._diagnostic_scenario.persistence_submitted()
@@ -5091,21 +5167,19 @@ class MainController:
                                         queue_id,
                                         deck_id,
                                     )
-                                elif cleanup_complete is not None:
-                                    cleanup_complete.wait()
-                                    if not self._closed:
-                                        self._publish_gui_callback(
-                                            self._auto_load,
-                                            "transition_persist_autoload",
-                                            coalesce_key=f"autoload-{deck_id}",
-                                        )
+                                if autoload is not None:
+                                    autoload.persistence_finished(queue_id, completed)
                             else:
                                 self._logger.info(
                                     "Veralteter Queue-Abschluss für Eintrag %s verworfen",
                                     queue_id,
                                 )
+                                if autoload is not None:
+                                    autoload.persistence_finished(queue_id, False)
                 self._diagnostic_scenario.persistence_completed()
             except Exception:
+                if autoload is not None:
+                    autoload.persistence_finished(queue_id, False)
                 self._diagnostic_scenario.persistence_failed()
                 raise
 
@@ -5117,6 +5191,8 @@ class MainController:
             executor=self._persistence_executor,
         )
         if not accepted:
+            if autoload is not None:
+                autoload.persistence_finished(queue_id, False)
             self._diagnostic_scenario.persistence_failed()
 
     @staticmethod
