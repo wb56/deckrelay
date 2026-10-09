@@ -37,6 +37,23 @@ Bitte nutze dafur die Issue-Templates im Reiter "Issues".
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
+Für kompakte lokale Testläufe steht `scripts\Invoke-DevTests.ps1` zur Verfügung:
+
+```powershell
+# T1: explizite Datei/Node-ID und optional ein pytest-Ausdruck
+.\scripts\Invoke-DevTests.ps1 quick -Tests tests/test_queue_controller.py -Keyword "enqueue"
+
+# Benannte fachliche Regressionstestgruppe aus scripts/test-groups.psd1
+.\scripts\Invoke-DevTests.ps1 regression -Group automatic_selection
+
+# Vollständiger pytest-Lauf
+.\scripts\Invoke-DevTests.ps1 full
+```
+
+Das Skript verwendet ausschließlich die Projekt-Venv, zeigt eine kurze Zusammenfassung und
+speichert die vollständige Ausgabe unter `logs/dev-tests/`. Die Profile ersetzen weder die
+übrigen T2-Prüfungen noch die verbindlichen CI-Gates.
+
 Der Pull Request soll Zweck, zugehöriges Issue, Risiken und den Testnachweis nennen.
 
 ## Lizenz der Beiträge
