@@ -103,9 +103,13 @@ GitHubs SHA-Bindung `--match-head-commit`. Verlangt Branch-Protection oder ein w
 Ruleset formelle GitHub-Approvals, muss GitHubs `reviewDecision` diese als erfüllt melden;
 das Einzelentwicklerverfahren ersetzt oder umgeht sie niemals.
 
-Rulesets werden gegen den tatsächlichen PR-Basisbranch ausgewertet. Include- und
-Exclude-Muster müssen eindeutig interpretierbar sein; unbekannte Bedingungen, nicht
-lesbare Schutzregeln oder API-Fehler führen zu `BLOCKED`.
+Klassische Branch-Protection wird mit einem separaten HTTP-Status-Probe geprüft. Nur ein
+eindeutiger HTTP-404 bei fehlgeschlagenem API-Aufruf bedeutet „nicht vorhanden“; 401, 403,
+5xx, Netzwerkfehler und widersprüchliche Zustände führen zu `BLOCKED`. Ruleset-Muster
+werden nicht lokal nachgebildet. Stattdessen fragt das Skript über GitHubs
+branch-spezifischen Endpoint `rules/branches/<basisbranch>` ausschließlich die von GitHub
+selbst als wirksam ermittelten Regeln ab. Ist diese Ermittlung nicht möglich, folgt
+ebenfalls `BLOCKED`.
 
 Lokale Logs enthalten ausschließlich Aktionsname, freigegebene Werkzeug-/Operationsnamen
 und Exit-Codes. Befehlsargumente, API-Antworten sowie Standardausgabe und Fehlerausgabe

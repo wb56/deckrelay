@@ -151,23 +151,23 @@ if ($joined.Contains('events')) {
     exit 0
 }
 if ($joined.Contains('branches/main/protection')) {
-    if ($scenario -eq 'protection-unreadable') { [Console]::Error.WriteLine('API_SECRET_PAYLOAD'); exit 1 }
-    if ($scenario -eq 'protection') { '{"required_pull_request_reviews":{"required_approving_review_count":1}}' }
-    else { '{}' }
+    if ($joined.Contains('--include')) {
+        if ($scenario -eq 'protection-403-with-404-text') { 'HTTP/2.0 403 Forbidden'; [Console]::Error.WriteLine('request 404 API_SECRET_PAYLOAD'); exit 1 }
+        if ($scenario -eq 'protection-500') { 'HTTP/2.0 500 Internal Server Error'; exit 1 }
+        if ($scenario -eq 'protection-network') { [Console]::Error.WriteLine('network API_SECRET_PAYLOAD 404'); exit 1 }
+        if ($scenario -eq 'protection') { 'HTTP/2.0 200 OK'; exit 0 }
+        'HTTP/2.0 404 Not Found'; exit 1
+    }
+    if ($scenario -eq 'protection') { '{"required_pull_request_reviews":{"required_approving_review_count":1}}'; exit 0 }
+    [Console]::Error.WriteLine('unexpected protection body request'); exit 9
+}
+if ($joined.Contains('rules/branches/main')) {
+    if ($scenario -eq 'rules-effective') { '[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]'; exit 0 }
+    if ($scenario -eq 'rules-ambiguous' -or $scenario -eq 'rules-network') { [Console]::Error.WriteLine('effective rules unavailable API_SECRET_PAYLOAD'); exit 1 }
+    '[]'
     exit 0
 }
-if ($joined.Contains('rulesets?includes_parents=true')) {
-    if ($scenario -eq 'ruleset-unknown-state') { '[{"id":1,"target":"branch","enforcement":"mystery"}]' }
-    elseif ($scenario -in @('ruleset','ruleset-nonmatching','ruleset-unknown-pattern','ruleset-unreadable')) { '[{"id":1,"target":"branch","enforcement":"active"}]' }
-    else { '[]' }
-    exit 0
-}
-if ($joined.Contains('rulesets/1')) {
-    if ($scenario -eq 'ruleset-unreadable') { [Console]::Error.WriteLine('API_SECRET_PAYLOAD'); exit 1 }
-    if ($scenario -eq 'ruleset-nonmatching') { '{"conditions":{"ref_name":{"include":["refs/heads/release/*"],"exclude":[]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]}'; exit 0 }
-    if ($scenario -eq 'ruleset-unknown-pattern') { '{"conditions":{"ref_name":{"include":["refs/heads/[mn]ain"],"exclude":[]}},"rules":[]}'; exit 0 }
-    '{"conditions":{"ref_name":{"include":["refs/heads/m*"],"exclude":[]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]}'; exit 0
-}
+if ($joined.Contains('rulesets')) { [Console]::Error.WriteLine('ruleset pattern endpoint must not be used'); exit 99 }
 if ($args[0] -eq 'pr' -and $args[1] -eq 'merge') {
     [System.IO.File]::WriteAllText($env:FAKE_MERGE_FILE, $joined)
     'merged'; exit 0
@@ -192,11 +192,11 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'merge') {
         ("gates-failed", "gates", "FAIL"),
         ("conflict", "merge", "Mergefähigkeit"),
         ("protection", "merge", "Branch-Protection"),
-        ("ruleset", "merge", "Ruleset"),
-        ("ruleset-unknown-pattern", "merge", "Muster"),
-        ("ruleset-unknown-state", "merge", "Zustand"),
-        ("ruleset-unreadable", "merge", "nicht gelesen"),
-        ("protection-unreadable", "merge", "Branch-Protection"),
+        ("rules-effective", "merge", "Ruleset"),
+        ("rules-ambiguous", "merge", "wirksame GitHub-Regeln"),
+        ("protection-403-with-404-text", "merge", "Branch-Protection"),
+        ("protection-500", "merge", "Branch-Protection"),
+        ("protection-network", "merge", "Branch-Protection"),
     ],
 )
 def test_github_safety_failures_are_closed(
@@ -280,9 +280,8 @@ def test_merge_succeeds_with_distinct_sha_bound_attestations_and_no_formal_appro
     assert "--match-head-commit " + "a" * 40 in invocation
 
 
-def test_nonmatching_ruleset_does_not_apply_to_main(repository: Path, tmp_path: Path) -> None:
+def test_no_effective_ruleset_allows_attested_merge(repository: Path, tmp_path: Path) -> None:
     gh, env = write_fake_gh(tmp_path)
-    env["FAKE_GH_SCENARIO"] = "ruleset-nonmatching"
     result = run(
         "-Action",
         "merge",
@@ -307,7 +306,7 @@ def test_nonmatching_ruleset_does_not_apply_to_main(repository: Path, tmp_path: 
 
 def test_logs_never_persist_api_payloads_or_error_details(repository: Path, tmp_path: Path) -> None:
     gh, env = write_fake_gh(tmp_path)
-    env["FAKE_GH_SCENARIO"] = "protection-unreadable"
+    env["FAKE_GH_SCENARIO"] = "protection-403-with-404-text"
     result = run(
         "-Action",
         "merge",
@@ -328,6 +327,7 @@ def test_logs_never_persist_api_payloads_or_error_details(repository: Path, tmp_
         env=env,
     )
     assert result.returncode != 0
+    assert "API_SECRET_PAYLOAD" not in combined(result)
     logs = list((repository / "logs" / "dev-pr").glob("*.log"))
     assert len(logs) == 1
     log = logs[0].read_text(encoding="utf-8")

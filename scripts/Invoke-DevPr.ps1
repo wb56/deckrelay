@@ -62,10 +62,42 @@ function Invoke-External {
     )
     # Never persist arguments, stdout or stderr: all three may contain credentials or API data.
     $script:LogLines.Add("CALL: $Operation")
-    $global:LASTEXITCODE = 0
-    $output = & $Executable @Arguments 2>&1
-    $code = $LASTEXITCODE
-    if ($null -eq $code) { $code = 0 }
+    $process = $null
+    try {
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        if ([System.IO.Path]::GetExtension($Executable) -eq ".ps1") {
+            $startInfo.FileName = "pwsh"
+            foreach ($prefix in @("-NoLogo", "-NoProfile", "-File", $Executable)) {
+                [void]$startInfo.ArgumentList.Add($prefix)
+            }
+        }
+        else {
+            $startInfo.FileName = $Executable
+        }
+        foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
+        $startInfo.WorkingDirectory = $RepositoryRoot
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) { throw "start failed" }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        $code = $process.ExitCode
+        $output = ($stdout + [Environment]::NewLine + $stderr).Trim()
+    }
+    catch {
+        $code = 127
+        $output = ""
+    }
+    finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
     $script:LogLines.Add("RESULT: exit=$code")
     if ($code -ne 0 -and -not $AllowFailure) {
         Stop-Failed "Werkzeugaufruf fehlgeschlagen ($Executable, Exit-Code $code)."
@@ -186,85 +218,51 @@ function Assert-OwnerAttestation {
     }
 }
 
-function Get-RulePatternResult {
-    param([string]$Pattern, [string]$BranchName)
-    if ($Pattern -eq "~DEFAULT_BRANCH" -or $Pattern -eq "~ALL") {
-        return [pscustomobject]@{ Known = $true; Matches = $true }
-    }
-    if ($Pattern -notmatch '^(refs/heads/)?[A-Za-z0-9._/*?-]+$') {
-        return [pscustomobject]@{ Known = $false; Matches = $false }
-    }
-    $candidate = if ($Pattern.StartsWith("refs/heads/")) { "refs/heads/$BranchName" } else { $BranchName }
-    $expression = [regex]::Escape($Pattern)
-    $expression = $expression.Replace("\*\*", ".*")
-    $expression = $expression.Replace("\*", "[^/]*")
-    $expression = $expression.Replace("\?", "[^/]")
-    $matches = [regex]::IsMatch($candidate, "^$expression$", [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
-    return [pscustomobject]@{ Known = $true; Matches = $matches }
-}
-
-function Test-RulesetApplies {
-    param($Ruleset, [string]$BranchName)
-    if ($null -eq $Ruleset.conditions -or $null -eq $Ruleset.conditions.ref_name) {
-        Stop-Blocked "GitHub-Ruleset enthält unbekannte Branch-Bedingungen."
-    }
-    $includes = @($Ruleset.conditions.ref_name.include)
-    $excludes = @($Ruleset.conditions.ref_name.exclude)
-    if ($includes.Count -eq 0) { Stop-Blocked "GitHub-Ruleset enthält kein prüfbares Branch-Muster." }
-    $includeMatch = $false
-    foreach ($pattern in $includes) {
-        $result = Get-RulePatternResult ([string]$pattern) $BranchName
-        if (-not $result.Known) { Stop-Blocked "GitHub-Ruleset enthält ein unbekanntes Branch-Muster." }
-        if ($result.Matches) { $includeMatch = $true }
-    }
-    foreach ($pattern in $excludes) {
-        $result = Get-RulePatternResult ([string]$pattern) $BranchName
-        if (-not $result.Known) { Stop-Blocked "GitHub-Ruleset enthält ein unbekanntes Branch-Muster." }
-        if ($result.Matches) { return $false }
-    }
-    return $includeMatch
-}
-
 function Assert-BranchProtection {
     param([string]$Name, $Pr)
     $baseBranch = [string]$Pr.baseRefName
     if ([string]::IsNullOrWhiteSpace($baseBranch)) { Stop-Blocked "PR-Basisbranch ist unbekannt." }
     $encodedBranch = [uri]::EscapeDataString($baseBranch)
-    $result = Invoke-Gh @("api", "repos/$Name/branches/$encodedBranch/protection") -AllowFailure
-    if ($result.Code -ne 0 -and $result.Text -notmatch '(?i)(404|not protected)') {
+    $protectionPath = "repos/$Name/branches/$encodedBranch/protection"
+    $probe = Invoke-Gh @("api", "--include", "--silent", $protectionPath) -AllowFailure
+    $statusMatches = [regex]::Matches($probe.Text, '(?m)^HTTP/\S+\s+(?<status>\d{3})(?:\s|$)')
+    if ($statusMatches.Count -ne 1) {
+        Stop-Blocked "HTTP-Status der Branch-Protection konnte nicht eindeutig ermittelt werden."
+    }
+    $httpStatus = [int]$statusMatches[0].Groups["status"].Value
+    if ($httpStatus -eq 404 -and $probe.Code -ne 0) {
+        $protectionExists = $false
+    }
+    elseif ($httpStatus -eq 200 -and $probe.Code -eq 0) {
+        $protectionExists = $true
+    }
+    else {
         Stop-Blocked "Branch-Protection konnte nicht zuverlässig geprüft werden."
     }
-    if ($result.Code -eq 0) {
-        $protection = ConvertFrom-JsonSafe $result.Text "Branch-Protection"
+    if ($protectionExists) {
+        $protectionResult = Invoke-Gh @("api", $protectionPath) -AllowFailure
+        if ($protectionResult.Code -ne 0) {
+            Stop-Blocked "Branch-Protection konnte nicht gelesen werden."
+        }
+        $protection = ConvertFrom-JsonSafe $protectionResult.Text "Branch-Protection"
         $required = $protection.required_pull_request_reviews.required_approving_review_count
         if ($null -ne $required -and [int]$required -gt 0 -and $Pr.reviewDecision -ne "APPROVED") {
             Stop-Blocked "Branch-Protection verlangt eine formelle GitHub-Review."
         }
     }
-    $rulesetResult = Invoke-Gh @("api", "repos/$Name/rulesets?includes_parents=true") -AllowFailure
-    if ($rulesetResult.Code -ne 0) {
-        Stop-Blocked "GitHub-Rulesets konnten nicht zuverlässig geprüft werden."
+    # GitHub resolves include/exclude patterns server-side for this exact base branch.
+    $rulesResult = Invoke-Gh @("api", "repos/$Name/rules/branches/$encodedBranch") -AllowFailure
+    if ($rulesResult.Code -ne 0) {
+        Stop-Blocked "Wirksame GitHub-Regeln konnten nicht zuverlässig geprüft werden."
     }
-    $rulesets = @(ConvertFrom-JsonSafe $rulesetResult.Text "GitHub-Rulesets")
-    foreach ($summary in $rulesets) {
-        if ($null -eq $summary.id -or $summary.target -notin @("branch", "tag", "push") -or
-            $summary.enforcement -notin @("active", "evaluate", "disabled")) {
-            Stop-Blocked "GitHub-Ruleset enthält einen unbekannten Zustand."
+    $rules = @(ConvertFrom-JsonSafe $rulesResult.Text "wirksame GitHub-Regeln")
+    foreach ($rule in @($rules | Where-Object { $_.type -eq "pull_request" })) {
+        $rulesetRequired = $rule.parameters.required_approving_review_count
+        if ($null -eq $rulesetRequired) {
+            Stop-Blocked "Wirksames GitHub-Ruleset enthält unbekannte Review-Anforderungen."
         }
-        if ($summary.target -ne "branch" -or $summary.enforcement -ne "active") { continue }
-        $detailResult = Invoke-Gh @("api", "repos/$Name/rulesets/$($summary.id)") -AllowFailure
-        if ($detailResult.Code -ne 0) { Stop-Blocked "GitHub-Ruleset konnte nicht gelesen werden." }
-        $detail = ConvertFrom-JsonSafe $detailResult.Text "GitHub-Ruleset"
-        if (-not (Test-RulesetApplies $detail $baseBranch)) { continue }
-        foreach ($rule in @($detail.rules | Where-Object { $_.type -eq "pull_request" })) {
-            $rulesetRequired = $rule.parameters.required_approving_review_count
-            if ($null -eq $rulesetRequired) {
-                Stop-Blocked "GitHub-Ruleset enthält unbekannte Review-Anforderungen."
-            }
-            if ($null -ne $rulesetRequired -and [int]$rulesetRequired -gt 0 -and
-                $Pr.reviewDecision -ne "APPROVED") {
-                Stop-Blocked "GitHub-Ruleset verlangt eine formelle GitHub-Review."
-            }
+        if ([int]$rulesetRequired -gt 0 -and $Pr.reviewDecision -ne "APPROVED") {
+            Stop-Blocked "GitHub-Ruleset verlangt eine formelle GitHub-Review."
         }
     }
 }
