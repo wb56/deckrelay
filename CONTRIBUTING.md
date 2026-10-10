@@ -56,6 +56,58 @@ speichert die vollständige Ausgabe unter `logs/dev-tests/`. Die Profile ersetze
 
 Der Pull Request soll Zweck, zugehöriges Issue, Risiken und den Testnachweis nennen.
 
+## Deterministische PR-Automatisierung
+
+`scripts/Invoke-DevPr.ps1` führt Git- und GitHub-Schritte einzeln und fail-closed aus.
+Jeder Aufruf schreibt das vollständige lokale Protokoll nach `logs/dev-pr/`; die Konsole
+zeigt nur Status, Ergebnis und Logpfad. Das Skript setzt `safe.directory` ausschließlich
+für den jeweiligen Git-Aufruf und ändert keine globale Git-Konfiguration.
+
+```powershell
+# Übersicht und lokale Vorbedingungen
+.\scripts\Invoke-DevPr.ps1 -Action status
+.\scripts\Invoke-DevPr.ps1 -Action validate
+
+# Nur die genannten Dateien committen und den Branch veröffentlichen
+.\scripts\Invoke-DevPr.ps1 -Action commit -Files scripts/Invoke-DevPr.ps1,tests/test_dev_pr_script.py -Message "Add deterministic PR automation"
+.\scripts\Invoke-DevPr.ps1 -Action publish -Repository wb56/deckrelay
+
+# Gates immer an den vollständigen, erwarteten Head-SHA binden
+.\scripts\Invoke-DevPr.ps1 -Action gates -Repository wb56/deckrelay -PrNumber 54 -ExpectedHeadSha <40-stelliger-sha>
+```
+
+Die Zustandsfolge ist `lokal -> validiert -> committed -> published -> gates passed ->
+reviewed -> owner-approved -> mergeable -> merged -> cleanup`. Die Aktionen überspringen
+keinen Zustand. Wiederholte Leseaktionen sind sicher; `commit` meldet ohne Änderungen
+`NOOP`, `publish` erkennt einen vorhandenen offenen PR und `cleanup` meldet bei einem
+bereits fehlenden Branch `NOOP`.
+
+`REVIEW-REQUIRED` ist der Standard und erlaubt dem Skript keinen Merge. Für
+`OWNER-APPROVED` gelten zusätzlich alle folgenden Nachweise für denselben vollständigen
+Head-SHA:
+
+- eine GitHub-Review mit Status `APPROVED` von einem menschlichen Account, der nicht der
+  PR-Autor ist;
+- die beiden aktuell am PR gesetzten Labels `owner-approved` und
+  `head:<40-stelliger-head-sha>`;
+- GitHub-Label-Ereignisse, aus denen hervorgeht, dass der Repository-Eigentümer beide
+  Labels gesetzt hat;
+- erfolgreiche Quality Gates, erfüllte Branch-Protection und eindeutige Mergefähigkeit.
+
+Das Label ist die ausdrückliche Eigentümerfreigabe. Ein Kommentar, eine Codex-Aussage,
+ein Label für einen älteren Commit oder nur die Option `-ConfirmMerge` genügt nicht. Der
+Merge erfordert dennoch einen eigenen Aufruf mit `-Mode OWNER-APPROVED -ConfirmMerge` und
+verwendet GitHubs SHA-Bindung `--match-head-commit`. Technisch erzwungene GitHub-Reviews
+werden dadurch nicht ersetzt.
+
+`BLOCKED` beendet die Aktion bei schmutzigem Arbeitsbaum, falschem Branch, fehlenden oder
+unbekannten Berechtigungen, abweichendem SHA, fehlender Review/Freigabe, laufenden Gates,
+unklarem Protection-Zustand, Mergekonflikt oder nicht sicher zuordenbarer Bereinigung.
+Fehlgeschlagene Gates ergeben `FAIL`. Es gibt weder Force-Push noch `git add .`, direkte
+Main-Commits, Schutzregeländerungen oder eine automatische Freigabe. `cleanup` löscht nur
+einen lokalen `feature/*`-Branch, der bereits in `main` enthalten und an keinen Worktree
+gebunden ist; Remote-Bereinigung bleibt eine bewusste separate Verwaltungsaktion.
+
 ## Lizenz der Beiträge
 
 Mit dem Einreichen eines Beitrags erklärst du, dass du ihn unter derselben Lizenz
