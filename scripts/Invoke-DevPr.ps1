@@ -125,6 +125,15 @@ function ConvertFrom-JsonSafe {
     catch { Stop-Blocked "Unbekannte oder ungültige GitHub-Antwort für $Context." }
 }
 
+function Expand-PagedData {
+    param($Data)
+    $items = @($Data)
+    if ($items.Count -gt 0 -and $items[0] -is [System.Array]) {
+        return @($items | ForEach-Object { $_ })
+    }
+    return $items
+}
+
 function Get-CurrentBranch {
     (Invoke-Git @("branch", "--show-current")).Text.Trim()
 }
@@ -169,7 +178,7 @@ function Get-PrData {
     if ($PrNumber -le 0) { Stop-Blocked "Eine PR-Nummer ist erforderlich." }
     $response = Invoke-Gh @(
         "pr", "view", [string]$PrNumber, "--repo", $Name, "--json",
-        "number,state,isDraft,headRefOid,headRefName,baseRefName,author,labels,mergeable,reviewDecision"
+        "number,state,isDraft,headRefOid,headRefName,baseRefName,author,labels,mergeable,reviewDecision,commits"
     )
     ConvertFrom-JsonSafe $response.Text "PR-Status"
 }
@@ -199,22 +208,71 @@ function Get-GateState {
 }
 
 function Assert-OwnerAttestation {
-    param([string]$Name, $Pr, [string[]]$Labels, [string]$Description)
+    param([string]$Name, $Pr, [string]$Label, [string]$Type, [string]$Description)
     $repoData = ConvertFrom-JsonSafe (Invoke-Gh @("repo", "view", "--repo", $Name, "--json", "owner")).Text "Eigentümer"
     $owner = $repoData.owner.login
     if ([string]::IsNullOrWhiteSpace($owner)) { Stop-Blocked "Repository-Eigentümer ist unbekannt." }
     $activeLabels = @($Pr.labels | ForEach-Object { $_.name })
-    if (@($Labels | Where-Object { $_ -notin $activeLabels }).Count -gt 0) {
+    if ($Label -cnotin $activeLabels) {
         Stop-Blocked "$Description ist am aktuellen PR nicht aktiv."
     }
-    $events = @(ConvertFrom-JsonSafe (Invoke-Gh @("api", "repos/$Name/issues/$PrNumber/events")).Text $Description)
-    foreach ($label in $Labels) {
-        $valid = @($events | Where-Object {
-            $_.event -eq "labeled" -and $_.label.name -ceq $label -and $_.actor.login -eq $owner
-        })
-        if ($valid.Count -eq 0) {
-            Stop-Blocked "$Description '$label' durch den Repository-Eigentümer fehlt."
+
+    $headCommit = @($Pr.commits | Where-Object { $_.oid -ceq $ExpectedHeadSha })
+    if ($headCommit.Count -ne 1 -or [string]::IsNullOrWhiteSpace($headCommit[0].committedDate)) {
+        Stop-Blocked "$Description kann zeitlich nicht an den Head-SHA gebunden werden."
+    }
+    try { $headTime = [DateTimeOffset]::Parse([string]$headCommit[0].committedDate) }
+    catch { Stop-Blocked "$Description enthält keine überprüfbare Head-Zeit."
+    }
+
+    # Attestations are read-only inputs. This script deliberately has no path that creates them.
+    $commentPages = ConvertFrom-JsonSafe (Invoke-Gh @(
+            "api", "repos/$Name/issues/$PrNumber/comments?per_page=100", "--paginate", "--slurp"
+        )).Text $Description
+    $comments = @(Expand-PagedData $commentPages)
+    $escapedType = [regex]::Escape($Type)
+    $escapedPr = [regex]::Escape([string]$PrNumber)
+    $pattern = "^DECKRELAY-ATTESTATION-V1 type=$escapedType pr=$escapedPr head=(?<sha>[0-9a-f]{40}) decision=(?<decision>approved|revoked)$"
+    $records = @()
+    foreach ($comment in $comments) {
+        $match = [regex]::Match([string]$comment.body, $pattern)
+        if ($match.Success -and $comment.user.login -eq $owner -and
+            $comment.user.type -eq "User" -and $comment.author_association -eq "OWNER") {
+            try {
+                $created = [DateTimeOffset]::Parse([string]$comment.created_at)
+                $updated = [DateTimeOffset]::Parse([string]$comment.updated_at)
+            }
+            catch { Stop-Blocked "$Description enthält ungültige serverseitige Zeitangaben." }
+            if ($created -ne $updated) { Stop-Blocked "$Description wurde nachträglich verändert." }
+            $records += [pscustomobject]@{
+                Id = [long]$comment.id
+                Created = $created
+                Sha = $match.Groups["sha"].Value
+                Decision = $match.Groups["decision"].Value
+            }
         }
+    }
+    if ($records.Count -eq 0) { Stop-Blocked "$Description durch den Repository-Eigentümer fehlt." }
+    $latest = @($records | Sort-Object Created, Id -Descending)[0]
+    if ($latest.Sha -cne $ExpectedHeadSha -or $latest.Decision -ne "approved" -or $latest.Created -le $headTime) {
+        Stop-Blocked "$Description fehlt, ist veraltet oder widersprüchlich."
+    }
+
+    $eventPages = ConvertFrom-JsonSafe (Invoke-Gh @(
+            "api", "repos/$Name/issues/$PrNumber/events?per_page=100", "--paginate", "--slurp"
+        )).Text $Description
+    $events = @(Expand-PagedData $eventPages)
+    $validLabelEvents = @()
+    foreach ($event in $events) {
+        if ($event.event -eq "labeled" -and $event.label.name -ceq $Label -and
+            $event.actor.login -eq $owner) {
+            try { $eventTime = [DateTimeOffset]::Parse([string]$event.created_at) }
+            catch { Stop-Blocked "$Description enthält eine ungültige Label-Ereigniszeit." }
+            if ($eventTime -ge $latest.Created) { $validLabelEvents += $event }
+        }
+    }
+    if ($validLabelEvents.Count -eq 0) {
+        Stop-Blocked "$Description '$Label' wurde nicht gültig durch den Repository-Eigentümer aktiviert."
     }
 }
 
@@ -367,8 +425,8 @@ switch ($Action) {
         $pr = Get-PrData $name
         Assert-ExpectedHead $pr
         if ($pr.state -ne "OPEN" -or $pr.isDraft -eq $true) { Stop-Blocked "PR ist nicht offen und review-bereit." }
-        Assert-OwnerAttestation $name $pr @("technical-reviewed", "reviewed-head:$ExpectedHeadSha") "Technischer Review-Nachweis"
-        Assert-OwnerAttestation $name $pr @("owner-approved", "approved-head:$ExpectedHeadSha") "Eigentümerfreigabe"
+        Assert-OwnerAttestation $name $pr "technical-reviewed" "technical-review" "Technischer Review-Nachweis"
+        Assert-OwnerAttestation $name $pr "owner-approved" "owner-approval" "Eigentümerfreigabe"
         Get-GateState $name $pr
         Assert-BranchProtection $name $pr
         if ($pr.mergeable -ne "MERGEABLE") { Stop-Blocked "Mergefähigkeit ist nicht eindeutig gegeben." }

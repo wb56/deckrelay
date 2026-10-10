@@ -127,10 +127,10 @@ if ($args[0] -eq 'repo' -and $args[1] -eq 'view') { '{"nameWithOwner":"acme/proj
 if ($args[0] -eq 'pr' -and $args[1] -eq 'view') {
     $mergeable = if ($scenario -eq 'conflict') { 'CONFLICTING' } else { 'MERGEABLE' }
     $labels = @()
-    if ($scenario -ne 'review-missing') { $labels += @(@{name='technical-reviewed'}, @{name="reviewed-head:$sha"}) }
-    if ($scenario -ne 'owner-missing') { $labels += @(@{name='owner-approved'}, @{name="approved-head:$sha"}) }
+    if ($scenario -ne 'review-missing') { $labels += @{name='technical-reviewed'} }
+    if ($scenario -ne 'owner-missing') { $labels += @{name='owner-approved'} }
     $labels = $labels | ConvertTo-Json -Compress
-    "{`"number`":7,`"state`":`"OPEN`",`"isDraft`":false,`"headRefOid`":`"$sha`",`"headRefName`":`"feature/test`",`"baseRefName`":`"main`",`"author`":{`"login`":`"author`"},`"labels`":$labels,`"mergeable`":`"$mergeable`",`"reviewDecision`":`"`"}"
+    "{`"number`":7,`"state`":`"OPEN`",`"isDraft`":false,`"headRefOid`":`"$sha`",`"headRefName`":`"feature/test`",`"baseRefName`":`"main`",`"author`":{`"login`":`"author`"},`"labels`":$labels,`"mergeable`":`"$mergeable`",`"reviewDecision`":`"`",`"commits`": [{`"oid`":`"$sha`",`"committedDate`":`"2026-10-10T10:00:00Z`"}]}"
     exit 0
 }
 if ($args[0] -eq 'pr' -and $args[1] -eq 'checks') {
@@ -145,9 +145,26 @@ if ($joined.Contains('reviews')) {
 }
 if ($joined.Contains('events')) {
     $events = @()
-    if ($scenario -ne 'review-missing') { $events += @(@{event='labeled';actor=@{login='owner'};label=@{name='technical-reviewed'}}, @{event='labeled';actor=@{login='owner'};label=@{name="reviewed-head:$sha"}}) }
-    if ($scenario -ne 'owner-missing') { $events += @(@{event='labeled';actor=@{login='owner'};label=@{name='owner-approved'}}, @{event='labeled';actor=@{login='owner'};label=@{name="approved-head:$sha"}}) }
-    $events | ConvertTo-Json -Compress -Depth 5
+    if ($scenario -ne 'review-missing') { $events += @{event='labeled';created_at='2026-10-10T10:06:00Z';actor=@{login='owner'};label=@{name='technical-reviewed'}} }
+    if ($scenario -ne 'owner-missing') { $events += @{event='labeled';created_at='2026-10-10T10:08:00Z';actor=@{login='owner'};label=@{name='owner-approved'}} }
+    ConvertTo-Json -InputObject (, $events) -Compress -Depth 5
+    exit 0
+}
+if ($joined.Contains('issues/7/comments')) {
+    $comments = @()
+    $attestationAuthor = if ($scenario -eq 'attestation-wrong-author') { 'author' } else { 'owner' }
+    $technicalSha = if ($scenario -eq 'review-stale') { 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } else { $sha }
+    $technicalTime = if ($scenario -eq 'review-too-early') { '2026-10-10T09:59:00Z' } else { '2026-10-10T10:05:00Z' }
+    if ($scenario -ne 'review-missing') {
+        $comments += @{id=101;created_at=$technicalTime;updated_at=$technicalTime;author_association='OWNER';user=@{login=$attestationAuthor;type='User'};body="DECKRELAY-ATTESTATION-V1 type=technical-review pr=7 head=$technicalSha decision=approved"}
+    }
+    if ($scenario -ne 'owner-missing') {
+        $comments += @{id=102;created_at='2026-10-10T10:07:00Z';updated_at='2026-10-10T10:07:00Z';author_association='OWNER';user=@{login='owner';type='User'};body="DECKRELAY-ATTESTATION-V1 type=owner-approval pr=7 head=$sha decision=approved"}
+    }
+    if ($scenario -eq 'review-revoked') {
+        $comments += @{id=103;created_at='2026-10-10T10:09:00Z';updated_at='2026-10-10T10:09:00Z';author_association='OWNER';user=@{login='owner';type='User'};body="DECKRELAY-ATTESTATION-V1 type=technical-review pr=7 head=$sha decision=revoked"}
+    }
+    ConvertTo-Json -InputObject (, $comments) -Compress -Depth 5
     exit 0
 }
 if ($joined.Contains('branches/main/protection')) {
@@ -188,6 +205,10 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'merge') {
         ("permissions", "publish", "BLOCKED"),
         ("review-missing", "merge", "Review"),
         ("owner-missing", "merge", "Eigentümerfreigabe"),
+        ("review-stale", "merge", "Review"),
+        ("review-too-early", "merge", "Review"),
+        ("review-revoked", "merge", "Review"),
+        ("attestation-wrong-author", "merge", "Review"),
         ("gates-running", "gates", "BLOCKED"),
         ("gates-failed", "gates", "FAIL"),
         ("conflict", "merge", "Mergefähigkeit"),
@@ -278,6 +299,38 @@ def test_merge_succeeds_with_distinct_sha_bound_attestations_and_no_formal_appro
     assert result.returncode == 0, combined(result)
     invocation = Path(env["FAKE_MERGE_FILE"]).read_text(encoding="utf-8")
     assert "--match-head-commit " + "a" * 40 in invocation
+
+
+def test_attestations_use_short_labels_and_read_only_pr_comments(
+    repository: Path, tmp_path: Path
+) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    result = run(
+        "-Action",
+        "merge",
+        "-RepositoryRoot",
+        str(repository),
+        "-GitHubExecutable",
+        str(gh),
+        "-Repository",
+        "acme/project",
+        "-PrNumber",
+        "7",
+        "-ExpectedHeadSha",
+        "a" * 40,
+        "-Mode",
+        "OWNER-APPROVED",
+        "-ConfirmMerge",
+        cwd=repository,
+        env=env,
+    )
+    assert result.returncode == 0, combined(result)
+    source = SCRIPT_SOURCE.read_text(encoding="utf-8")
+    assert "reviewed-head:" not in source
+    assert "approved-head:" not in source
+    assert "issues/$PrNumber/comments" in source
+    assert '"--paginate", "--slurp"' in source
+    assert '"--method", "POST"' not in source
 
 
 def test_no_effective_ruleset_allows_attested_merge(repository: Path, tmp_path: Path) -> None:

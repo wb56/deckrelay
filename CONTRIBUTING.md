@@ -86,18 +86,26 @@ bereits fehlenden Branch `NOOP`.
 `OWNER-APPROVED` gelten zusätzlich getrennte technische und eigentümerseitige
 Attestierungen für denselben vollständigen Head-SHA:
 
-- für eine abgeschlossene unabhängige technische Prüfung die aktiven Labels
-  `technical-reviewed` und `reviewed-head:<40-stelliger-head-sha>`;
-- für die ausdrückliche Eigentümerfreigabe die aktiven Labels `owner-approved` und
-  `approved-head:<40-stelliger-head-sha>`;
-- für jedes Label ein GitHub-Label-Ereignis, das den Repository-Eigentümer als Urheber
-  ausweist;
+GitHub begrenzt Labelnamen auf 100 Zeichen. Die Nachweise verwenden deshalb die kurzen,
+stabilen Labels und speichern den SHA getrennt in den PR-Attestierungen:
+
+- für eine abgeschlossene unabhängige technische Prüfung das aktive Label
+  `technical-reviewed` und einen PR-Kommentar exakt im Format
+  `DECKRELAY-ATTESTATION-V1 type=technical-review pr=<nr> head=<40-stelliger-head-sha> decision=approved`;
+- für die ausdrückliche Eigentümerfreigabe das aktive Label `owner-approved` und einen
+  getrennten PR-Kommentar mit `type=owner-approval` im selben Format;
+- für jeden Nachweis den Repository-Eigentümer als serverseitig ausgewiesenen Urheber,
+  unveränderte GitHub-Zeitstempel nach dem attestierten Commit und ein nachfolgendes
+  Label-Ereignis desselben Eigentümers;
 - erfolgreiche Quality Gates, erfüllte Branch-Protection und eindeutige Mergefähigkeit.
 
-Die technischen Labels bestätigen nur, dass ein unabhängiger technischer Bericht für den
-genannten SHA geprüft wurde; sie sind ausdrücklich keine GitHub-Approval. Die Owner-Labels
-sind davon getrennt die Merge-Freigabe. Kommentare, Codex-Aussagen, Labels für einen
-älteren Commit oder nur die Option `-ConfirmMerge` genügen nicht. Der Merge erfordert
+Die technische Attestierung bestätigt nur, dass ein unabhängiger technischer Bericht für
+den genannten SHA geprüft wurde; sie ist ausdrücklich keine GitHub-Approval. Die
+Owner-Attestierung ist davon getrennt die Merge-Freigabe. Das Skript liest diese
+Nachweise ausschließlich und besitzt keinen Pfad, um Kommentare oder Labels anzulegen;
+Codex darf sie weder erzeugen noch als menschliche Nachweise ausgeben. Fehlende,
+veraltete, bearbeitete oder widerrufene Nachweise sowie Labels für einen älteren Commit
+führen zu `BLOCKED`. Der Merge erfordert
 dennoch einen eigenen Aufruf mit `-Mode OWNER-APPROVED -ConfirmMerge` und verwendet
 GitHubs SHA-Bindung `--match-head-commit`. Verlangt Branch-Protection oder ein wirksames
 Ruleset formelle GitHub-Approvals, muss GitHubs `reviewDecision` diese als erfüllt melden;
