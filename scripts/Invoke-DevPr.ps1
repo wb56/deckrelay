@@ -8,6 +8,8 @@ param(
     [string]$Remote = "DeckRelay",
     [string[]]$Files,
     [string]$Message,
+    [string]$PrTitle,
+    [string]$PrBody,
     [int]$PrNumber,
     [string]$ExpectedHeadSha,
     [ValidateSet("REVIEW-REQUIRED", "OWNER-APPROVED")]
@@ -308,7 +310,13 @@ switch ($Action) {
         $existing = Invoke-Gh @("pr", "list", "--repo", $name, "--head", $branchName, "--state", "open", "--json", "number,url")
         $prs = @(ConvertFrom-JsonSafe $existing.Text "PR-Suche")
         if ($prs.Count -eq 0) {
-            $created = Invoke-Gh @("pr", "create", "--repo", $name, "--base", "main", "--head", $branchName, "--fill")
+            if ([string]::IsNullOrWhiteSpace($PrTitle) -or [string]::IsNullOrWhiteSpace($PrBody)) {
+                Stop-Blocked "Ein neuer PR erfordert expliziten Titel und Beschreibung."
+            }
+            $created = Invoke-Gh @(
+                "pr", "create", "--repo", $name, "--base", "main", "--head", $branchName,
+                "--title", $PrTitle, "--body", $PrBody
+            )
             Write-Result "PASS" "PUBLISH: PR erstellt`nPR: $($created.Text.Trim())`nLOG: $script:LogPath"
         }
         else { Write-Result "PASS" "PUBLISH: vorhandener PR #$($prs[0].number)`nPR: $($prs[0].url)`nLOG: $script:LogPath" }

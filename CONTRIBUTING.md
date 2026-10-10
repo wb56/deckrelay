@@ -70,7 +70,7 @@ für den jeweiligen Git-Aufruf und ändert keine globale Git-Konfiguration.
 
 # Nur die genannten Dateien committen und den Branch veröffentlichen
 .\scripts\Invoke-DevPr.ps1 -Action commit -Files scripts/Invoke-DevPr.ps1,tests/test_dev_pr_script.py -Message "Add deterministic PR automation"
-.\scripts\Invoke-DevPr.ps1 -Action publish -Repository wb56/deckrelay
+.\scripts\Invoke-DevPr.ps1 -Action publish -Repository wb56/deckrelay -PrTitle "Kurzer Zweck" -PrBody "Zweck, Issue, Risiken und Testnachweis"
 
 # Gates immer an den vollständigen, erwarteten Head-SHA binden
 .\scripts\Invoke-DevPr.ps1 -Action gates -Repository wb56/deckrelay -PrNumber 54 -ExpectedHeadSha <40-stelliger-sha>
