@@ -28,23 +28,27 @@ Bitte nutze dafur die Issue-Templates im Reiter "Issues".
 - Blockierende Datei-, Datenbank- und Audioarbeit gehört nicht in den GUI-Thread.
 - Neue Audiofunktionen müssen mit einem Fake-Backend testbar sein.
 - Code und Bezeichner sind englisch, sichtbare UI-Texte deutsch.
-- Vor dem Pull Request folgende Prüfungen ausführen:
+- Vor dem Pull Request die zum Risiko passende Testtiefe ausführen: gezielte T1-Tests,
+  relevante T2-Bereichsprüfungen und statische Prüfungen; T3 und T4 liefern anschließend
+  die PR- beziehungsweise Main-Evidenz. Ein vollständiger lokaler Pytest-Lauf ist nur
+  erforderlich, wenn Änderungsrisiko oder Workflow ihn sachlich verlangen.
+
+Die statischen T2-Prüfungen bleiben:
 
 ```powershell
 .\.venv\Scripts\python.exe -m ruff check src tests
 .\.venv\Scripts\python.exe -m black --check src tests
 .\.venv\Scripts\python.exe -m mypy src\party_player
-.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Für kompakte lokale Testläufe steht `scripts\Invoke-DevTests.ps1` zur Verfügung:
+Für lokale Testläufe ist `scripts\Invoke-DevTests.ps1` der bevorzugte Einstieg:
 
 ```powershell
 # T1: explizite Datei/Node-ID und optional ein pytest-Ausdruck
 .\scripts\Invoke-DevTests.ps1 quick -Tests tests/test_queue_controller.py -Keyword "enqueue"
 
-# Benannte fachliche Regressionstestgruppe aus scripts/test-groups.psd1
-.\scripts\Invoke-DevTests.ps1 regression -Group automatic_selection
+# Aktuelle Gruppen zuerst aus scripts/test-groups.psd1 lesen
+.\scripts\Invoke-DevTests.ps1 regression -Group <gruppe-aus-test-groups.psd1>
 
 # Vollständiger pytest-Lauf
 .\scripts\Invoke-DevTests.ps1 full
@@ -54,14 +58,23 @@ Das Skript verwendet ausschließlich die Projekt-Venv, zeigt eine kurze Zusammen
 speichert die vollständige Ausgabe unter `logs/dev-tests/`. Die Profile ersetzen weder die
 übrigen T2-Prüfungen noch die verbindlichen CI-Gates.
 
+Direkte Pytest-Aufrufe sind nur für Fälle vorgesehen, die der Runner nicht passend
+abbildet, und verwenden immer `--tb=short -x --no-header --no-summary` sowie die kleinste
+sinnvolle Testauswahl. Für gezielte Fehlerdiagnostik dient die vollständige Ausgabe im
+Testlog; erfolgreiche Läufe, Vollsuite und CI werden nicht ohne technischen Anlass
+wiederholt.
+
 Der Pull Request soll Zweck, zugehöriges Issue, Risiken und den Testnachweis nennen.
 
 ## Deterministische PR-Automatisierung
 
-`scripts/Invoke-DevPr.ps1` führt Git- und GitHub-Schritte einzeln und fail-closed aus.
-Jeder Aufruf schreibt das vollständige lokale Protokoll nach `logs/dev-pr/`; die Konsole
-zeigt nur Status, Ergebnis und Logpfad. Das Skript setzt `safe.directory` ausschließlich
-für den jeweiligen Git-Aufruf und ändert keine globale Git-Konfiguration.
+`scripts/Invoke-DevPr.ps1` ist der bevorzugte Einstieg für die unterstützten Git- und
+GitHub-Schritte `status`, `validate`, `commit`, `publish`, `gates`, `merge` und `cleanup`.
+Es führt sie einzeln und fail-closed aus. Jeder Aufruf schreibt ein kompaktes
+Sicherheitsprotokoll nach `logs/dev-pr/`; dieses enthält nur Aktions-/Operationsnamen und
+Exit-Codes, keine vollständige Prozessausgabe. Die Konsole zeigt nur Status, Ergebnis und
+Logpfad. Das Skript setzt `safe.directory` ausschließlich für den jeweiligen Git-Aufruf
+und ändert keine globale Git-Konfiguration.
 
 ```powershell
 # Übersicht und lokale Vorbedingungen
@@ -77,10 +90,10 @@ für den jeweiligen Git-Aufruf und ändert keine globale Git-Konfiguration.
 ```
 
 Die Zustandsfolge ist `lokal -> validiert -> committed -> published -> gates passed ->
-reviewed -> owner-approved -> mergeable -> merged -> cleanup`. Die Aktionen überspringen
-keinen Zustand. Wiederholte Leseaktionen sind sicher; `commit` meldet ohne Änderungen
-`NOOP`, `publish` erkennt einen vorhandenen offenen PR und `cleanup` meldet bei einem
-bereits fehlenden Branch `NOOP`.
+reviewed -> owner-approved -> mergeable -> merged -> main gate -> cleanup`. Technische
+Review, Eigentümerfreigabe, Merge und Cleanup sind getrennte Schritte. Wiederholte
+Leseaktionen sind sicher; `commit` meldet ohne Änderungen `NOOP`, `publish` erkennt einen
+vorhandenen offenen PR und `cleanup` meldet bei einem bereits fehlenden Branch `NOOP`.
 
 `REVIEW-REQUIRED` ist der Standard und erlaubt dem Skript keinen Merge. Für
 `OWNER-APPROVED` gelten zusätzlich getrennte technische und eigentümerseitige
@@ -105,7 +118,8 @@ Owner-Attestierung ist davon getrennt die Merge-Freigabe. Das Skript liest diese
 Nachweise ausschließlich und besitzt keinen Pfad, um Kommentare oder Labels anzulegen;
 Codex darf sie weder erzeugen noch als menschliche Nachweise ausgeben. Fehlende,
 veraltete, bearbeitete oder widerrufene Nachweise sowie Labels für einen älteren Commit
-führen zu `BLOCKED`. Der Merge erfordert
+führen zu `BLOCKED`. Jede Änderung des PR-Heads erfordert eine erneute Prüfung beider
+Nachweise für denselben PR und den neuen vollständigen SHA. Der Merge erfordert
 dennoch einen eigenen Aufruf mit `-Mode OWNER-APPROVED -ConfirmMerge` und verwendet
 GitHubs SHA-Bindung `--match-head-commit`. Verlangt Branch-Protection oder ein wirksames
 Ruleset formelle GitHub-Approvals, muss GitHubs `reviewDecision` diese als erfüllt melden;
@@ -129,7 +143,9 @@ unklarem Protection-Zustand, Mergekonflikt oder nicht sicher zuordenbarer Berein
 Fehlgeschlagene Gates ergeben `FAIL`. Es gibt weder Force-Push noch `git add .`, direkte
 Main-Commits, Schutzregeländerungen oder eine automatische Freigabe. `cleanup` löscht nur
 einen lokalen `feature/*`-Branch, der bereits in `main` enthalten und an keinen Worktree
-gebunden ist; Remote-Bereinigung bleibt eine bewusste separate Verwaltungsaktion.
+gebunden ist. Es entfernt weder Worktrees noch Remote-Branches. Diese Schritte erfolgen
+bei Bedarf bewusst und manuell, ausschließlich nach erfolgreichem Main-Gate für den
+Merge-Commit oder ausdrücklich dokumentiertem `n/a`, sauberer Zuordnung und ohne Force.
 
 ## Lizenz der Beiträge
 
