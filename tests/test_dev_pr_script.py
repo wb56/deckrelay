@@ -126,8 +126,11 @@ if ($scenario -eq 'permissions' -and $joined.Contains('repos/acme/project')) { '
 if ($args[0] -eq 'repo' -and $args[1] -eq 'view') { '{"nameWithOwner":"acme/project","owner":{"login":"owner"},"viewerPermission":"ADMIN"}'; exit 0 }
 if ($args[0] -eq 'pr' -and $args[1] -eq 'view') {
     $mergeable = if ($scenario -eq 'conflict') { 'CONFLICTING' } else { 'MERGEABLE' }
-    $labels = if ($scenario -eq 'owner-missing') { '[]' } else { "[{`"name`":`"owner-approved`"},{`"name`":`"head:$sha`"}]" }
-    "{`"number`":7,`"state`":`"OPEN`",`"isDraft`":false,`"headRefOid`":`"$sha`",`"headRefName`":`"feature/test`",`"baseRefName`":`"main`",`"author`":{`"login`":`"author`"},`"labels`":$labels,`"mergeable`":`"$mergeable`",`"reviewDecision`":`"APPROVED`"}"
+    $labels = @()
+    if ($scenario -ne 'review-missing') { $labels += @(@{name='technical-reviewed'}, @{name="reviewed-head:$sha"}) }
+    if ($scenario -ne 'owner-missing') { $labels += @(@{name='owner-approved'}, @{name="approved-head:$sha"}) }
+    $labels = $labels | ConvertTo-Json -Compress
+    "{`"number`":7,`"state`":`"OPEN`",`"isDraft`":false,`"headRefOid`":`"$sha`",`"headRefName`":`"feature/test`",`"baseRefName`":`"main`",`"author`":{`"login`":`"author`"},`"labels`":$labels,`"mergeable`":`"$mergeable`",`"reviewDecision`":`"`"}"
     exit 0
 }
 if ($args[0] -eq 'pr' -and $args[1] -eq 'checks') {
@@ -137,33 +140,45 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'checks') {
     exit 0
 }
 if ($joined.Contains('reviews')) {
-    if ($scenario -eq 'review-missing') { '[]' }
-    else { "[{`"state`":`"APPROVED`",`"commit_id`":`"$sha`",`"user`":{`"login`":`"reviewer`",`"type`":`"User`"}}]" }
+    '[]'
     exit 0
 }
 if ($joined.Contains('events')) {
-    if ($scenario -eq 'owner-missing') { '[]' }
-    else { "[{`"event`":`"labeled`",`"actor`":{`"login`":`"owner`"},`"label`":{`"name`":`"owner-approved`"}},{`"event`":`"labeled`",`"actor`":{`"login`":`"owner`"},`"label`":{`"name`":`"head:$sha`"}}]" }
+    $events = @()
+    if ($scenario -ne 'review-missing') { $events += @(@{event='labeled';actor=@{login='owner'};label=@{name='technical-reviewed'}}, @{event='labeled';actor=@{login='owner'};label=@{name="reviewed-head:$sha"}}) }
+    if ($scenario -ne 'owner-missing') { $events += @(@{event='labeled';actor=@{login='owner'};label=@{name='owner-approved'}}, @{event='labeled';actor=@{login='owner'};label=@{name="approved-head:$sha"}}) }
+    $events | ConvertTo-Json -Compress -Depth 5
     exit 0
 }
 if ($joined.Contains('branches/main/protection')) {
-    if ($scenario -eq 'protection') { '{"required_pull_request_reviews":{"required_approving_review_count":2}}' }
+    if ($scenario -eq 'protection-unreadable') { [Console]::Error.WriteLine('API_SECRET_PAYLOAD'); exit 1 }
+    if ($scenario -eq 'protection') { '{"required_pull_request_reviews":{"required_approving_review_count":1}}' }
     else { '{}' }
     exit 0
 }
 if ($joined.Contains('rulesets?includes_parents=true')) {
-    if ($scenario -eq 'ruleset') { '[{"id":1,"target":"branch","enforcement":"active"}]' }
+    if ($scenario -eq 'ruleset-unknown-state') { '[{"id":1,"target":"branch","enforcement":"mystery"}]' }
+    elseif ($scenario -in @('ruleset','ruleset-nonmatching','ruleset-unknown-pattern','ruleset-unreadable')) { '[{"id":1,"target":"branch","enforcement":"active"}]' }
     else { '[]' }
     exit 0
 }
-if ($joined.Contains('rulesets/1')) { '{"conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":2}}]}'; exit 0 }
-if ($args[0] -eq 'pr' -and $args[1] -eq 'merge') { 'merged'; exit 0 }
-'{"permissions":{"push":true}}'
+if ($joined.Contains('rulesets/1')) {
+    if ($scenario -eq 'ruleset-unreadable') { [Console]::Error.WriteLine('API_SECRET_PAYLOAD'); exit 1 }
+    if ($scenario -eq 'ruleset-nonmatching') { '{"conditions":{"ref_name":{"include":["refs/heads/release/*"],"exclude":[]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]}'; exit 0 }
+    if ($scenario -eq 'ruleset-unknown-pattern') { '{"conditions":{"ref_name":{"include":["refs/heads/[mn]ain"],"exclude":[]}},"rules":[]}'; exit 0 }
+    '{"conditions":{"ref_name":{"include":["refs/heads/m*"],"exclude":[]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]}'; exit 0
+}
+if ($args[0] -eq 'pr' -and $args[1] -eq 'merge') {
+    [System.IO.File]::WriteAllText($env:FAKE_MERGE_FILE, $joined)
+    'merged'; exit 0
+}
+'{"permissions":{"push":true},"private_data":"API_SECRET_PAYLOAD"}'
 """,
         encoding="utf-8",
     )
     env = os.environ.copy()
     env["FAKE_HEAD_SHA"] = "a" * 40
+    env["FAKE_MERGE_FILE"] = str(tmp_path / "merge invocation.txt")
     return executable, env
 
 
@@ -178,6 +193,10 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'merge') { 'merged'; exit 0 }
         ("conflict", "merge", "Mergefähigkeit"),
         ("protection", "merge", "Branch-Protection"),
         ("ruleset", "merge", "Ruleset"),
+        ("ruleset-unknown-pattern", "merge", "Muster"),
+        ("ruleset-unknown-state", "merge", "Zustand"),
+        ("ruleset-unreadable", "merge", "nicht gelesen"),
+        ("protection-unreadable", "merge", "Branch-Protection"),
     ],
 )
 def test_github_safety_failures_are_closed(
@@ -231,6 +250,89 @@ def test_merge_rejects_mismatched_head_sha(repository: Path, tmp_path: Path) -> 
     )
     assert result.returncode != 0
     assert "Head-SHA" in combined(result)
+
+
+def test_merge_succeeds_with_distinct_sha_bound_attestations_and_no_formal_approval(
+    repository: Path, tmp_path: Path
+) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    result = run(
+        "-Action",
+        "merge",
+        "-RepositoryRoot",
+        str(repository),
+        "-GitHubExecutable",
+        str(gh),
+        "-Repository",
+        "acme/project",
+        "-PrNumber",
+        "7",
+        "-ExpectedHeadSha",
+        "a" * 40,
+        "-Mode",
+        "OWNER-APPROVED",
+        "-ConfirmMerge",
+        cwd=repository,
+        env=env,
+    )
+    assert result.returncode == 0, combined(result)
+    invocation = Path(env["FAKE_MERGE_FILE"]).read_text(encoding="utf-8")
+    assert "--match-head-commit " + "a" * 40 in invocation
+
+
+def test_nonmatching_ruleset_does_not_apply_to_main(repository: Path, tmp_path: Path) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    env["FAKE_GH_SCENARIO"] = "ruleset-nonmatching"
+    result = run(
+        "-Action",
+        "merge",
+        "-RepositoryRoot",
+        str(repository),
+        "-GitHubExecutable",
+        str(gh),
+        "-Repository",
+        "acme/project",
+        "-PrNumber",
+        "7",
+        "-ExpectedHeadSha",
+        "a" * 40,
+        "-Mode",
+        "OWNER-APPROVED",
+        "-ConfirmMerge",
+        cwd=repository,
+        env=env,
+    )
+    assert result.returncode == 0, combined(result)
+
+
+def test_logs_never_persist_api_payloads_or_error_details(repository: Path, tmp_path: Path) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    env["FAKE_GH_SCENARIO"] = "protection-unreadable"
+    result = run(
+        "-Action",
+        "merge",
+        "-RepositoryRoot",
+        str(repository),
+        "-GitHubExecutable",
+        str(gh),
+        "-Repository",
+        "acme/project",
+        "-PrNumber",
+        "7",
+        "-ExpectedHeadSha",
+        "a" * 40,
+        "-Mode",
+        "OWNER-APPROVED",
+        "-ConfirmMerge",
+        cwd=repository,
+        env=env,
+    )
+    assert result.returncode != 0
+    logs = list((repository / "logs" / "dev-pr").glob("*.log"))
+    assert len(logs) == 1
+    log = logs[0].read_text(encoding="utf-8")
+    assert "API_SECRET_PAYLOAD" not in log
+    assert "private_data" not in log
 
 
 def test_cleanup_refuses_main_and_unrelated_branch(repository: Path) -> None:

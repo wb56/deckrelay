@@ -57,18 +57,16 @@ function Invoke-External {
     param(
         [Parameter(Mandatory = $true)][string]$Executable,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Operation,
         [switch]$AllowFailure
     )
-    $displayArguments = $Arguments | ForEach-Object {
-        if ($_ -match '(?i)(token|secret|password|authorization)') { "<redacted>" } else { $_ }
-    }
-    $script:LogLines.Add("COMMAND: $Executable " + ($displayArguments -join " "))
+    # Never persist arguments, stdout or stderr: all three may contain credentials or API data.
+    $script:LogLines.Add("CALL: $Operation")
     $global:LASTEXITCODE = 0
     $output = & $Executable @Arguments 2>&1
     $code = $LASTEXITCODE
     if ($null -eq $code) { $code = 0 }
-    foreach ($line in @($output)) { $script:LogLines.Add([string]$line) }
-    $script:LogLines.Add("EXIT: $code")
+    $script:LogLines.Add("RESULT: exit=$code")
     if ($code -ne 0 -and -not $AllowFailure) {
         Stop-Failed "Werkzeugaufruf fehlgeschlagen ($Executable, Exit-Code $code)."
     }
@@ -78,12 +76,15 @@ function Invoke-External {
 function Invoke-Git {
     param([string[]]$Arguments, [switch]$AllowFailure)
     $safeRoot = $RepositoryRoot.Replace("\", "/")
-    Invoke-External $GitExecutable (@("-c", "safe.directory=$safeRoot", "-C", $RepositoryRoot) + $Arguments) -AllowFailure:$AllowFailure
+    $verb = if ($Arguments.Count -gt 0 -and $Arguments[0] -match '^[a-z-]+$') { $Arguments[0] } else { "unknown" }
+    Invoke-External $GitExecutable (@("-c", "safe.directory=$safeRoot", "-C", $RepositoryRoot) + $Arguments) -Operation "git:$verb" -AllowFailure:$AllowFailure
 }
 
 function Invoke-Gh {
     param([string[]]$Arguments, [switch]$AllowFailure)
-    Invoke-External $GitHubExecutable $Arguments -AllowFailure:$AllowFailure
+    $safeParts = @($Arguments | Select-Object -First 2 | Where-Object { $_ -match '^[a-z-]+$' })
+    $operation = if ($safeParts.Count -gt 0) { "gh:" + ($safeParts -join ":") } else { "gh:unknown" }
+    Invoke-External $GitHubExecutable $Arguments -Operation $operation -AllowFailure:$AllowFailure
 }
 
 function ConvertFrom-JsonSafe {
@@ -165,52 +166,79 @@ function Get-GateState {
     if ($pending.Count -gt 0) { Stop-Blocked "Quality Gates laufen noch oder haben einen unbekannten Zustand." }
 }
 
-function Assert-ReviewEvidence {
-    param([string]$Name, $Pr)
-    $response = Invoke-Gh @("api", "repos/$Name/pulls/$PrNumber/reviews")
-    $reviews = @(ConvertFrom-JsonSafe $response.Text "Reviews")
-    $valid = @($reviews | Where-Object {
-        $_.state -eq "APPROVED" -and $_.commit_id -eq $ExpectedHeadSha -and
-        $_.user.login -ne $Pr.author.login -and $_.user.type -eq "User"
-    })
-    if ($valid.Count -eq 0) {
-        Stop-Blocked "Unabhängige technische Review für den exakten Head-SHA fehlt."
-    }
-    return $valid.Count
-}
-
-function Assert-OwnerApproval {
-    param([string]$Name, $Pr)
+function Assert-OwnerAttestation {
+    param([string]$Name, $Pr, [string[]]$Labels, [string]$Description)
     $repoData = ConvertFrom-JsonSafe (Invoke-Gh @("repo", "view", "--repo", $Name, "--json", "owner")).Text "Eigentümer"
     $owner = $repoData.owner.login
     if ([string]::IsNullOrWhiteSpace($owner)) { Stop-Blocked "Repository-Eigentümer ist unbekannt." }
-    $labels = @("owner-approved", "head:$ExpectedHeadSha")
     $activeLabels = @($Pr.labels | ForEach-Object { $_.name })
-    if (@($labels | Where-Object { $_ -notin $activeLabels }).Count -gt 0) {
-        Stop-Blocked "SHA-gebundene Eigentümerfreigabe ist am aktuellen PR nicht aktiv."
+    if (@($Labels | Where-Object { $_ -notin $activeLabels }).Count -gt 0) {
+        Stop-Blocked "$Description ist am aktuellen PR nicht aktiv."
     }
-    $events = @(ConvertFrom-JsonSafe (Invoke-Gh @("api", "repos/$Name/issues/$PrNumber/events")).Text "Eigentümerfreigabe")
-    foreach ($label in $labels) {
+    $events = @(ConvertFrom-JsonSafe (Invoke-Gh @("api", "repos/$Name/issues/$PrNumber/events")).Text $Description)
+    foreach ($label in $Labels) {
         $valid = @($events | Where-Object {
             $_.event -eq "labeled" -and $_.label.name -ceq $label -and $_.actor.login -eq $owner
         })
         if ($valid.Count -eq 0) {
-            Stop-Blocked "Eigentümerfreigabe '$label' durch den Repository-Eigentümer fehlt."
+            Stop-Blocked "$Description '$label' durch den Repository-Eigentümer fehlt."
         }
     }
 }
 
+function Get-RulePatternResult {
+    param([string]$Pattern, [string]$BranchName)
+    if ($Pattern -eq "~DEFAULT_BRANCH" -or $Pattern -eq "~ALL") {
+        return [pscustomobject]@{ Known = $true; Matches = $true }
+    }
+    if ($Pattern -notmatch '^(refs/heads/)?[A-Za-z0-9._/*?-]+$') {
+        return [pscustomobject]@{ Known = $false; Matches = $false }
+    }
+    $candidate = if ($Pattern.StartsWith("refs/heads/")) { "refs/heads/$BranchName" } else { $BranchName }
+    $expression = [regex]::Escape($Pattern)
+    $expression = $expression.Replace("\*\*", ".*")
+    $expression = $expression.Replace("\*", "[^/]*")
+    $expression = $expression.Replace("\?", "[^/]")
+    $matches = [regex]::IsMatch($candidate, "^$expression$", [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
+    return [pscustomobject]@{ Known = $true; Matches = $matches }
+}
+
+function Test-RulesetApplies {
+    param($Ruleset, [string]$BranchName)
+    if ($null -eq $Ruleset.conditions -or $null -eq $Ruleset.conditions.ref_name) {
+        Stop-Blocked "GitHub-Ruleset enthält unbekannte Branch-Bedingungen."
+    }
+    $includes = @($Ruleset.conditions.ref_name.include)
+    $excludes = @($Ruleset.conditions.ref_name.exclude)
+    if ($includes.Count -eq 0) { Stop-Blocked "GitHub-Ruleset enthält kein prüfbares Branch-Muster." }
+    $includeMatch = $false
+    foreach ($pattern in $includes) {
+        $result = Get-RulePatternResult ([string]$pattern) $BranchName
+        if (-not $result.Known) { Stop-Blocked "GitHub-Ruleset enthält ein unbekanntes Branch-Muster." }
+        if ($result.Matches) { $includeMatch = $true }
+    }
+    foreach ($pattern in $excludes) {
+        $result = Get-RulePatternResult ([string]$pattern) $BranchName
+        if (-not $result.Known) { Stop-Blocked "GitHub-Ruleset enthält ein unbekanntes Branch-Muster." }
+        if ($result.Matches) { return $false }
+    }
+    return $includeMatch
+}
+
 function Assert-BranchProtection {
-    param([string]$Name, [int]$ReviewCount)
-    $result = Invoke-Gh @("api", "repos/$Name/branches/main/protection") -AllowFailure
+    param([string]$Name, $Pr)
+    $baseBranch = [string]$Pr.baseRefName
+    if ([string]::IsNullOrWhiteSpace($baseBranch)) { Stop-Blocked "PR-Basisbranch ist unbekannt." }
+    $encodedBranch = [uri]::EscapeDataString($baseBranch)
+    $result = Invoke-Gh @("api", "repos/$Name/branches/$encodedBranch/protection") -AllowFailure
     if ($result.Code -ne 0 -and $result.Text -notmatch '(?i)(404|not protected)') {
         Stop-Blocked "Branch-Protection konnte nicht zuverlässig geprüft werden."
     }
     if ($result.Code -eq 0) {
         $protection = ConvertFrom-JsonSafe $result.Text "Branch-Protection"
         $required = $protection.required_pull_request_reviews.required_approving_review_count
-        if ($null -ne $required -and [int]$required -gt $ReviewCount) {
-            Stop-Blocked "Branch-Protection verlangt zusätzliche externe Reviews."
+        if ($null -ne $required -and [int]$required -gt 0 -and $Pr.reviewDecision -ne "APPROVED") {
+            Stop-Blocked "Branch-Protection verlangt eine formelle GitHub-Review."
         }
     }
     $rulesetResult = Invoke-Gh @("api", "repos/$Name/rulesets?includes_parents=true") -AllowFailure
@@ -219,16 +247,23 @@ function Assert-BranchProtection {
     }
     $rulesets = @(ConvertFrom-JsonSafe $rulesetResult.Text "GitHub-Rulesets")
     foreach ($summary in $rulesets) {
+        if ($null -eq $summary.id -or $summary.target -notin @("branch", "tag", "push") -or
+            $summary.enforcement -notin @("active", "evaluate", "disabled")) {
+            Stop-Blocked "GitHub-Ruleset enthält einen unbekannten Zustand."
+        }
         if ($summary.target -ne "branch" -or $summary.enforcement -ne "active") { continue }
-        $detail = ConvertFrom-JsonSafe (Invoke-Gh @("api", "repos/$Name/rulesets/$($summary.id)")).Text "GitHub-Ruleset"
-        $includes = @($detail.conditions.ref_name.include)
-        $appliesToMain = $includes.Count -eq 0 -or "~DEFAULT_BRANCH" -in $includes -or
-            "refs/heads/main" -in $includes -or "main" -in $includes
-        if (-not $appliesToMain) { continue }
+        $detailResult = Invoke-Gh @("api", "repos/$Name/rulesets/$($summary.id)") -AllowFailure
+        if ($detailResult.Code -ne 0) { Stop-Blocked "GitHub-Ruleset konnte nicht gelesen werden." }
+        $detail = ConvertFrom-JsonSafe $detailResult.Text "GitHub-Ruleset"
+        if (-not (Test-RulesetApplies $detail $baseBranch)) { continue }
         foreach ($rule in @($detail.rules | Where-Object { $_.type -eq "pull_request" })) {
             $rulesetRequired = $rule.parameters.required_approving_review_count
-            if ($null -ne $rulesetRequired -and [int]$rulesetRequired -gt $ReviewCount) {
-                Stop-Blocked "GitHub-Ruleset verlangt zusätzliche externe Reviews."
+            if ($null -eq $rulesetRequired) {
+                Stop-Blocked "GitHub-Ruleset enthält unbekannte Review-Anforderungen."
+            }
+            if ($null -ne $rulesetRequired -and [int]$rulesetRequired -gt 0 -and
+                $Pr.reviewDecision -ne "APPROVED") {
+                Stop-Blocked "GitHub-Ruleset verlangt eine formelle GitHub-Review."
             }
         }
     }
@@ -243,7 +278,6 @@ $logDirectory = Join-Path $RepositoryRoot "logs\dev-pr"
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 $script:LogPath = Join-Path $logDirectory ((Get-Date -Format "yyyyMMdd-HHmmss-fff") + "-$Action.log")
 $script:LogLines.Add("ACTION: $Action")
-$script:LogLines.Add("ROOT: $RepositoryRoot")
 
 switch ($Action) {
     "status" {
@@ -335,10 +369,10 @@ switch ($Action) {
         $pr = Get-PrData $name
         Assert-ExpectedHead $pr
         if ($pr.state -ne "OPEN" -or $pr.isDraft -eq $true) { Stop-Blocked "PR ist nicht offen und review-bereit." }
-        $reviewCount = Assert-ReviewEvidence $name $pr
-        Assert-OwnerApproval $name $pr
+        Assert-OwnerAttestation $name $pr @("technical-reviewed", "reviewed-head:$ExpectedHeadSha") "Technischer Review-Nachweis"
+        Assert-OwnerAttestation $name $pr @("owner-approved", "approved-head:$ExpectedHeadSha") "Eigentümerfreigabe"
         Get-GateState $name $pr
-        Assert-BranchProtection $name $reviewCount
+        Assert-BranchProtection $name $pr
         if ($pr.mergeable -ne "MERGEABLE") { Stop-Blocked "Mergefähigkeit ist nicht eindeutig gegeben." }
         # --match-head-commit bindet die serverseitige Mutation an den erneut geprüften SHA.
         [void](Invoke-Gh @("pr", "merge", [string]$PrNumber, "--repo", $name, "--merge", "--match-head-commit", $ExpectedHeadSha))

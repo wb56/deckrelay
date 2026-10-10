@@ -83,22 +83,33 @@ keinen Zustand. Wiederholte Leseaktionen sind sicher; `commit` meldet ohne Ände
 bereits fehlenden Branch `NOOP`.
 
 `REVIEW-REQUIRED` ist der Standard und erlaubt dem Skript keinen Merge. Für
-`OWNER-APPROVED` gelten zusätzlich alle folgenden Nachweise für denselben vollständigen
-Head-SHA:
+`OWNER-APPROVED` gelten zusätzlich getrennte technische und eigentümerseitige
+Attestierungen für denselben vollständigen Head-SHA:
 
-- eine GitHub-Review mit Status `APPROVED` von einem menschlichen Account, der nicht der
-  PR-Autor ist;
-- die beiden aktuell am PR gesetzten Labels `owner-approved` und
-  `head:<40-stelliger-head-sha>`;
-- GitHub-Label-Ereignisse, aus denen hervorgeht, dass der Repository-Eigentümer beide
-  Labels gesetzt hat;
+- für eine abgeschlossene unabhängige technische Prüfung die aktiven Labels
+  `technical-reviewed` und `reviewed-head:<40-stelliger-head-sha>`;
+- für die ausdrückliche Eigentümerfreigabe die aktiven Labels `owner-approved` und
+  `approved-head:<40-stelliger-head-sha>`;
+- für jedes Label ein GitHub-Label-Ereignis, das den Repository-Eigentümer als Urheber
+  ausweist;
 - erfolgreiche Quality Gates, erfüllte Branch-Protection und eindeutige Mergefähigkeit.
 
-Das Label ist die ausdrückliche Eigentümerfreigabe. Ein Kommentar, eine Codex-Aussage,
-ein Label für einen älteren Commit oder nur die Option `-ConfirmMerge` genügt nicht. Der
-Merge erfordert dennoch einen eigenen Aufruf mit `-Mode OWNER-APPROVED -ConfirmMerge` und
-verwendet GitHubs SHA-Bindung `--match-head-commit`. Technisch erzwungene GitHub-Reviews
-werden dadurch nicht ersetzt.
+Die technischen Labels bestätigen nur, dass ein unabhängiger technischer Bericht für den
+genannten SHA geprüft wurde; sie sind ausdrücklich keine GitHub-Approval. Die Owner-Labels
+sind davon getrennt die Merge-Freigabe. Kommentare, Codex-Aussagen, Labels für einen
+älteren Commit oder nur die Option `-ConfirmMerge` genügen nicht. Der Merge erfordert
+dennoch einen eigenen Aufruf mit `-Mode OWNER-APPROVED -ConfirmMerge` und verwendet
+GitHubs SHA-Bindung `--match-head-commit`. Verlangt Branch-Protection oder ein wirksames
+Ruleset formelle GitHub-Approvals, muss GitHubs `reviewDecision` diese als erfüllt melden;
+das Einzelentwicklerverfahren ersetzt oder umgeht sie niemals.
+
+Rulesets werden gegen den tatsächlichen PR-Basisbranch ausgewertet. Include- und
+Exclude-Muster müssen eindeutig interpretierbar sein; unbekannte Bedingungen, nicht
+lesbare Schutzregeln oder API-Fehler führen zu `BLOCKED`.
+
+Lokale Logs enthalten ausschließlich Aktionsname, freigegebene Werkzeug-/Operationsnamen
+und Exit-Codes. Befehlsargumente, API-Antworten sowie Standardausgabe und Fehlerausgabe
+externer Werkzeuge werden nicht protokolliert, da sie sensible Daten enthalten können.
 
 `BLOCKED` beendet die Aktion bei schmutzigem Arbeitsbaum, falschem Branch, fehlenden oder
 unbekannten Berechtigungen, abweichendem SHA, fehlender Review/Freigabe, laufenden Gates,
