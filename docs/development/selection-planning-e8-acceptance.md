@@ -98,6 +98,21 @@ Status: **offen**, bis sie auf dem finalen Stand tatsächlich durchgeführt und
 protokolliert ist. Simulationen und stummgeschaltete VLC-Läufe schließen diesen
 Punkt nicht.
 
+### Integrationsvorbereitung vom 11. Oktober 2026
+
+Der PR-Branch wurde ohne Rebase auf den aktuellen `main`-Commit
+`9b7185a0d40c8e975df9dda7f2099a5ce2ea5a55` gebracht. Die seit dem historischen
+Ausgangsstand integrierten Änderungen betreffen unter anderem Queue-, Controller-
+und GUI-Pfade, ändern aber weder die fünf Abnahmeszenarien noch deren Kriterien.
+Deshalb muss der nächste reale Lauf den dann vollständigen PR-Head ausweisen; frühere
+technische Starts oder Hörbeobachtungen dürfen nicht auf diesen Stand übertragen
+werden.
+
+Das Setup-Skript verwendet weiterhin die aktuellen Repository-, Settings-,
+Eignungs- und Queue-Schnittstellen. Es erzeugt ausschließlich eine neue isolierte
+Laufzeitdatenbank und erwartet unverändert 30 lokal bereitgestellte Testdateien. Die
+Dateien selbst gehören nicht in Repository, Patch oder Abnahmeprotokoll.
+
 ### Vorbereiteter Lauf vom 25. September 2026
 
 Der final zu prüfende Produktionscode war unverändert Commit
@@ -162,9 +177,12 @@ Ausgabeendpunkt in der GUI auszuwählen und im Protokoll zu notieren.
 
 ### Unmittelbar ausführbares Hörprotokoll
 
-Vor Beginn eintragen: Datum/Uhrzeit `__________`, Commit `__________`, Windows
-`__________`, VLC `__________`, gewählter physischer Ausgabeendpunkt
-`__________`, Dateiformat `MP3/44,1 kHz/192 kbit/s`.
+Vor Beginn eintragen: Datum/Uhrzeit `__________`, vollständiger PR-Head
+`__________`, Main-Basis
+`9b7185a0d40c8e975df9dda7f2099a5ce2ea5a55`, Windows `__________`,
+Audio-Backend `__________`, VLC `__________`, gewählter physischer
+Ausgabeendpunkt `__________`, Testdaten/Dateiformat
+`30 lokale e8-track-01.mp3 bis e8-track-30.mp3; __________`.
 
 | Szenario | Ausgangszustand | Schritte | Erwartetes Verhalten / Akzeptanz | Beobachtet | Hörbare Auffälligkeiten | Ergebnis |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -214,8 +232,9 @@ Abnahmetests ergänzt; Auswahlverhalten und Datenformat blieben unverändert.
 
 E8 ist dennoch **teilweise offen**. Blockierend für die vollständige Abnahme ist
 die noch nicht tatsächlich ausgeführte reale Hörprüfung der heutigen
-Auswahl-/Planfolge auf `5d9a814`. Außerdem bleiben die bereits in der realen
-Emergency-Abnahme ausdrücklich begrenzten destruktiven Fälle (gleichzeitiger
+Auswahl-/Planfolge auf einem vollständig protokollierten PR-Head mit Main-Basis
+`9b7185a0d40c8e975df9dda7f2099a5ce2ea5a55`. Außerdem bleiben die bereits in
+der realen Emergency-Abnahme ausdrücklich begrenzten destruktiven Fälle (gleichzeitiger
 Geräte-/Doppeldeckausfall und eine erst nach VLC-Pufferung verschobene Datei)
 Grenzen, keine voll real reproduzierten Nachweise. Das vorstehende Protokoll
 definiert den noch auszuführenden Abschlusslauf und seine messbaren Kriterien.
