@@ -347,9 +347,7 @@ def test_owner_lookup_uses_positional_repository_and_blocks_merge_on_failure(
         env=env,
     )
 
-    lookup_arguments = json.loads(
-        Path(env["FAKE_OWNER_LOOKUP_FILE"]).read_text(encoding="utf-8")
-    )
+    lookup_arguments = json.loads(Path(env["FAKE_OWNER_LOOKUP_FILE"]).read_text(encoding="utf-8"))
     assert lookup_arguments == ["repo", "view", repository_name, "--json", "owner"]
     merge_file = Path(env["FAKE_MERGE_FILE"])
     if lookup_succeeds:
