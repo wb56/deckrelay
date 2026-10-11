@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -123,7 +124,19 @@ def write_fake_gh(tmp_path: Path) -> tuple[Path, dict[str, str]]:
 $sha = $env:FAKE_HEAD_SHA
 $joined = $args -join ' '
 if ($scenario -eq 'permissions' -and $joined.Contains('repos/acme/project')) { '{"permissions":{"push":false}}'; exit 0 }
-if ($args[0] -eq 'repo' -and $args[1] -eq 'view') { '{"nameWithOwner":"acme/project","owner":{"login":"owner"},"viewerPermission":"ADMIN"}'; exit 0 }
+if ($args[0] -eq 'repo' -and $args[1] -eq 'view') {
+    [System.IO.File]::WriteAllText($env:FAKE_OWNER_LOOKUP_FILE, ($args | ConvertTo-Json -Compress))
+    if ($args.Count -ne 5 -or $args[2] -ne $env:FAKE_EXPECTED_REPOSITORY -or $args -contains '--repo') {
+        [Console]::Error.WriteLine('gh repo view requires a positional repository')
+        exit 2
+    }
+    if ($scenario -eq 'owner-lookup-fail') {
+        [Console]::Error.WriteLine('owner lookup failed')
+        exit 2
+    }
+    '{"nameWithOwner":"acme/project","owner":{"login":"owner"},"viewerPermission":"ADMIN"}'
+    exit 0
+}
 if ($args[0] -eq 'pr' -and $args[1] -eq 'view') {
     $mergeable = if ($scenario -eq 'conflict') { 'CONFLICTING' } else { 'MERGEABLE' }
     $labels = @()
@@ -196,6 +209,8 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'merge') {
     env = os.environ.copy()
     env["FAKE_HEAD_SHA"] = "a" * 40
     env["FAKE_MERGE_FILE"] = str(tmp_path / "merge invocation.txt")
+    env["FAKE_OWNER_LOOKUP_FILE"] = str(tmp_path / "owner lookup arguments.json")
+    env["FAKE_EXPECTED_REPOSITORY"] = "acme/project"
     return executable, env
 
 
@@ -299,6 +314,50 @@ def test_merge_succeeds_with_distinct_sha_bound_attestations_and_no_formal_appro
     assert result.returncode == 0, combined(result)
     invocation = Path(env["FAKE_MERGE_FILE"]).read_text(encoding="utf-8")
     assert "--match-head-commit " + "a" * 40 in invocation
+
+
+@pytest.mark.parametrize(
+    ("scenario", "lookup_succeeds"),
+    [("", True), ("owner-lookup-fail", False)],
+)
+def test_owner_lookup_uses_positional_repository_and_blocks_merge_on_failure(
+    repository: Path, tmp_path: Path, scenario: str, lookup_succeeds: bool
+) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    repository_name = "example/custom-project"
+    env["FAKE_EXPECTED_REPOSITORY"] = repository_name
+    env["FAKE_GH_SCENARIO"] = scenario
+    result = run(
+        "-Action",
+        "merge",
+        "-RepositoryRoot",
+        str(repository),
+        "-GitHubExecutable",
+        str(gh),
+        "-Repository",
+        repository_name,
+        "-PrNumber",
+        "7",
+        "-ExpectedHeadSha",
+        "a" * 40,
+        "-Mode",
+        "OWNER-APPROVED",
+        "-ConfirmMerge",
+        cwd=repository,
+        env=env,
+    )
+
+    lookup_arguments = json.loads(
+        Path(env["FAKE_OWNER_LOOKUP_FILE"]).read_text(encoding="utf-8")
+    )
+    assert lookup_arguments == ["repo", "view", repository_name, "--json", "owner"]
+    merge_file = Path(env["FAKE_MERGE_FILE"])
+    if lookup_succeeds:
+        assert result.returncode == 0, combined(result)
+        assert merge_file.exists()
+    else:
+        assert result.returncode != 0
+        assert not merge_file.exists()
 
 
 def test_attestations_use_short_labels_and_read_only_pr_comments(
