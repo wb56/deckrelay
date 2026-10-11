@@ -18,6 +18,8 @@ from party_player.overlay_transfer import (
     OverlayTransferErrorCode,
 )
 from party_player.ui import main_window
+from party_player.ui import backup_restore_ui_coordinator
+from party_player.ui.backup_restore_ui_coordinator import BackupRestoreUiCoordinator
 from party_player.ui.main_window import MainWindow
 from party_player.playlist_transfer import (
     PlaylistConflictStrategy,
@@ -35,7 +37,9 @@ from party_player.media_path_remap import (
 class BackupRestoreBindingStub:
     def __init__(self) -> None:
         self.backup_destination: Path | None = None
+        self.backup_calls = 0
         self.restore_request: tuple[Path, Path] | None = None
+        self.restore_calls = 0
         self.vacuum_calls = 0
         self.reindex_calls = 0
         self.playlist_export_request = None
@@ -51,10 +55,12 @@ class BackupRestoreBindingStub:
         self.overlay_import_request = None
 
     def start_backup(self, destination: Path) -> bool:
+        self.backup_calls += 1
         self.backup_destination = destination
         return True
 
     def start_restore(self, archive: Path, safety_directory: Path) -> bool:
+        self.restore_calls += 1
         self.restore_request = (archive, safety_directory)
         return True
 
@@ -65,6 +71,21 @@ class BackupRestoreBindingStub:
     def start_reindex(self) -> bool:
         self.reindex_calls += 1
         return True
+
+    def start_quick_check(self) -> bool:
+        return True
+
+    def start_integrity_check(self) -> bool:
+        return True
+
+    def start_analyze(self) -> bool:
+        return True
+
+    def destructive_maintenance_safety(self):
+        return None
+
+    def last_manual_backup(self):
+        return None
 
     def start_playlist_export(self, saved_queue_id, destination, format) -> bool:
         self.playlist_export_request = (saved_queue_id, destination, format)
@@ -111,6 +132,36 @@ class BackupRestoreBindingStub:
         return True
 
 
+def make_coordinator(
+    parent,
+    binding: BackupRestoreBindingStub,
+    *,
+    request_restart=lambda: None,
+) -> BackupRestoreUiCoordinator:
+    def action() -> bool:
+        return False
+
+    coordinator = BackupRestoreUiCoordinator(
+        parent,
+        playlist_export=action,
+        playlist_music_directory=action,
+        playlist_import_preview=action,
+        equalizer_export=action,
+        equalizer_import_preview=action,
+        overlay_export=action,
+        overlay_import_preview=action,
+        media_path_remap_preview=action,
+        vacuum=action,
+        reindex=action,
+        preview_result=lambda _result, _dialog: False,
+        refresh_equalizer_presets=lambda: None,
+        refresh_overlays=lambda: None,
+        request_restart=request_restart,
+    )
+    coordinator.bind(binding, Path("default-backups"))  # type: ignore[arg-type]
+    return coordinator
+
+
 def test_database_dialog_is_exposed_from_extras_menu(monkeypatch) -> None:
     commands: list[tuple[str, object]] = []
     popups: list[tuple[int, int]] = []
@@ -148,48 +199,107 @@ def test_database_dialog_is_exposed_from_extras_menu(monkeypatch) -> None:
     assert popups == [(10, 50)]
 
 
-def test_backup_path_selection_starts_only_after_directory_was_chosen(monkeypatch) -> None:
-    window = object.__new__(MainWindow)
-    binding = BackupRestoreBindingStub()
-    window._backup_restore_controller = binding
-    monkeypatch.setattr(main_window.filedialog, "askdirectory", lambda **_kwargs: "")
+def test_database_dialog_opens_and_close_callback_clears_it_once(monkeypatch) -> None:
+    created = []
 
-    window._request_backup()
+    class DialogDouble:
+        def __init__(self, _parent, *_actions) -> None:
+            self.close = _actions[-1]
+            self.exists = True
+            created.append(self)
+
+        def winfo_exists(self) -> bool:
+            return self.exists
+
+        def focus_force(self) -> None:
+            raise AssertionError("new dialog must not be focused as an existing dialog")
+
+    coordinator = make_coordinator(object(), BackupRestoreBindingStub())
+    monkeypatch.setattr(backup_restore_ui_coordinator, "DatabaseBackupDialog", DialogDouble)
+
+    coordinator.show_dialog()
+    dialog = created[0]
+    dialog.close()
+    dialog.close()
+
+    assert len(created) == 1
+    assert coordinator._dialog is None
+    assert coordinator._dialog_generation == 2
+
+
+def test_backup_path_selection_starts_only_after_directory_was_chosen(monkeypatch) -> None:
+    binding = BackupRestoreBindingStub()
+    coordinator = make_coordinator(object(), binding)
+    monkeypatch.setattr(
+        backup_restore_ui_coordinator.filedialog, "askdirectory", lambda **_kwargs: ""
+    )
+
+    coordinator.request_backup()
 
     assert binding.backup_destination is None
     monkeypatch.setattr(
-        main_window.filedialog, "askdirectory", lambda **_kwargs: r"C:\Party\Backups"
+        backup_restore_ui_coordinator.filedialog,
+        "askdirectory",
+        lambda **_kwargs: r"C:\Party\Backups",
     )
-    window._request_backup()
+    coordinator.request_backup()
     assert binding.backup_destination == Path(r"C:\Party\Backups")
+    assert binding.backup_calls == 1
 
 
 def test_default_backup_starts_without_opening_path_dialog(tmp_path: Path) -> None:
-    window = object.__new__(MainWindow)
     binding = BackupRestoreBindingStub()
-    window._backup_restore_controller = binding
-    window._default_backup_directory = tmp_path / "data" / "Backups"
+    coordinator = make_coordinator(object(), binding)
+    coordinator.bind(binding, tmp_path / "data" / "Backups")  # type: ignore[arg-type]
 
-    window._request_default_backup()
+    coordinator.request_default_backup()
 
     assert binding.backup_destination == tmp_path / "data" / "Backups"
 
 
 def test_restore_requires_confirmation_and_uses_separate_safety_directory(monkeypatch) -> None:
-    window = object.__new__(MainWindow)
     binding = BackupRestoreBindingStub()
-    window._backup_restore_controller = binding
+    coordinator = make_coordinator(object(), binding)
     archive = Path("selected.partyplayer-backup").resolve()
-    monkeypatch.setattr(main_window.filedialog, "askopenfilename", lambda **_kwargs: str(archive))
-    monkeypatch.setattr(main_window, "ask_silent_yes_no", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        backup_restore_ui_coordinator.filedialog,
+        "askopenfilename",
+        lambda **_kwargs: str(archive),
+    )
+    monkeypatch.setattr(
+        backup_restore_ui_coordinator,
+        "ask_silent_yes_no",
+        lambda *_args, **_kwargs: False,
+    )
 
-    window._request_restore()
+    coordinator.request_restore()
     assert binding.restore_request is None
 
-    monkeypatch.setattr(main_window, "ask_silent_yes_no", lambda *_args, **_kwargs: True)
-    window._request_restore()
+    monkeypatch.setattr(
+        backup_restore_ui_coordinator,
+        "ask_silent_yes_no",
+        lambda *_args, **_kwargs: True,
+    )
+    coordinator.request_restore()
 
     assert binding.restore_request == (archive, archive.parent / "safety-backups")
+    assert binding.restore_calls == 1
+
+
+def test_restore_file_selection_cancel_does_not_confirm_or_start(monkeypatch) -> None:
+    binding = BackupRestoreBindingStub()
+    coordinator = make_coordinator(object(), binding)
+    monkeypatch.setattr(
+        backup_restore_ui_coordinator.filedialog, "askopenfilename", lambda **_kwargs: ""
+    )
+    monkeypatch.setattr(
+        backup_restore_ui_coordinator,
+        "ask_silent_yes_no",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no confirmation")),
+    )
+
+    assert not coordinator.request_restore()
+    assert binding.restore_calls == 0
 
 
 def test_restart_is_offered_only_for_restart_required_result(monkeypatch) -> None:
@@ -199,9 +309,12 @@ def test_restart_is_offered_only_for_restart_required_result(monkeypatch) -> Non
     destroyed: list[bool] = []
     window._dispose_resources = lambda: disposed.append(True)
     window.destroy = lambda: destroyed.append(True)
+    window._backup_restore_ui_coordinator = make_coordinator(
+        window, BackupRestoreBindingStub(), request_restart=window._request_controlled_restart
+    )
     confirmations: list[str] = []
     monkeypatch.setattr(
-        main_window,
+        backup_restore_ui_coordinator,
         "ask_silent_yes_no",
         lambda _parent, title, _message: confirmations.append(title) or True,
     )
@@ -226,9 +339,12 @@ def test_path_remap_restart_uses_own_message_without_restore_backup(monkeypatch)
     window._restart_requested = False
     window._dispose_resources = lambda: None
     window.destroy = lambda: None
+    window._backup_restore_ui_coordinator = make_coordinator(
+        window, BackupRestoreBindingStub(), request_restart=window._request_controlled_restart
+    )
     prompts: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        main_window,
+        backup_restore_ui_coordinator,
         "ask_silent_yes_no",
         lambda _parent, title, message: prompts.append((title, message)) or False,
     )
@@ -249,14 +365,17 @@ def test_path_remap_restart_uses_own_message_without_restore_backup(monkeypatch)
 def test_failed_restore_never_offers_or_starts_restart(monkeypatch) -> None:
     window = object.__new__(MainWindow)
     window._restart_requested = False
+    window._backup_restore_ui_coordinator = make_coordinator(
+        window, BackupRestoreBindingStub(), request_restart=window._request_controlled_restart
+    )
     shown: list[tuple[str, bool]] = []
     monkeypatch.setattr(
-        main_window,
+        backup_restore_ui_coordinator,
         "show_silent_message",
         lambda _parent, title, _message, *, error=False: shown.append((title, error)),
     )
     monkeypatch.setattr(
-        main_window,
+        backup_restore_ui_coordinator,
         "ask_silent_yes_no",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no restart offer")),
     )
@@ -289,10 +408,14 @@ def test_result_from_closed_dialog_generation_does_not_update_new_dialog(
 
     window = object.__new__(MainWindow)
     dialog = DialogDouble()
-    window._database_backup_dialog = dialog
-    window._database_backup_dialog_generation = 4
-    window._database_operation_generation = 2
-    monkeypatch.setattr(main_window, "show_silent_message", lambda *_args, **_kwargs: None)
+    coordinator = make_coordinator(window, BackupRestoreBindingStub())
+    coordinator._dialog = dialog  # type: ignore[assignment]
+    coordinator._dialog_generation = 4
+    coordinator._operation_generation = 2
+    window._backup_restore_ui_coordinator = coordinator
+    monkeypatch.setattr(
+        backup_restore_ui_coordinator, "show_silent_message", lambda *_args, **_kwargs: None
+    )
 
     window.show_backup_restore_result(
         BackupRestoreUiResult(
@@ -303,16 +426,17 @@ def test_result_from_closed_dialog_generation_does_not_update_new_dialog(
     )
 
     assert dialog.results == []
-    assert window._database_operation_generation is None
+    assert coordinator._operation_generation is None
 
 
 def test_completed_backup_shows_clear_event_backup_confirmation(
     monkeypatch, tmp_path: Path
 ) -> None:
     window = object.__new__(MainWindow)
+    window._backup_restore_ui_coordinator = make_coordinator(window, BackupRestoreBindingStub())
     shown: list[tuple[str, str, bool]] = []
     monkeypatch.setattr(
-        main_window,
+        backup_restore_ui_coordinator,
         "show_silent_message",
         lambda _parent, title, message, *, error=False: shown.append((title, message, error)),
     )
@@ -332,6 +456,33 @@ def test_completed_backup_shows_clear_event_backup_confirmation(
             "Sicherung erfolgreich",
             f"Die komplette Veranstaltungssicherung wurde erfolgreich erstellt.\n\nDatei: {backup}",
             False,
+        )
+    ]
+
+
+def test_failed_backup_shows_controller_message_as_error(monkeypatch) -> None:
+    parent = object()
+    coordinator = make_coordinator(parent, BackupRestoreBindingStub())
+    shown: list[tuple[str, str, bool]] = []
+    monkeypatch.setattr(
+        backup_restore_ui_coordinator,
+        "show_silent_message",
+        lambda _parent, title, message, *, error=False: shown.append((title, message, error)),
+    )
+
+    coordinator.show_result(
+        BackupRestoreUiResult(
+            BackupRestoreOperation.BACKUP,
+            BackupRestoreUiState.FAILED,
+            "Sicherung konnte nicht erstellt werden.",
+        )
+    )
+
+    assert shown == [
+        (
+            "Backup/Restore/Wartung nicht ausgeführt",
+            "Sicherung konnte nicht erstellt werden.",
+            True,
         )
     ]
 
@@ -408,8 +559,9 @@ def test_importable_preview_requires_choice_and_starts_exact_preview_commit(
     window = object.__new__(MainWindow)
     binding = BackupRestoreBindingStub()
     window._backup_restore_controller = binding
-    window._database_backup_dialog_generation = 5
-    window._database_operation_generation = None
+    coordinator = make_coordinator(window, binding)
+    coordinator._dialog_generation = 5
+    window._backup_restore_ui_coordinator = coordinator
     monkeypatch.setattr(
         main_window,
         "choose_playlist_conflict",
@@ -429,7 +581,7 @@ def test_importable_preview_requires_choice_and_starts_exact_preview_commit(
     )
 
     assert binding.playlist_import_request == (preview, PlaylistConflictStrategy.APPEND)
-    assert window._database_operation_generation == 5
+    assert coordinator._operation_generation == 5
 
 
 def test_unknown_preview_paths_block_commit_and_show_bounded_examples(monkeypatch) -> None:
@@ -508,8 +660,9 @@ def test_media_path_preview_confirmation_commits_exact_preview(monkeypatch) -> N
     window = object.__new__(MainWindow)
     binding = BackupRestoreBindingStub()
     window._backup_restore_controller = binding
-    window._database_backup_dialog_generation = 8
-    window._database_operation_generation = None
+    coordinator = make_coordinator(window, binding)
+    coordinator._dialog_generation = 8
+    window._backup_restore_ui_coordinator = coordinator
     confirmations: list[str] = []
     monkeypatch.setattr(
         main_window,
@@ -528,7 +681,7 @@ def test_media_path_preview_confirmation_commits_exact_preview(monkeypatch) -> N
     )
 
     assert binding.media_path_commit_request is preview
-    assert window._database_operation_generation == 8
+    assert coordinator._operation_generation == 8
     assert "nicht verschoben oder kopiert" in confirmations[0]
     assert r"D:\Musik\eins.mp3" in confirmations[0]
 
@@ -612,8 +765,9 @@ def test_equalizer_conflict_choice_commits_exact_preview(monkeypatch) -> None:
     window = object.__new__(MainWindow)
     binding = BackupRestoreBindingStub()
     window._backup_restore_controller = binding
-    window._database_backup_dialog_generation = 9
-    window._database_operation_generation = None
+    coordinator = make_coordinator(window, binding)
+    coordinator._dialog_generation = 9
+    window._backup_restore_ui_coordinator = coordinator
     monkeypatch.setattr(
         main_window,
         "choose_equalizer_conflict",
@@ -631,7 +785,7 @@ def test_equalizer_conflict_choice_commits_exact_preview(monkeypatch) -> None:
     )
 
     assert binding.equalizer_import_request == (preview, EqualizerConflictStrategy.COPY)
-    assert window._database_operation_generation == 9
+    assert coordinator._operation_generation == 9
 
 
 def test_invalid_equalizer_preview_never_starts_commit(monkeypatch) -> None:
@@ -706,8 +860,9 @@ def test_overlay_conflict_confirmation_commits_exact_preview(monkeypatch) -> Non
     window = object.__new__(MainWindow)
     binding = BackupRestoreBindingStub()
     window._backup_restore_controller = binding
-    window._database_backup_dialog_generation = 10
-    window._database_operation_generation = None
+    coordinator = make_coordinator(window, binding)
+    coordinator._dialog_generation = 10
+    window._backup_restore_ui_coordinator = coordinator
     monkeypatch.setattr(main_window, "ask_silent_yes_no_cancel", lambda *_args, **_kwargs: True)
 
     window._handle_overlay_import_preview(
@@ -724,4 +879,4 @@ def test_overlay_conflict_confirmation_commits_exact_preview(monkeypatch) -> Non
         preview,
         OverlayConflictStrategy.REPLACE_EXISTING,
     )
-    assert window._database_operation_generation == 10
+    assert coordinator._operation_generation == 10
