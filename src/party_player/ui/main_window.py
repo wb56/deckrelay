@@ -116,20 +116,9 @@ from party_player.presentation import (
     Workspace,
     force_live_for_operational_update,
     global_status_text,
-    logical_client_size,
 )
 from party_player.presentation_coordinator import MainWindowPresentationCoordinator
-from party_player.window_geometry import (
-    DisplayProvider,
-    DisplaySnapshot,
-    MonitorGeometry,
-    Rect,
-    ResolvedWindowGeometry,
-    StoredWindowGeometry,
-    WindowsDisplayProvider,
-    parse_tk_geometry,
-    resolve_window_geometry,
-)
+from party_player.window_geometry import DisplayProvider
 from party_player.capability_snapshots import CapabilitySnapshotState
 from party_player.backup_restore_controller import (
     BackupRestoreController,
@@ -151,6 +140,7 @@ from party_player.ui.catalog_maintenance_dialog import (
     CatalogAnalysisActions,
     CatalogMaintenanceDialog,
 )
+from party_player.ui.window_geometry_ui_coordinator import WindowGeometryUiCoordinator
 
 
 def _ellipsize(text: str, maximum: int) -> str:
@@ -492,10 +482,16 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._performance = performance_monitor or PerformanceMonitor()
         self._callback_state = callback_state or GuiCallbackState()
         self._logger = logging.getLogger(__name__)
-        self._display_provider = display_provider
-        self._save_window_geometry = save_geometry
-        self._display_fingerprint: tuple[object, ...] | None = None
-        self._window_geometry_after_id: str | None = None
+        self._scheduled_after_ids: set[str] = set()
+        self._window_geometry_ui = WindowGeometryUiCoordinator(
+            self,
+            display_provider=display_provider,
+            save_geometry=save_geometry,
+            schedule=self.schedule,
+            discard_scheduled=self._scheduled_after_ids.discard,
+            reevaluate_presentation=self._reevaluate_presentation_for_display_change,
+            logger=self._logger,
+        )
         self._save_presentation_preference = save_presentation_preference
         self._save_presentation_workspace = save_presentation_workspace
         self._presentation_initial_preference = presentation_preference
@@ -569,7 +565,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._responsive_layout_spacing: tuple[int, int, int] | None = None
         self._cursor_restore_after_id: str | None = None
         self._optionmenu_cache: dict[str, tuple[tuple[str, ...], str]] = {}
-        self._scheduled_after_ids: set[str] = set()
         self._static_tooltips: list[Tooltip] = []
         self._catalog_tracks: list[Track] = []
         self._queue_entries: list[QueueEntry] = []
@@ -1867,164 +1862,24 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self.schedule(2000, self._poll_display_environment)
         self._request_focus_setup(self)
 
-    def _display_snapshot(self) -> DisplaySnapshot:
-        if self._display_provider is not None:
-            return self._display_provider.snapshot(self.winfo_id())
-        if sys.platform.startswith("win"):
-            return WindowsDisplayProvider().snapshot(self.winfo_id())
-        return DisplaySnapshot(
-            (
-                MonitorGeometry(
-                    Rect(0, 0, self.winfo_screenwidth(), self.winfo_screenheight()),
-                    Rect(0, 0, self.winfo_screenwidth(), self.winfo_screenheight()),
-                    1.0,
-                    True,
-                ),
-            )
-        )
-
     def _logical_client_size(self, width: int, height: int) -> LogicalClientSize:
-        return logical_client_size(width, height, self._get_window_scaling())
-
-    @staticmethod
-    def _snapshot_fingerprint(snapshot: DisplaySnapshot) -> tuple[object, ...]:
-        return tuple(
-            (
-                monitor.bounds,
-                monitor.work_area,
-                round(monitor.dpi_scale, 4),
-                monitor.primary,
-            )
-            for monitor in snapshot.monitors
-        ) + (snapshot.insets,)
+        return self._window_geometry_ui.logical_client_size(width, height)
 
     def _apply_initial_window_geometry(self, saved_geometry: str | None) -> None:
-        snapshot = self._display_snapshot()
-        resolved = resolve_window_geometry(saved_geometry, snapshot)
-        self.minsize(resolved.minimum_width, resolved.minimum_height)
-        self.geometry(resolved.tk_geometry)
-        self._display_fingerprint = self._snapshot_fingerprint(snapshot)
-        self._log_window_geometry("startup", saved_geometry, snapshot, resolved)
-
-    def _current_stored_geometry(self, snapshot: DisplaySnapshot) -> StoredWindowGeometry | None:
-        current = parse_tk_geometry(self.geometry(), 1.0)
-        if current is None:
-            return None
-        monitor = max(
-            snapshot.monitors,
-            key=lambda item: item.bounds.intersection_area(
-                Rect(
-                    current.x,
-                    current.y,
-                    current.x + round(current.width * item.dpi_scale) + snapshot.insets.horizontal,
-                    current.y + round(current.height * item.dpi_scale) + snapshot.insets.vertical,
-                )
-            ),
-        )
-        return StoredWindowGeometry(
-            current.width,
-            current.height,
-            current.x,
-            current.y,
-            monitor.dpi_scale,
-        )
-
-    def _ensure_window_in_work_area(self, trigger: str) -> None:
-        if bool(self.attributes("-fullscreen")):
-            return
-        try:
-            snapshot = self._display_snapshot()
-        except OSError:
-            self._logger.exception("Fensterarbeitsfläche konnte nicht aktualisiert werden")
-            return
-        current = self._current_stored_geometry(snapshot)
-        if current is None:
-            return
-        resolved = resolve_window_geometry(current.serialize(), snapshot)
-        self._display_fingerprint = self._snapshot_fingerprint(snapshot)
-        if resolved.reasons:
-            self.minsize(resolved.minimum_width, resolved.minimum_height)
-            self.geometry(resolved.tk_geometry)
-            self._log_window_geometry(trigger, current.serialize(), snapshot, resolved)
+        self._window_geometry_ui.apply_initial_geometry(saved_geometry)
 
     def _poll_display_environment(self) -> None:
-        try:
-            snapshot = self._display_snapshot()
-        except OSError:
-            self._logger.exception("Fensterarbeitsfläche konnte nicht abgefragt werden")
-        else:
-            fingerprint = self._snapshot_fingerprint(snapshot)
-            if fingerprint != self._display_fingerprint:
-                self._ensure_window_in_work_area("display_change")
-                if self._presentation_coordinator is not None:
-                    self._presentation_coordinator.reevaluate(
-                        self._logical_client_size(self.winfo_width(), self.winfo_height()),
-                        reason="display-change",
-                    )
-        self.schedule(2000, self._poll_display_environment)
+        self._window_geometry_ui.poll_display_environment()
 
     def _schedule_window_geometry_save(self) -> None:
-        if self._save_window_geometry is None:
-            return
-        pending = self._window_geometry_after_id
-        if pending is not None:
-            try:
-                self.after_cancel(pending)
-            except TclError:
-                pass
-            self._scheduled_after_ids.discard(pending)
-
-        def save() -> None:
-            self._window_geometry_after_id = None
-            self._ensure_window_in_work_area("configure")
-            self._persist_window_geometry()
-
-        self._window_geometry_after_id = str(self.schedule(400, save))
+        self._window_geometry_ui.schedule_save()
 
     def _persist_window_geometry(self) -> None:
-        if self._save_window_geometry is None or bool(self.attributes("-fullscreen")):
-            return
-        try:
-            snapshot = self._display_snapshot()
-            geometry = self._current_stored_geometry(snapshot)
-        except OSError:
-            return
-        if geometry is not None:
-            self._save_window_geometry(geometry.serialize())
+        self._window_geometry_ui.persist()
 
-    def _log_window_geometry(
-        self,
-        trigger: str,
-        stored: str | None,
-        snapshot: DisplaySnapshot,
-        resolved: ResolvedWindowGeometry,
-    ) -> None:
-        self._logger.info(
-            "Fenstergeometrie trigger=%s monitors=%s stored=%s applied=%s reasons=%s",
-            trigger,
-            [
-                {
-                    "bounds": (
-                        m.bounds.left,
-                        m.bounds.top,
-                        m.bounds.right,
-                        m.bounds.bottom,
-                    ),
-                    "work": (
-                        m.work_area.left,
-                        m.work_area.top,
-                        m.work_area.right,
-                        m.work_area.bottom,
-                    ),
-                    "dpi_scale": round(m.dpi_scale, 3),
-                    "primary": m.primary,
-                }
-                for m in snapshot.monitors
-            ],
-            stored,
-            resolved.tk_geometry,
-            resolved.reasons or ("unchanged",),
-        )
+    def _reevaluate_presentation_for_display_change(self, size: LogicalClientSize) -> None:
+        if self._presentation_coordinator is not None:
+            self._presentation_coordinator.reevaluate(size, reason="display-change")
 
     def bind_controller(self, controller: MainController) -> None:
         self._controller = controller
