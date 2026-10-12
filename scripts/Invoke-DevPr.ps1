@@ -209,7 +209,7 @@ function Get-GateState {
 
 function Assert-OwnerAttestation {
     param([string]$Name, $Pr, [string]$Label, [string]$Type, [string]$Description)
-    $repoData = ConvertFrom-JsonSafe (Invoke-Gh @("repo", "view", "--repo", $Name, "--json", "owner")).Text "Eigentümer"
+    $repoData = ConvertFrom-JsonSafe (Invoke-Gh @("repo", "view", $Name, "--json", "owner")).Text "Eigentümer"
     $owner = $repoData.owner.login
     if ([string]::IsNullOrWhiteSpace($owner)) { Stop-Blocked "Repository-Eigentümer ist unbekannt." }
     $activeLabels = @($Pr.labels | ForEach-Object { $_.name })
