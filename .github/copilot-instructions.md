@@ -1,18 +1,16 @@
-# Copilot Instructions — DeckRelay
+# DeckRelay Copilot Instructions
 
-`AGENTS.md` und die dort verlinkten GUI- und Lizenzrichtlinien sind für die
-DeckRelay-2.0-Entwicklung verbindlich.
+`AGENTS.md` is the shared project rule source. `CONTRIBUTING.md` defines the
+contribution, testing, and PR evidence workflow. Follow their quality, security,
+architecture, documentation, and testing requirements; do not duplicate those standards
+here.
 
-- Technologie: Python 3.11+, CustomTkinter, tkinter/ttk, SQLite und die vorhandenen
-  Audioabstraktionen. Kein eigenständiger Frameworkwechsel.
-- Architektur strikt einhalten: UI → Controller → Service → Repository → SQLite.
-- UI enthält weder SQL noch Geschäftslogik oder Dateimanipulationen und greift nicht
-  direkt auf ein konkretes Audio-Backend zu.
-- Musikdateien sind schreibgeschützt zu behandeln: nicht automatisch umbenennen, verschieben, löschen oder Metadaten überschreiben.
-- Datenbankänderungen erfolgen über Migrationen, SQL ist parametrisiert und `SELECT *` ist verboten.
-- Auf mindestens 100.000 Titel auslegen: Pagination, Indizes, Lazy Loading und Hintergrundarbeit verwenden.
-- Tkinter nur im Hauptthread aktualisieren; Worker kommunizieren über Queue, Callbacks oder `after()`.
-- Projekt-Logging verwenden, niemals `print()`.
-- Code und Bezeichner Englisch, UI-Texte Deutsch; Type Hints und Docstrings sind Pflicht.
-- Tests verwenden temporäre SQLite-Datenbanken, gemockte Player und keine echte Musiksammlung.
-- Party-Oberflächen zeigen keine Tag-Editoren, Datenbankwartung oder Dateioperationen.
+- Copilot Free may be used for analysis, tests, and small, explicitly scoped
+  implementations.
+- Do not commit, push, create or publish pull requests, or merge unless the user
+  explicitly authorizes that specific operation. Authorization to implement or test is
+  not authorization for Git or GitHub changes.
+- Do not edit on `main`; establish a focused feature branch first.
+
+The Git and pull-request section in `AGENTS.md` describes Codex's existing B3 workflow
+and does not grant Copilot those Git permissions.
