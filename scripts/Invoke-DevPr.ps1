@@ -290,7 +290,7 @@ function Assert-OwnerAttestation {
         if ($event.event -eq "labeled" -and $event.label.name -ceq $Label -and
             $event.actor.login -eq $owner) {
             $eventTime = ConvertTo-UtcDateTimeOffset $event.created_at "$Description enthält eine ungültige Label-Ereigniszeit."
-            if ($eventTime -ge $latest.Created) { $validLabelEvents += $event }
+            if ($eventTime -gt $latest.Created) { $validLabelEvents += $event }
         }
     }
     if ($validLabelEvents.Count -eq 0) {

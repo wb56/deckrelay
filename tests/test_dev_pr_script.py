@@ -220,6 +220,7 @@ if ($joined.Contains('reviews')) {
 if ($joined.Contains('events')) {
     $events = @()
     $technicalLabelTime = if ($scenario -eq 'label-before-comment') { '2026-10-13T10:04:00Z' }
+        elseif ($scenario -eq 'label-same-time-as-comment') { '2026-10-13T10:05:00Z' }
         elseif ($scenario -eq 'offset-timestamps') { '2026-10-13T12:06:00+02:00' }
         elseif ($scenario -eq 'event-invalid') { 'not-a-timestamp' }
         elseif ($scenario -eq 'event-missing') { $null }
@@ -556,6 +557,7 @@ def test_attestation_timestamp_decisions_are_culture_independent(
         ("event-missing", "Label-Ereigniszeit"),
         ("review-too-early", "review"),
         ("label-before-comment", "technical-reviewed"),
+        ("label-same-time-as-comment", "technical-reviewed"),
         ("comment-edited", "verändert"),
     ],
 )
