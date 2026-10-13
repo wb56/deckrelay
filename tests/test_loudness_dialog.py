@@ -4,6 +4,11 @@ from typing import Any, cast
 
 import pytest
 
+from party_player.ui.loudness_dialogs import (
+    _parse_gain_db as new_parse_gain_db,
+    LoudnessDialog as NewLoudnessDialog,
+    NormalizationSettingsDialog as NewNormalizationSettingsDialog,
+)
 from party_player.ui.dialogs import (
     _parse_gain_db,
     LoudnessDialog,
@@ -55,6 +60,13 @@ class _DialogDouble:
     @staticmethod
     def _number(entry: _Entry) -> float:
         return float(entry.get().strip().replace(",", "."))
+
+
+def test_dialogs_module_reexports_loudness_dialog_symbols() -> None:
+    assert LoudnessDialog is NewLoudnessDialog
+    assert NormalizationSettingsDialog is NewNormalizationSettingsDialog
+    assert _parse_gain_db is new_parse_gain_db
+    assert new_parse_gain_db(" −4,5 dB ") == -4.5
 
 
 def test_save_accepts_decimal_comma_and_closes_dialog() -> None:

@@ -129,13 +129,12 @@ from party_player.ui.dialogs import (
     ask_silent_yes_no,
     ask_silent_yes_no_cancel,
     CuePointDialog,
-    LoudnessDialog,
-    NormalizationSettingsDialog,
     QueueCueDialog,
     SavedQueueTempoDialog,
     show_silent_message,
     show_tempo_analysis_help,
 )
+from party_player.ui.loudness_dialogs import LoudnessDialog, NormalizationSettingsDialog
 from party_player.ui.catalog_maintenance_dialog import (
     CatalogAnalysisActions,
     CatalogMaintenanceDialog,
