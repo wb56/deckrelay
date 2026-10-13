@@ -196,5 +196,6 @@ reale Tk-/VLC-Messungen:
 - `status_tick.render` durchschnittlich unter 6 ms und maximal unter 20 ms,
 - stabiler Widget-, Tooltip-, RSS- und optionaler Heapbestand im Langzeittest.
 
-Diese Abnahmen sind in `TODO.md` als offen gekennzeichnet und dürfen nicht allein aus
-Unit-Tests als bestanden abgeleitet werden.
+Diese realen Abnahmen sind in der
+[Feature-Liste](feature_list.md) unter **Implementiert, aber noch real abzunehmen**
+geführt und dürfen nicht allein aus Unit-Tests als bestanden abgeleitet werden.

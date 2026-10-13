@@ -2,12 +2,26 @@
 
 Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
-## [2.0.0-beta.1] - Unveröffentlicht
+## [Unveröffentlicht]
 
-> **Planungsstatus:** Dieser Abschnitt beschreibt bereits implementierte Änderungen der
-> unveröffentlichten Beta, nicht den vollständigen verbleibenden Umfang der stabilen
-> Version 2.0. Die verbindliche Abgrenzung zwischen fertig, noch abzunehmen, noch zu
-> entwickeln sowie 2.1/3.0 steht in `docs/feature_list.md`.
+### Added
+
+- Die titelbezogene automatische Recovery behandelt Lade-, Vorbereitungs- und
+  bestätigte Wiedergabefehler generationensicher, verhindert schnelle
+  Queue-Verbrauchsschleifen und berücksichtigt ein gültig manuell geladenes Deck
+  beim Neustart der Automatik. Automatisierte Abdeckung und die begrenzten realen
+  LibVLC-/Geräteprüfungen sind in der
+  [Recovery-Abnahme](docs/development/automatic-playback-emergency-recovery.md)
+  dokumentiert; globale Geräte-/Backend-Recovery und nicht destruktiv geprüfte
+  Ausfallfälle bleiben davon ausdrücklich unberührt.
+
+## [2.0.0-beta.1] - 2026-09-01
+
+> **Einordnung:** `2.0.0-beta.1` wurde am 1. September 2026 veröffentlicht. Dieser
+> Abschnitt dokumentiert die Änderungen der 2.0-Beta-Entwicklung und ist kein
+> vollständiger Nachweis, dass jede hier aufgeführte Änderung bereits im
+> Beta-Artefakt enthalten war. Die verbindliche Abgrenzung des aktuellen Umfangs und
+> Status von 2.0, 2.1 und 3.0 steht in `docs/feature_list.md`.
 
 ### Added
 
@@ -162,9 +176,8 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 - Die automatische Cue-Erkennung bewertet Signalpegel und nicht die musikalische oder
   dramaturgische Bedeutung eines Intros oder Outros. Cue In, Cue Out und Fade können
   im Titeleditor über den separaten Vorschauplayer vorgehört werden.
-- Der Notfall- und Recovery-Unterbau ist implementiert. Reale Veranstaltungs-, Geräte-
-  und Langzeitabnahmen stehen vor der stabilen 2.0-Freigabe noch aus; die globale
-  Geräte-/Backend-Recovery bleibt als letzte Eskalationsstufe bewusst bedienergeführt.
+- Der in diesem Beta-Stand enthaltene Notfallbetrieb deckte noch nicht die später
+  ergänzte automatische titelbezogene Recovery ab.
 - DeckRelay führt kein Beatmatching und kein tonhöhenerhaltendes Time-Stretching aus.
 
 ## [1.0.0] - 2026-08-16

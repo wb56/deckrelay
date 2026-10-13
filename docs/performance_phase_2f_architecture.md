@@ -84,6 +84,8 @@ erhalten.
 ## Verbleibende reale Abnahme
 
 Automatisierte Tests belegen Nichtblockieren, Reihenfolge, Idempotenz, Fehlerisolation
-und Guards. Die Zielwerte von typisch 15 ms beziehungsweise maximal 50 ms können nur
-in einem realen VLC-/CustomTkinter-Lauf mit lokaler und absichtlich verzögerter SQLite-
-Persistenz bestätigt werden. Diese Messung bleibt als offener Punkt in der TODO-Liste.
+und Guards. Die im damaligen Stand noch offene reale Messung mit verzögerter SQLite-
+Persistenz wurde inzwischen bestanden; der aktuelle Nachweis steht in der
+[Feature-Liste](feature_list.md) unter **Implementiert und abgeschlossen**. Das
+Ergebnis gilt für diese Datenbankverzögerungsabnahme und ersetzt keine anderen realen
+VLC-/CustomTkinter- oder Langzeitprüfungen.
