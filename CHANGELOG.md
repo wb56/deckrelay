@@ -14,23 +14,9 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
   [Recovery-Abnahme](docs/development/automatic-playback-emergency-recovery.md)
   dokumentiert; globale Geräte-/Backend-Recovery und nicht destruktiv geprüfte
   Ausfallfälle bleiben davon ausdrücklich unberührt.
-
-## [2.0.0-beta.1] - 2026-09-01
-
-> **Einordnung:** `2.0.0-beta.1` wurde am 1. September 2026 veröffentlicht. Dieser
-> Abschnitt dokumentiert die Änderungen der 2.0-Beta-Entwicklung und ist kein
-> vollständiger Nachweis, dass jede hier aufgeführte Änderung bereits im
-> Beta-Artefakt enthalten war. Die verbindliche Abgrenzung des aktuellen Umfangs und
-> Status von 2.0, 2.1 und 3.0 steht in `docs/feature_list.md`.
-
-### Added
-
-- Auswahlregel-Einstellungen werden über die persistente Service-Konfiguration
-  verwaltet und können kontrolliert auf sichere Standardwerte zurückgesetzt
-  werden; das bisherige Standard-Auswahlverhalten bleibt unverändert.
-- Die Auswahlregel-Konfiguration wird vollständig persistent registriert; sichere
-  Standardwerte erhalten das bisherige Auswahlverhalten, eine neue Oberfläche
-  ist mit diesem Teilblock nicht verbunden.
+- Auswahlregel-Einstellungen werden über die Service-Konfiguration dauerhaft
+  gespeichert und können auf sichere Standardwerte zurückgesetzt werden; das
+  bisherige Standard-Auswahlverhalten bleibt erhalten.
 - Die automatische Queue-Zusammenstellung verbindet persistente Katalogfilter und
   Mindestvorräte mit einer fortlaufenden Automatik. Sie füllt fehlende sichere Titel
   nebenläufig und ohne Duplikate nach, respektiert Pausieren und Beenden und lässt
@@ -50,21 +36,21 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 - Ein persistentes, transaktionales Modell für automatische Auswahlpläne bereitet
   nachvollziehbare Planung und sichere Wiederaufnahme vor, ohne die bestehende
   Automatik bereits zu verändern.
-- Genre-, BPM-, Energie- und Stimmungsregeln können jetzt dauerhaft aktiviert und
-  in drei Stärken eingestellt werden; die Automatikvorschau trennt primäre
-  Abspielgruppe, sekundäre Bewertung und Gleichstand.
+- Genre-, BPM-, Energie- und Stimmungsregeln können dauerhaft aktiviert und in drei
+  Stärken eingestellt werden; die Automatikvorschau trennt primäre Abspielgruppe,
+  sekundäre Bewertung und Gleichstand.
 - Die automatische Auswahl unterstützt optional Genre-Abwechslung und
   Stimmungsanschluss innerhalb der primären Abspielranggruppe.
 - Die automatische Auswahl unterstützt optional eine gewichtete BPM- und
   Energiekontinuität innerhalb der primären Abspielranggruppe.
-- Die automatische Auswahl behandelt die geringste Abspielzahl nun als verbindliche
+- Die automatische Auswahl behandelt die geringste Abspielzahl als verbindliche
   primäre Rangstufe und stellt einen unveränderlichen Vorgängerkontext für reale
   Auswahl und Vorschau bereit.
 - Das Windows-Quality-Gate führt statische Prüfungen, die allgemeine Testsuite und
   echte FFmpeg-Formattests parallel und ohne doppelte Testausführung aus.
-- Die automatische Auswahl lädt Genre, BPM, Energie und Stimmung nun gebündelt in
-  einen unveränderlichen, qualitätsbewussten Metadatensnapshot, noch ohne die Auswahl
-  oder ihre Bewertung zu verändern.
+- Die automatische Auswahl lädt Genre, BPM, Energie und Stimmung gebündelt in einen
+  unveränderlichen, qualitätsbewussten Metadatensnapshot, noch ohne die Auswahl oder
+  ihre Bewertung zu verändern.
 - Die Vorbereitungsansicht bündelt Betriebszustand, Wiedergabe und Automatik,
   Audio und Sicherheit, Jingles sowie Diagnose in einer gemeinsamen responsiven
   Arbeitsfläche. Quellen-, Queue- und Automatikstatus bleiben getrennt sichtbar.
@@ -80,9 +66,25 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 - Die beiden konfigurierbaren Soft-Regeln für Abspielhäufigkeit und Titelbewertung
   können über einen responsiven Einstellungsdialog verständlich bearbeitet werden.
 - Die beiden bestehenden Soft-Regeln für Abspielhäufigkeit und Titelbewertung
-  besitzen nun eine persistierbare, begrenzte und rückwärtskompatible Konfiguration.
+  besitzen eine persistierbare, begrenzte und rückwärtskompatible Konfiguration.
 - Eine begrenzte, zustandsneutrale Mehrschritt-Vorschau verwendet die bestehende
   erklärbare Automatikauswahl, ohne produktive Auswahlzustände fortzuschalten.
+
+### Changed
+
+- Quellenentscheidung, tatsächlich ausgeführte harte Regeln, Soft-Scores und
+  abschließende Kandidatenkategorie werden in einer gemeinsamen, sicheren
+  `SelectionRationale` zusammengeführt, ohne die Auswahl erneut auszuführen.
+- Queue-, Automatik- und Notfallquellen liefern eine gemeinsame strukturierte
+  Erklärung ihrer unveränderten Prioritäts- und Herkunftsentscheidung.
+- Die automatische Katalogauswahl bildet ihre bisherige Bevorzugung selten
+  gespielter Titel als nachvollziehbaren Soft-Score ab. Bei gleicher Abspielhäufigkeit
+  wirkt die optionale Bewertung begrenzt; fehlende Bewertungen bleiben neutral.
+
+## [2.0.0-beta.1] - 2026-09-01
+
+### Added
+
 - Eine responsive Oberfläche bietet große und kompakte Darstellungen sowie getrennte
   kompakte Arbeitsbereiche für Livebetrieb und Vorbereitung. Decks, Queue, Automatik,
   Katalog und wichtige Aktionen bleiben auch bei kleineren Arbeitsflächen erreichbar.
@@ -109,14 +111,6 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 
 ### Changed
 
-- Quellenentscheidung, tatsächlich ausgeführte harte Regeln, Soft-Scores und
-  abschließende Kandidatenkategorie werden in einer gemeinsamen, sicheren
-  `SelectionRationale` zusammengeführt, ohne die Auswahl erneut auszuführen.
-- Queue-, Automatik- und Notfallquellen liefern eine gemeinsame strukturierte Erklärung
-  ihrer unveränderten Prioritäts- und Herkunftsentscheidung.
-- Die automatische Katalogauswahl bildet ihre bisherige Bevorzugung selten gespielter
-  Titel als nachvollziehbaren Soft-Score ab. Bei gleicher Abspielhäufigkeit wirkt die
-  optionale Bewertung begrenzt; fehlende Bewertungen bleiben ausdrücklich neutral.
 - Der Titeleditor speichert Cue- und Metadatenänderungen ausdrücklich, bleibt danach
   aber für weitere Bearbeitung geöffnet. Lange Titel und Cue-Aktionen passen sich an
   die verfügbare Dialogbreite an.
@@ -176,8 +170,7 @@ Alle wesentlichen Änderungen an DeckRelay werden in dieser Datei dokumentiert.
 - Die automatische Cue-Erkennung bewertet Signalpegel und nicht die musikalische oder
   dramaturgische Bedeutung eines Intros oder Outros. Cue In, Cue Out und Fade können
   im Titeleditor über den separaten Vorschauplayer vorgehört werden.
-- Der in diesem Beta-Stand enthaltene Notfallbetrieb deckte noch nicht die später
-  ergänzte automatische titelbezogene Recovery ab.
+- Der Notfallbetrieb befindet sich weiterhin im Ausbau.
 - DeckRelay führt kein Beatmatching und kein tonhöhenerhaltendes Time-Stretching aus.
 
 ## [1.0.0] - 2026-08-16
