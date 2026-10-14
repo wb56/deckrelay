@@ -1,5 +1,14 @@
 # Qualitätsaudit DeckRelay 1.0.0-beta.2
 
+> **Historischer Stand:** Dieses Dokument bewertet die Stabilisierung der
+> Version-1-Beta-2. Danach wurden reale FFmpeg-Formattests in das Windows-Gate
+> aufgenommen. Die titelbezogene Recovery ist implementiert und automatisiert
+> getestet; die durchgeführten realen LibVLC-/Geräteprüfungen sowie ihre Grenzen
+> sind in der [Recovery-Abnahme](development/automatic-playback-emergency-recovery.md)
+> dokumentiert. Das ist keine Aussage, dass globale Geräte-Recovery oder die
+> übrigen Veranstaltungs- und Langzeitabnahmen bestanden sind. Der aktuelle Stand
+> steht in der [Feature-Liste](feature_list.md).
+
 Stand: 14.08.2026, unterstützte Zielplattform: Windows, Python 3.11.
 
 ## Abgrenzung und Vergleichsbasis

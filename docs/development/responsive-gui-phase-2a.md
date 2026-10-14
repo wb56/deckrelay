@@ -1,5 +1,10 @@
 # DeckRelay 2.0: responsive GUI and compact mode concept
 
+> **Status note:** This is the historical Phase 2A design record. The later sections
+> report implementation, automated evidence and manual acceptance only for their
+> stated scope; none of those labels alone establishes complete real-world acceptance.
+> Current remaining product checks are tracked in the [feature list](../feature_list.md).
+
 ## Status and scope
 
 This is the Phase 2A design record. It is based on the Phase 1 work-area and DPI
