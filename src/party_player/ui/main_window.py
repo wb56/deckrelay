@@ -5,7 +5,6 @@ from dataclasses import replace
 from functools import partial
 from io import BytesIO
 import logging
-import math
 from pathlib import Path
 import sys
 from time import monotonic
@@ -36,7 +35,6 @@ from party_player.controllers.track_editor_controller import (
     TrackEditorViewModel,
 )
 from party_player.metadata_analysis_service import MetadataAnalysisService
-from party_player.enums import DeckState
 from party_player.emergency_actions import EmergencyActionProfile
 from party_player.emergency_playlist import EmergencyMediaType
 from party_player.models import (
@@ -61,7 +59,14 @@ from party_player.ui.catalog_row import (
     track_version_text,
 )
 from party_player.ui.compact_deck_presentation import compact_deck_presentation
+from party_player.ui.deck_panels import (
+    CompactDeckPanel,
+    DeckPanel,
+    _deck_loudness_text as _deck_loudness_text,
+    _equalizer_source_text,
+)
 from party_player.ui.overlay_panel import OverlayPanel
+from party_player.ui.mixer_panel import MixerPanel
 from party_player.ui.overlay_management_dialog import OverlayManagementDialog
 from party_player.ui.system_diagnostic_dialog import SystemDiagnosticDialog
 from party_player.ui.external_programs_dialog import ExternalProgramsDialog
@@ -70,6 +75,7 @@ from party_player.ui.database_backup_dialog import (
     choose_equalizer_conflict,
     choose_playlist_conflict,
 )
+from party_player.ui.backup_restore_ui_coordinator import BackupRestoreUiCoordinator
 from party_player.equalizer_transfer import EqualizerConflictStrategy
 from party_player.overlay_transfer import OverlayConflictStrategy
 from party_player.playlist_transfer import (
@@ -110,47 +116,30 @@ from party_player.presentation import (
     Workspace,
     force_live_for_operational_update,
     global_status_text,
-    logical_client_size,
 )
 from party_player.presentation_coordinator import MainWindowPresentationCoordinator
-from party_player.window_geometry import (
-    DisplayProvider,
-    DisplaySnapshot,
-    MonitorGeometry,
-    Rect,
-    ResolvedWindowGeometry,
-    StoredWindowGeometry,
-    WindowsDisplayProvider,
-    parse_tk_geometry,
-    resolve_window_geometry,
-)
+from party_player.window_geometry import DisplayProvider
 from party_player.capability_snapshots import CapabilitySnapshotState
 from party_player.backup_restore_controller import (
     BackupRestoreController,
     BackupRestoreOperation,
     BackupRestoreUiResult,
-    BackupRestoreUiState,
 )
 from party_player.ui.dialogs import (
     ask_silent_yes_no,
     ask_silent_yes_no_cancel,
     CuePointDialog,
-    LoudnessDialog,
-    NormalizationSettingsDialog,
     QueueCueDialog,
     SavedQueueTempoDialog,
     show_silent_message,
     show_tempo_analysis_help,
 )
+from party_player.ui.loudness_dialogs import LoudnessDialog, NormalizationSettingsDialog
 from party_player.ui.catalog_maintenance_dialog import (
     CatalogAnalysisActions,
     CatalogMaintenanceDialog,
 )
-
-
-def _time_text(seconds: float) -> str:
-    value = max(0, round(seconds))
-    return f"{value // 60:02d}:{value % 60:02d}"
+from party_player.ui.window_geometry_ui_coordinator import WindowGeometryUiCoordinator
 
 
 def _ellipsize(text: str, maximum: int) -> str:
@@ -309,43 +298,6 @@ def _configure_focus_cycle(widgets: tuple[Any, ...]) -> None:
         )
 
 
-class _SeekProgressBar(tk.Canvas):
-    """Small native canvas bar that avoids CustomTkinter redraw overhead."""
-
-    def __init__(self, parent: Any, *, progress_color: str) -> None:
-        super().__init__(
-            parent,
-            height=14,
-            bg=theme.BORDER,
-            borderwidth=0,
-            highlightthickness=0,
-        )
-        self._ratio = 0.0
-        self._progress_color = progress_color
-        self._fill = self.create_rectangle(
-            0,
-            0,
-            0,
-            14,
-            fill=progress_color,
-            outline="",
-        )
-        self.bind("<Configure>", self._redraw)
-
-    def set(self, ratio: float) -> None:
-        self._ratio = min(1.0, max(0.0, ratio))
-        self._redraw()
-
-    def set_color(self, color: str) -> None:
-        if color == self._progress_color:
-            return
-        self._progress_color = color
-        self.itemconfigure(self._fill, fill=color)
-
-    def _redraw(self, _event: Any = None) -> None:
-        self.coords(self._fill, 0, 0, int(self.winfo_width() * self._ratio), self.winfo_height())
-
-
 def _duration_text(seconds: float) -> str:
     value = max(0, round(seconds))
     hours, remainder = divmod(value, 3600)
@@ -395,32 +347,6 @@ def _track_details_text(track: Track, loudness: LoudnessEditorState | None) -> s
         f"{loudness_text}\n\n"
         f"Datei: {track.file_path}"
     )
-
-
-def _deck_loudness_text(deck: Deck) -> str:
-    if deck.loaded_track is None:
-        return "Gain: —"
-    source = LoudnessController.source_text(deck.loudness_source)
-    protection = " · Clip-Schutz aktiv" if deck.loudness_peak_limited else ""
-    return (
-        f"Gain: {deck.loudness_requested_gain_db:+.2f} → "
-        f"{deck.loudness_effective_gain_db:+.2f} dB · {source}{protection}"
-    )
-
-
-def _equalizer_source_text(source: str) -> str:
-    return {
-        "TITLE": "Titel",
-        "QUEUE": "aktuelle Queue",
-        "PLAYLIST": "Playlist",
-        "GENRE": "Genre",
-        "GLOBAL": "Standard",
-        "PREVIEW": "Vorschau",
-        "EDITOR": "Vorschau",
-        "DISABLED": "Aus",
-        "UNSUPPORTED": "nicht unterstützt",
-        "ERROR": "Fehler",
-    }.get(source, source.title())
 
 
 def _equalizer_effective_text(name: str, source: str) -> str:
@@ -489,17 +415,6 @@ def _optionmenu_changes(
     )
 
 
-DECK_STATE_TEXT = {
-    DeckState.EMPTY: "LEER",
-    DeckState.LOADED: "GELADEN",
-    DeckState.PLAYING: "WIEDERGABE",
-    DeckState.PAUSED: "PAUSIERT",
-    DeckState.STOPPED: "GESTOPPT",
-    DeckState.FINISHED: "BEENDET",
-    DeckState.ERROR: "FEHLER",
-}
-
-
 class SmoothScrollableFrame(ctk.CTkScrollableFrame):  # type: ignore[misc]
     """Limit expensive canvas scrolling so audio-control timers stay responsive."""
 
@@ -539,662 +454,6 @@ class SmoothScrollableFrame(ctk.CTkScrollableFrame):  # type: ignore[misc]
         return "break"
 
 
-class DeckPanel(ctk.CTkFrame):  # type: ignore[misc]
-    """Large, high-contrast controls for one deck."""
-
-    def __init__(
-        self,
-        master: object,
-        deck_id: str,
-        action: Callable[[str, str], None],
-        performance_monitor: PerformanceMonitor | None = None,
-    ) -> None:
-        accent = theme.DECK_ACCENTS[deck_id]
-        super().__init__(
-            master,
-            corner_radius=theme.PANEL_CORNER_RADIUS,
-            fg_color=theme.SURFACE_RAISED,
-            border_width=1,
-            border_color=accent,
-        )
-        self.deck_id = deck_id
-        self._action = action
-        self._seek_callback: Callable[[str, float], None] | None = None
-        self._volume_callback: Callable[[str, float], None] | None = None
-        self._fade_callback: Callable[[str, bool], None] | None = None
-        self._cancel_fade_callback: Callable[[str], None] | None = None
-        self._import_callback: Callable[[str, str], None] | None = None
-        self._equalizer_callback: Callable[[str], None] | None = None
-        self._tooltips: list[Tooltip] = []
-        self._updating_controls = False
-        self._render_cache: dict[str, object] = {}
-        self._performance = performance_monitor or PerformanceMonitor()
-        self._logger = logging.getLogger(__name__)
-        self._render_operation = f"status_render.deck_{deck_id.lower()}"
-        self._accent = accent
-        self._last_on_air = False
-        self._air_transition_after_id: str | None = None
-        self._progress_max = 1.0
-
-        self.grid_columnconfigure(0, weight=1)
-        self._header = ctk.CTkLabel(
-            self,
-            text=f"DECK {deck_id}",
-            font=(theme.FONT_FAMILY, 25, "bold"),
-            text_color=accent,
-        )
-        self._header.grid(row=0, column=0, padx=16, pady=(16, 8), sticky="ew")
-        self._air_badge = ctk.CTkLabel(
-            self,
-            text="● BEREIT",
-            font=(theme.FONT_FAMILY, 11, "bold"),
-            text_color=theme.TEXT_MUTED,
-            fg_color=theme.SURFACE,
-            corner_radius=theme.CONTROL_CORNER_RADIUS,
-            width=72,
-        )
-        self._air_badge.grid(row=0, column=0, padx=14, pady=(16, 8), sticky="e")
-        self._cover = ctk.CTkLabel(
-            self,
-            text="Kein Cover",
-            width=190,
-            height=160,
-            fg_color="#20242b",
-            corner_radius=8,
-        )
-        self._cover.grid(row=1, column=0, padx=16, pady=8)
-        self._file_button = ctk.CTkButton(
-            self,
-            text="Audiodatei laden",
-            height=36,
-            corner_radius=theme.CONTROL_CORNER_RADIUS,
-            fg_color=accent,
-            hover_color=theme.DECK_ACCENT_HOVER[deck_id],
-            command=self._choose_file,
-        )
-        self._file_button.grid(row=2, column=0, padx=16, pady=(2, 8), sticky="ew")
-        self._title = ctk.CTkLabel(self, text="Kein Titel geladen", font=("Segoe UI", 18, "bold"))
-        self._title.grid(row=3, column=0, padx=16, pady=(8, 2), sticky="ew")
-        self._metadata = ctk.CTkLabel(self, text="—", wraplength=270)
-        self._metadata.grid(row=4, column=0, padx=16, pady=(0, 8), sticky="ew")
-        self._cue_points = ctk.CTkLabel(
-            self, text="Cue: —", text_color=theme.TEXT_MUTED, wraplength=300
-        )
-        self._cue_points.grid(row=5, column=0, padx=16, pady=(0, 5), sticky="ew")
-        self._loudness = ctk.CTkLabel(
-            self, text="Gain: —", text_color=theme.TEXT_MUTED, wraplength=300
-        )
-        self._loudness.grid(row=6, column=0, padx=16, pady=(0, 5), sticky="ew")
-        equalizer_line = ctk.CTkFrame(self, fg_color="transparent")
-        equalizer_line.grid(row=7, column=0, padx=16, pady=(0, 5), sticky="ew")
-        equalizer_line.grid_columnconfigure(0, weight=1)
-        self._equalizer = ctk.CTkLabel(
-            equalizer_line,
-            text="EQ: Aus",
-            text_color=theme.TEXT_MUTED,
-            anchor="w",
-        )
-        self._equalizer.grid(row=0, column=0, sticky="ew")
-        self._equalizer_button = ctk.CTkButton(
-            equalizer_line,
-            text="Ändern",
-            width=62,
-            height=26,
-            command=self._change_equalizer,
-        )
-        self._equalizer_button.grid(row=0, column=1, padx=(6, 0))
-        self._tooltips.append(
-            Tooltip(
-                self._equalizer_button,
-                "Equalizer-Preset und Wirkungsziel für dieses Deck öffnen",
-            )
-        )
-        self._ducking_status = ctk.CTkLabel(
-            equalizer_line,
-            text="",
-            text_color=theme.WARNING,
-            font=(theme.FONT_FAMILY, 11, "bold"),
-        )
-        self._ducking_status.grid(row=0, column=2, padx=(8, 0))
-        self._state = ctk.CTkLabel(self, text="LEER", font=("Segoe UI", 14, "bold"))
-        self._state.grid(row=8, column=0, padx=16, pady=4)
-        self._time = tk.Label(
-            self,
-            text="00:00 / 00:00   Rest 00:00",
-            bg=theme.SURFACE_RAISED,
-            fg=theme.TEXT,
-            font=(theme.FONT_FAMILY, 13),
-            borderwidth=0,
-            highlightthickness=0,
-        )
-        self._time.grid(row=9, column=0, padx=16, pady=2)
-        self._progress = _SeekProgressBar(
-            self,
-            progress_color=accent,
-        )
-        self._progress.set(0)
-        self._progress.bind("<Button-1>", self._seek_from_pointer)
-        self._progress.bind("<B1-Motion>", self._seek_from_pointer)
-        self._progress.grid(row=10, column=0, padx=16, pady=8, sticky="ew")
-
-        transport = ctk.CTkFrame(self, fg_color="transparent")
-        transport.grid(row=11, column=0, padx=12, pady=6)
-        for column, (label, command, description) in enumerate(
-            (
-                ("▶", "play", "Titel von Anfang an abspielen"),
-                ("⏸", "pause", "Wiedergabe pausieren"),
-                ("Weiter", "resume", "Pausierte Wiedergabe fortsetzen"),
-                ("■", "stop", "Wiedergabe stoppen und zum Anfang springen"),
-            )
-        ):
-            button = ctk.CTkButton(
-                transport,
-                text=label,
-                width=58,
-                height=38,
-                corner_radius=theme.CONTROL_CORNER_RADIUS,
-                fg_color=theme.SURFACE_RAISED,
-                hover_color=theme.SURFACE_HOVER,
-                border_width=1,
-                border_color=theme.BORDER,
-                command=lambda name=command: self._action(self.deck_id, name),
-            )
-            button.grid(row=0, column=column, padx=3)
-            self._tooltips.append(Tooltip(button, description))
-
-        fades = ctk.CTkFrame(self, fg_color="transparent")
-        fades.grid(row=12, column=0, padx=12, pady=4)
-        ctk.CTkButton(
-            fades,
-            text="Fade in",
-            width=72,
-            corner_radius=theme.CONTROL_CORNER_RADIUS,
-            fg_color=theme.SURFACE_RAISED,
-            hover_color=theme.SURFACE_HOVER,
-            command=lambda: self._fade(True),
-        ).grid(row=0, column=0, padx=4)
-        ctk.CTkButton(
-            fades,
-            text="Fade out",
-            width=72,
-            corner_radius=theme.CONTROL_CORNER_RADIUS,
-            fg_color=theme.SURFACE_RAISED,
-            hover_color=theme.SURFACE_HOVER,
-            command=lambda: self._fade(False),
-        ).grid(row=0, column=1, padx=4)
-        ctk.CTkButton(
-            fades,
-            text="Fade stoppen",
-            width=90,
-            corner_radius=theme.CONTROL_CORNER_RADIUS,
-            fg_color=theme.SURFACE_RAISED,
-            hover_color=theme.SURFACE_HOVER,
-            command=self._cancel_fade,
-        ).grid(row=0, column=2, padx=4)
-        ctk.CTkButton(
-            fades,
-            text="Auswerfen",
-            width=72,
-            corner_radius=theme.CONTROL_CORNER_RADIUS,
-            fg_color=theme.DANGER,
-            hover_color=theme.DANGER_HOVER,
-            command=lambda: self._action(self.deck_id, "eject"),
-        ).grid(row=0, column=3, padx=4)
-
-        overlay_quick_start = ctk.CTkFrame(
-            self,
-            fg_color=theme.SURFACE,
-            corner_radius=theme.CONTROL_CORNER_RADIUS,
-            border_width=1,
-            border_color=theme.WARNING,
-        )
-        overlay_quick_start.grid(row=13, column=0, padx=16, pady=(8, 4), sticky="ew")
-        overlay_quick_start.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            overlay_quick_start,
-            text="JINGLE-SCHNELLSTART · UNABHÄNGIGER KANAL",
-            font=(theme.FONT_FAMILY, 10, "bold"),
-            text_color=theme.WARNING,
-        ).grid(row=0, column=0, padx=8, pady=(5, 2), sticky="w")
-        self.overlay_pad_host = ctk.CTkFrame(
-            overlay_quick_start,
-            fg_color="transparent",
-        )
-        self.overlay_pad_host.grid(row=1, column=0, padx=5, pady=(2, 6), sticky="ew")
-        for column in range(3):
-            self.overlay_pad_host.grid_columnconfigure(column, weight=1)
-
-        self._volume_label = ctk.CTkLabel(self, text="Lautstärke: 100 %")
-        self._volume_label.grid(row=14, column=0, padx=16, pady=(8, 0))
-        self._volume = ctk.CTkSlider(self, from_=0, to=1, command=self._volume_changed)
-        self._volume.set(1)
-        self._volume.grid(row=15, column=0, padx=16, pady=(3, 16), sticky="ew")
-        self._error = ctk.CTkLabel(self, text="", text_color=theme.ERROR, wraplength=270)
-        self._error.grid(row=16, column=0, padx=16, pady=(0, 12), sticky="ew")
-
-    def bind_controls(
-        self,
-        seek: Callable[[str, float], None],
-        volume: Callable[[str, float], None],
-        fade: Callable[[str, bool], None],
-        cancel_fade: Callable[[str], None],
-        import_file: Callable[[str, str], None],
-        equalizer: Callable[[str], None],
-    ) -> None:
-        self._seek_callback = seek
-        self._volume_callback = volume
-        self._fade_callback = fade
-        self._cancel_fade_callback = cancel_fade
-        self._import_callback = import_file
-        self._equalizer_callback = equalizer
-
-    def dispose(self) -> None:
-        """Release delayed tooltip callbacks owned by this deck panel."""
-        if self._air_transition_after_id is not None:
-            try:
-                self.after_cancel(self._air_transition_after_id)
-            except (ValueError, RuntimeError):
-                pass
-            self._air_transition_after_id = None
-        for tooltip in self._tooltips:
-            tooltip.close()
-        self._tooltips.clear()
-
-    def show_file_browser(self, enabled: bool) -> None:
-        if enabled:
-            self._file_button.grid()
-        else:
-            self._file_button.grid_remove()
-
-    def show_ducking(self, factor: float, phase: str) -> None:
-        """Show transient attenuation without changing any deck control."""
-
-        if factor >= 0.999:
-            text = ""
-        else:
-            db = 20.0 * math.log10(max(0.001, factor))
-            suffix = {
-                "attack": " · senkt ab",
-                "release": " · stellt wieder her",
-            }.get(phase, "")
-            text = f"DUCK {db:.0f} dB{suffix}"
-        self._configure_if_changed("ducking_status", self._ducking_status, text=text)
-
-    def render(self, deck: Deck) -> None:
-        self._updating_controls = True
-        track = deck.loaded_track
-        with self._performance.measure(f"{self._render_operation}.text", warning_threshold_ms=10.0):
-            if track is None:
-                self._configure_if_changed("title", self._title, text="Kein Titel geladen")
-                self._configure_if_changed(
-                    "metadata",
-                    self._metadata,
-                    text="Titel aus der Queue wählen oder Audiodatei laden",
-                )
-            else:
-                year = track.original_release_year or track.year
-                details = f"{track.artist or 'Unbekannt'}\n{track.album or 'Unbekanntes Album'}"
-                if year:
-                    details += f" · {year}"
-                if track.bpm is not None:
-                    details += f" · {track.bpm:g} BPM"
-                self._configure_if_changed("title", self._title, text=track.title)
-                self._configure_if_changed("metadata", self._metadata, text=details)
-        with self._performance.measure(f"{self._render_operation}.cues", warning_threshold_ms=10.0):
-            if track is None:
-                self._configure_if_changed(
-                    "cues", self._cue_points, text="Cue: —", text_color=theme.TEXT_MUTED
-                )
-            else:
-                manual = deck.cue_in_source == "MANUAL" or deck.cue_out_source == "MANUAL"
-                fade_start = max(deck.cue_in, deck.cue_out - deck.cue_fade_duration)
-                self._configure_if_changed(
-                    "cues",
-                    self._cue_points,
-                    text=(
-                        f"Cue: {_time_text(deck.cue_in)} → {_time_text(deck.cue_out)} · "
-                        f"Überblendung ab {_time_text(fade_start)}"
-                        f"{' · MANUELL' if manual else ''}"
-                    ),
-                    text_color=theme.SUCCESS if manual else theme.TEXT_MUTED,
-                )
-        with self._performance.measure(
-            f"{self._render_operation}.status", warning_threshold_ms=10.0
-        ):
-            on_air = "  • ON AIR" if deck.is_on_air else ""
-            self._configure_if_changed(
-                "panel_air",
-                self,
-                border_color=theme.ON_AIR if deck.is_on_air else self._accent,
-                border_width=2 if deck.is_on_air else 1,
-            )
-            self._configure_if_changed(
-                "air_badge",
-                self._air_badge,
-                text="● ON AIR" if deck.is_on_air else "● BEREIT",
-                text_color=theme.ON_AIR if deck.is_on_air else theme.TEXT_MUTED,
-                fg_color="#3a1f25" if deck.is_on_air else theme.SURFACE,
-            )
-            self._animate_air_transition(deck.is_on_air)
-            self._configure_if_changed(
-                "loudness",
-                self._loudness,
-                text=_deck_loudness_text(deck),
-                text_color=(theme.WARNING if deck.loudness_peak_limited else theme.TEXT_MUTED),
-            )
-            self._configure_if_changed(
-                "equalizer",
-                self._equalizer,
-                text=(
-                    f"EQ: {deck.equalizer_preset_name} · "
-                    f"{_equalizer_source_text(deck.equalizer_source)}"
-                ),
-                text_color=(theme.WARNING if deck.equalizer_error else theme.TEXT_MUTED),
-            )
-            self._configure_if_changed(
-                "equalizer_button",
-                self._equalizer_button,
-                state="normal" if deck.loaded_track is not None else "disabled",
-            )
-            self._configure_if_changed(
-                "state",
-                self._state,
-                text=f"{DECK_STATE_TEXT[deck.state]}{on_air}",
-                text_color=theme.ON_AIR if deck.is_on_air else theme.TEXT,
-            )
-        with self._performance.measure(f"{self._render_operation}.time", warning_threshold_ms=10.0):
-            remaining = max(0.0, deck.duration - deck.position)
-            self._configure_if_changed(
-                "time",
-                self._time,
-                text=(
-                    f"{_time_text(deck.position)} / {_time_text(deck.duration)}   "
-                    f"Rest {_time_text(remaining)}"
-                ),
-            )
-        with self._performance.measure(
-            f"{self._render_operation}.progress", warning_threshold_ms=15.0
-        ):
-            progress_max = max(1.0, deck.duration)
-            progress_color = (
-                theme.ON_AIR
-                if deck.is_on_air
-                else self._accent if deck.loaded_track is not None else theme.BORDER
-            )
-            if self._render_cache.get("progress_style") != progress_color:
-                self._progress.set_color(progress_color)
-                self._render_cache["progress_style"] = progress_color
-            self._progress_max = progress_max
-            progress = min(deck.position, progress_max)
-            progress_bucket = round((progress / progress_max) * 300)
-            if self._render_cache.get("progress_bucket") != progress_bucket:
-                self._progress.set(progress / progress_max)
-                self._render_cache["progress_bucket"] = progress_bucket
-        with self._performance.measure(
-            f"{self._render_operation}.volume", warning_threshold_ms=10.0
-        ):
-            if self._render_cache.get("volume") != deck.volume:
-                self._volume.set(deck.volume)
-                self._render_cache["volume"] = deck.volume
-            self._configure_if_changed(
-                "volume_text", self._volume_label, text=f"Lautstärke: {deck.volume:.0%}"
-            )
-        with self._performance.measure(
-            f"{self._render_operation}.message", warning_threshold_ms=10.0
-        ):
-            message = deck.error_message or deck.cue_warning
-            self._configure_if_changed(
-                "error",
-                self._error,
-                text=message,
-                text_color=theme.ERROR if deck.error_message else theme.WARNING,
-            )
-        self._updating_controls = False
-
-    def _animate_air_transition(self, on_air: bool) -> None:
-        """Pulse the border once when a deck becomes audible."""
-        if on_air == self._last_on_air:
-            return
-        self._last_on_air = on_air
-        if self._air_transition_after_id is not None:
-            self.after_cancel(self._air_transition_after_id)
-            self._air_transition_after_id = None
-        if not on_air:
-            return
-        self.configure(border_color=theme.ON_AIR, border_width=3)
-
-        def settle() -> None:
-            self._air_transition_after_id = None
-            if self._last_on_air:
-                self.configure(border_color=theme.ON_AIR, border_width=2)
-
-        self._air_transition_after_id = self.after(140, settle)
-
-    def _configure_if_changed(self, key: str, widget: Any, **values: object) -> None:
-        signature = tuple(sorted(values.items()))
-        if self._render_cache.get(key) == signature:
-            return
-        widget.configure(**values)
-        self._render_cache[key] = signature
-
-    def _seek(self, value: float) -> None:
-        if not self._updating_controls and self._seek_callback is not None:
-            self._seek_callback(self.deck_id, float(value))
-
-    def _seek_from_pointer(self, event: Any) -> None:
-        """Seek using the lightweight progress bar without an expensive slider redraw."""
-        width = max(1, int(self._progress.winfo_width()))
-        ratio = min(1.0, max(0.0, float(event.x) / width))
-        self._seek(ratio * self._progress_max)
-
-    def _volume_changed(self, value: float) -> None:
-        self._volume_label.configure(text=f"Lautstärke: {float(value):.0%}")
-        if not self._updating_controls and self._volume_callback is not None:
-            self._volume_callback(self.deck_id, float(value))
-
-    def _change_equalizer(self) -> None:
-        if self._equalizer_callback is not None:
-            self._equalizer_callback(self.deck_id)
-
-    def _fade(self, fade_in: bool) -> None:
-        if self._fade_callback is not None:
-            self._fade_callback(self.deck_id, fade_in)
-
-    def _cancel_fade(self) -> None:
-        if self._cancel_fade_callback is not None:
-            self._cancel_fade_callback(self.deck_id)
-
-    def _choose_file(self) -> None:
-        file_path = filedialog.askopenfilename(
-            title=f"Audiodatei für Deck {self.deck_id} wählen",
-            filetypes=(
-                ("MP3 und FLAC", "*.mp3 *.flac"),
-                ("MP3", "*.mp3"),
-                ("FLAC", "*.flac"),
-            ),
-        )
-        if file_path and self._import_callback is not None:
-            self._import_callback(file_path, self.deck_id)
-
-
-class CompactDeckPanel(ctk.CTkFrame):  # type: ignore[misc]
-    """Dense second view of an existing deck without owning playback state."""
-
-    def __init__(
-        self,
-        master: object,
-        deck_id: str,
-        action: Callable[[str, str], None],
-        performance_monitor: PerformanceMonitor | None = None,
-    ) -> None:
-        accent = theme.DECK_ACCENTS[deck_id]
-        super().__init__(
-            master,
-            corner_radius=theme.PANEL_CORNER_RADIUS,
-            fg_color=theme.SURFACE_RAISED,
-            border_width=1,
-            border_color=accent,
-        )
-        self.deck_id = deck_id
-        self._action = action
-        self._accent = accent
-        self._performance = performance_monitor or PerformanceMonitor()
-        self._initialize_callbacks()
-        self._build_header_row()
-        self._build_progress_rows()
-        self._build_volume_row()
-
-    def _build_header_row(self) -> None:
-        self._identity = ctk.CTkLabel(
-            self,
-            text=f"DECK {self.deck_id}",
-            font=(theme.FONT_FAMILY, 18, "bold"),
-            text_color=self._accent,
-        )
-        self._identity.grid(row=0, column=0, padx=(10, 6), pady=(6, 0), sticky="w")
-        self._title = ctk.CTkLabel(
-            self,
-            text="Kein Titel geladen",
-            font=(theme.FONT_FAMILY, 14, "bold"),
-            anchor="w",
-        )
-        self._title.grid(row=0, column=1, padx=4, pady=(6, 0), sticky="ew")
-        self._state = ctk.CTkLabel(self, text="LEER", text_color=theme.TEXT_MUTED, anchor="e")
-        self._state.grid(row=0, column=2, padx=(6, 10), pady=(6, 0), sticky="e")
-
-    def _build_progress_rows(self) -> None:
-        self._source = ctk.CTkLabel(self, text="Quelle: —", text_color=theme.TEXT_MUTED, anchor="w")
-        self._source.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 1), sticky="ew")
-        self._time = ctk.CTkLabel(self, text="00:00 / 00:00 · Rest 00:00", anchor="e")
-        self._time.grid(row=1, column=2, padx=10, pady=(0, 1), sticky="e")
-        self._progress = _SeekProgressBar(self, progress_color=self._accent)
-        self._progress.set(0)
-        self._progress.bind("<Button-1>", self._seek_from_pointer)
-        self._progress.bind("<B1-Motion>", self._seek_from_pointer)
-        self._progress.grid(row=2, column=0, columnspan=3, padx=10, pady=(1, 4), sticky="ew")
-
-    def _build_volume_row(self) -> None:
-        self.grid_columnconfigure(1, weight=1)
-        self._volume_label = ctk.CTkLabel(self, text="Lautstärke 100 %", width=108, anchor="w")
-        self._volume_label.grid(row=4, column=0, padx=(10, 2), pady=(39, 6), sticky="w")
-        self._volume = ctk.CTkSlider(self, from_=0, to=1, command=self._volume_changed)
-        self._volume.set(1)
-        self._volume.grid(row=4, column=1, padx=2, pady=(3, 6), sticky="ew")
-        self._message = ctk.CTkLabel(self, text="Übergang bereit", anchor="e", width=135)
-        self._message.grid(row=4, column=2, padx=(4, 10), pady=(3, 6), sticky="e")
-
-    def _initialize_callbacks(self) -> None:
-        self._seek_callback: Callable[[str, float], None] | None = None
-        self._volume_callback: Callable[[str, float], None] | None = None
-        self._fade_callback: Callable[[str, bool], None] | None = None
-        self._cancel_fade_callback: Callable[[str], None] | None = None
-        self._updating_controls = False
-        self._progress_max = 1.0
-        self._render_cache: dict[str, object] = {}
-        self._tooltips: list[Tooltip] = []
-
-    def bind_controls(
-        self,
-        seek: Callable[[str, float], None],
-        volume: Callable[[str, float], None],
-        fade: Callable[[str, bool], None],
-        cancel_fade: Callable[[str], None],
-    ) -> None:
-        self._seek_callback = seek
-        self._volume_callback = volume
-        self._fade_callback = fade
-        self._cancel_fade_callback = cancel_fade
-
-    def dispose(self) -> None:
-        for tooltip in self._tooltips:
-            tooltip.close()
-        self._tooltips.clear()
-
-    def render(self, deck: Deck) -> None:
-        """Render the same Deck instance delivered to the large deck view."""
-        self._updating_controls = True
-        model = compact_deck_presentation(deck)
-        with self._performance.measure(
-            f"status_render.compact_deck_{self.deck_id.lower()}",
-            warning_threshold_ms=10.0,
-        ):
-            state_color = theme.TEXT_MUTED
-            if model.on_air:
-                state_color = theme.ON_AIR
-            elif model.error:
-                state_color = theme.ERROR
-            self._configure_if_changed("title", self._title, text=model.title)
-            source = f"Quelle: {model.source}"
-            if model.bpm is not None:
-                source += f" · {model.bpm:g} BPM"
-            self._configure_if_changed("source", self._source, text=source)
-            self._configure_if_changed(
-                "state", self._state, text=model.state, text_color=state_color
-            )
-            self._configure_if_changed(
-                "time",
-                self._time,
-                text=(
-                    f"{_time_text(model.position)} / {_time_text(model.duration)} · "
-                    f"Rest {_time_text(model.remaining)}"
-                ),
-            )
-            self._configure_if_changed(
-                "border",
-                self,
-                border_color=theme.ON_AIR if model.on_air else self._accent,
-                border_width=2 if model.on_air else 1,
-            )
-            progress_max = max(1.0, model.duration)
-            self._progress_max = progress_max
-            progress_bucket = round(model.progress * 300)
-            if self._render_cache.get("progress") != progress_bucket:
-                self._progress.set(model.progress)
-                self._render_cache["progress"] = progress_bucket
-            if self._render_cache.get("volume") != model.volume:
-                self._volume.set(model.volume)
-                self._render_cache["volume"] = model.volume
-            self._configure_if_changed(
-                "volume_text", self._volume_label, text=f"Lautstärke {model.volume:.0%}"
-            )
-            message = model.error or model.warning or "Übergang bereit"
-            message_color = theme.TEXT_MUTED
-            if model.error:
-                message_color = theme.ERROR
-            elif model.warning:
-                message_color = theme.WARNING
-            self._configure_if_changed(
-                "message", self._message, text=message, text_color=message_color
-            )
-        self._updating_controls = False
-
-    def _configure_if_changed(self, key: str, widget: Any, **values: object) -> None:
-        signature = tuple(sorted(values.items()))
-        if self._render_cache.get(key) != signature:
-            widget.configure(**values)
-            self._render_cache[key] = signature
-
-    def _seek_from_pointer(self, event: Any) -> None:
-        width = max(1, int(self._progress.winfo_width()))
-        if self._seek_callback is not None:
-            self._seek_callback(
-                self.deck_id, min(1.0, max(0.0, event.x / width)) * self._progress_max
-            )
-
-    def _volume_changed(self, value: float) -> None:
-        self._volume_label.configure(text=f"Lautstärke {float(value):.0%}")
-        if not self._updating_controls and self._volume_callback is not None:
-            self._volume_callback(self.deck_id, float(value))
-
-    def _fade(self, fade_in: bool) -> None:
-        if self._fade_callback is not None:
-            self._fade_callback(self.deck_id, fade_in)
-
-    def _cancel_fade(self) -> None:
-        if self._cancel_fade_callback is not None:
-            self._cancel_fade_callback(self.deck_id)
-
-
 class MainWindow(ctk.CTk):  # type: ignore[misc]
     """Party-focused two-deck desktop window."""
 
@@ -1222,10 +481,16 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._performance = performance_monitor or PerformanceMonitor()
         self._callback_state = callback_state or GuiCallbackState()
         self._logger = logging.getLogger(__name__)
-        self._display_provider = display_provider
-        self._save_window_geometry = save_geometry
-        self._display_fingerprint: tuple[object, ...] | None = None
-        self._window_geometry_after_id: str | None = None
+        self._scheduled_after_ids: set[str] = set()
+        self._window_geometry_ui = WindowGeometryUiCoordinator(
+            self,
+            display_provider=display_provider,
+            save_geometry=save_geometry,
+            schedule=self.schedule,
+            discard_scheduled=self._scheduled_after_ids.discard,
+            reevaluate_presentation=self._reevaluate_presentation_for_display_change,
+            logger=self._logger,
+        )
         self._save_presentation_preference = save_presentation_preference
         self._save_presentation_workspace = save_presentation_workspace
         self._presentation_initial_preference = presentation_preference
@@ -1258,11 +523,24 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._automatic_selection_preview_dialog: AutomaticSelectionPreviewDialog | None = None
         self._automatic_selection_plan_dialog: AutomaticSelectionPlanDialog | None = None
         self._backup_restore_controller: BackupRestoreController | None = None
-        self._database_backup_dialog_generation = 0
-        self._database_operation_generation: int | None = None
-        self._default_backup_directory: Path | None = None
-        self._database_backup_dialog: DatabaseBackupDialog | None = None
         self._restart_requested = False
+        self._backup_restore_ui_coordinator = BackupRestoreUiCoordinator(
+            self,
+            playlist_export=self._request_playlist_export,
+            playlist_music_directory=self._request_playlist_music_directory,
+            playlist_import_preview=self._request_playlist_import_preview,
+            equalizer_export=self._request_equalizer_export,
+            equalizer_import_preview=self._request_equalizer_import_preview,
+            overlay_export=self._request_overlay_export,
+            overlay_import_preview=self._request_overlay_import_preview,
+            media_path_remap_preview=self._request_media_path_remap_preview,
+            vacuum=self._request_vacuum,
+            reindex=self._request_reindex,
+            preview_result=self._handle_backup_restore_preview_result,
+            refresh_equalizer_presets=self._refresh_equalizer_presets,
+            refresh_overlays=self.refresh_overlays,
+            request_restart=self._request_controlled_restart,
+        )
         self._cue_controller: CuePointController | None = None
         self._loudness_controller: LoudnessController | None = None
         self._metadata_analysis: MetadataAnalysisService | None = None
@@ -1286,7 +564,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._responsive_layout_spacing: tuple[int, int, int] | None = None
         self._cursor_restore_after_id: str | None = None
         self._optionmenu_cache: dict[str, tuple[tuple[str, ...], str]] = {}
-        self._scheduled_after_ids: set[str] = set()
         self._static_tooltips: list[Tooltip] = []
         self._catalog_tracks: list[Track] = []
         self._queue_entries: list[QueueEntry] = []
@@ -1326,8 +603,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             "Vererben": "inherit",
             "Equalizer aus": "disabled",
         }
-        self._updating_mixer = False
-        self._mixer_render_cache: dict[str, object] = {}
         self._overlay_controller: OverlayController | None = None
         self._overlay_service: OverlayService | None = None
         self._overlay_snapshot = OverlayCatalogSnapshot((), (), (None,) * 6, frozenset())
@@ -1760,51 +1035,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             font=(theme.FONT_FAMILY, 14),
         )
 
-        crossfader_bar = ctk.CTkFrame(center, corner_radius=10, border_width=1)
-        self._crossfader_bar = crossfader_bar
-        crossfader_bar.grid(row=3, column=0, padx=12, pady=(4, 8), sticky="ew")
-        crossfader_bar.grid_columnconfigure(1, weight=1)
-        self._deck_status_labels: dict[str, ctk.CTkLabel] = {}
-        self._deck_status_labels["A"] = ctk.CTkLabel(
-            crossfader_bar,
-            text="DECK A\nKeine Titel geladen",
-            width=145,
-            font=("Segoe UI", 13, "bold"),
-            text_color="#999999",
-        )
-        self._deck_status_labels["A"].grid(row=0, column=0, padx=(12, 8), pady=8)
-        fader_frame = ctk.CTkFrame(crossfader_bar, fg_color="transparent")
-        fader_frame.grid(row=0, column=1, padx=4, pady=6, sticky="ew")
-        fader_frame.grid_columnconfigure(0, weight=1)
-        self._crossfader_label = ctk.CTkLabel(
-            fader_frame, text="Crossfader · 50%", font=("Segoe UI", 14, "bold")
-        )
-        self._crossfader_label.grid(row=0, column=0, pady=(0, 2))
-        self._crossfader = ctk.CTkSlider(fader_frame, from_=0, to=1, command=self._crossfade)
-        self._crossfader.grid(row=1, column=0, sticky="ew")
-        self._crossfader._canvas.configure(takefocus=True)
-        self._crossfader.bind("<Button-1>", lambda _event: self._crossfader.focus_set())
-        self._crossfader.bind("<Left>", lambda _event: self._move_crossfader_by_keyboard(-0.05))
-        self._crossfader.bind("<Right>", lambda _event: self._move_crossfader_by_keyboard(0.05))
-        self._crossfader.bind("<Home>", lambda _event: self._set_crossfader_by_keyboard(0.0))
-        self._crossfader.bind("<End>", lambda _event: self._set_crossfader_by_keyboard(1.0))
-        self._crossfader.bind(
-            "<FocusIn>",
-            lambda _event: self._crossfader.configure(border_color="#55aaff", border_width=2),
-        )
-        self._crossfader.bind(
-            "<FocusOut>",
-            lambda _event: self._crossfader.configure(border_width=0),
-        )
-        self._deck_status_labels["B"] = ctk.CTkLabel(
-            crossfader_bar,
-            text="DECK B\nKeine Titel geladen",
-            width=145,
-            font=("Segoe UI", 13, "bold"),
-            text_color="#999999",
-        )
-        self._deck_status_labels["B"].grid(row=0, column=2, padx=(8, 12), pady=8)
-
         workspace_splitter = ctk.CTkFrame(
             center,
             height=34,
@@ -2197,145 +1427,50 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._compact_overlay_pads.grid_remove()
         self._compact_overlay_frame.grid_remove()
 
-        mixer_container = ctk.CTkFrame(self, corner_radius=12)
-        self._mixer_container = mixer_container
-        mixer_container.grid(row=2, column=0, columnspan=3, padx=16, pady=(8, 16), sticky="ew")
-        mixer_container.grid_columnconfigure(0, weight=1)
-        mixer_container.grid_rowconfigure(1, weight=1)
-        self._mixer_toggle = ctk.CTkButton(
-            mixer_container,
-            text="Mixer einblenden ▼",
-            height=30,
-            fg_color="transparent",
-            command=self._toggle_mixer_panel,
+        self._mixer_expanded = False
+        self._mixer_component = MixerPanel(
+            self,
+            center,
+            on_toggle=self._toggle_mixer_panel,
+            on_overlay_stop=self._stop_overlay,
+            on_crossfade=self._crossfade,
+            on_crossfade_step=self._move_crossfader_by_keyboard,
+            on_crossfade_set=self._set_crossfader_by_keyboard,
+            on_master=self._master_changed,
+            on_mute=self._toggle_mute,
+            on_player_mode=self._player_mode_changed,
+            on_fade_duration=self._fade_duration_changed,
+            on_fade_stop=self._fade_stop_changed,
+            on_fullscreen_start=self._fullscreen_start_changed,
+            on_automatic_plan=self._show_automatic_preview,
         )
-        self._mixer_toggle.grid(row=0, column=0, padx=8, pady=4, sticky="ew")
-        self._mixer_overlay_stop = ctk.CTkButton(
-            mixer_container,
-            text="■ Stop",
-            width=84,
-            height=30,
-            fg_color=theme.DANGER,
-            hover_color=theme.DANGER_HOVER,
-            command=self._stop_overlay,
-        )
-        self._mixer_overlay_stop.grid(row=0, column=1, padx=(0, 8), pady=4)
-        self._mixer_overlay_stop.grid_remove()
-        self._static_tooltips.extend(
-            (
-                Tooltip(
-                    self._mixer_toggle,
-                    "Mixer öffnen oder schließen; aktive Jingles bleiben hier sichtbar",
-                ),
-                Tooltip(
-                    self._mixer_overlay_stop,
-                    "Aktiven Jingle mit kurzem Sicherheitsfade sofort stoppen",
-                ),
-            )
-        )
-        self._mixer_panel = ctk.CTkScrollableFrame(
-            mixer_container, fg_color="transparent", corner_radius=0
-        )
-        self._mixer_panel.grid(row=1, column=0, sticky="nsew")
+        self._static_tooltips.extend(self._mixer_component.tooltips)
+        self._mixer_container = self._mixer_component.container
+        self._mixer_toggle = self._mixer_component.toggle
+        self._mixer_overlay_stop = self._mixer_component.overlay_stop
+        self._mixer_panel = self._mixer_component.body
+        self._crossfader_bar = self._mixer_component.crossfader_bar
+        self._crossfader = self._mixer_component.crossfader
+        self._crossfader_label = self._mixer_component.crossfader_label
+        self._deck_status_labels = self._mixer_component.deck_status_labels
+        self._preparation_status_group = self._mixer_component.status_group
+        self._preparation_mode_status = self._mixer_component.mode_status
+        self._preparation_source_status = self._mixer_component.source_status
+        self._preparation_queue_status = self._mixer_component.queue_status
+        self._preparation_automatic_status = self._mixer_component.automatic_status
+        self._automatic_plan_status = self._mixer_component.automatic_plan_status
+        self._automatic_plan_button = self._mixer_component.automatic_plan_button
+        self._preparation_playback_group = self._mixer_component.playback_group
+        self._master = self._mixer_component.master
+        self._master_label = self._mixer_component.master_label
+        self._mute_button = self._mixer_component.mute_button
+        self._player_mode = self._mixer_component.player_mode
+        self._fade_duration = self._mixer_component.fade_duration
+        self._fade_duration_label = self._mixer_component.fade_duration_label
+        self._fade_stop_switch = self._mixer_component.fade_stop_switch
+        self._fullscreen_start_switch = self._mixer_component.fullscreen_start_switch
         mixer = self._mixer_panel
-        mixer.grid_columnconfigure(0, weight=1, uniform="mixer_groups")
-        mixer.grid_columnconfigure(1, weight=1, uniform="mixer_groups")
-
-        status_group = ctk.CTkFrame(mixer, corner_radius=8)
-        self._preparation_status_group = status_group
-        status_group.grid(row=0, column=0, columnspan=2, padx=12, pady=(4, 6), sticky="ew")
-        for column in range(4):
-            status_group.grid_columnconfigure(column, weight=1)
-        ctk.CTkLabel(
-            status_group,
-            text="BETRIEBSZUSTAND",
-            font=(theme.FONT_FAMILY, 13, "bold"),
-        ).grid(row=0, column=0, columnspan=4, padx=12, pady=(10, 4), sticky="w")
-        self._preparation_mode_status = ctk.CTkLabel(
-            status_group, text="Betriebsart: HALBAUTOMATISCH", anchor="w"
-        )
-        self._preparation_source_status = ctk.CTkLabel(status_group, text="Quelle: —", anchor="w")
-        self._preparation_queue_status = ctk.CTkLabel(
-            status_group, text="Queue: 0 Titel", anchor="w"
-        )
-        self._preparation_automatic_status = ctk.CTkLabel(
-            status_group, text="Automatik: bereit", anchor="w"
-        )
-        for column, widget in enumerate(
-            (
-                self._preparation_mode_status,
-                self._preparation_source_status,
-                self._preparation_queue_status,
-                self._preparation_automatic_status,
-            )
-        ):
-            widget.grid(row=1, column=column, padx=12, pady=(2, 10), sticky="ew")
-        self._automatic_plan_status = ctk.CTkLabel(
-            status_group, text="Fortlaufende Automatik: Wird geladen …", anchor="w"
-        )
-        self._automatic_plan_status.grid(
-            row=2, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew"
-        )
-        self._automatic_plan_button = ctk.CTkButton(
-            status_group,
-            text="Automatik anpassen…",
-            width=150,
-            command=self._show_automatic_preview,
-        )
-        self._automatic_plan_button.grid(row=2, column=3, padx=12, pady=(0, 10), sticky="e")
-
-        playback_group = ctk.CTkFrame(mixer, corner_radius=8)
-        self._preparation_playback_group = playback_group
-        playback_group.grid(row=1, column=0, padx=(12, 6), pady=(4, 6), sticky="nsew")
-        playback_group.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(
-            playback_group,
-            text="WIEDERGABE UND AUTOMATIK",
-            font=(theme.FONT_FAMILY, 13, "bold"),
-        ).grid(row=0, column=0, columnspan=4, padx=12, pady=(10, 6), sticky="w")
-        self._master = ctk.CTkSlider(playback_group, from_=0, to=1, command=self._master_changed)
-        self._master.grid(row=1, column=0, columnspan=2, padx=(12, 6), pady=5, sticky="ew")
-        self._master_label = ctk.CTkLabel(playback_group, text="Master 80%", width=82)
-        self._master_label.grid(row=1, column=2, padx=4, pady=5)
-        self._mute_button = ctk.CTkButton(
-            playback_group, text="Stumm", width=72, command=self._toggle_mute
-        )
-        self._mute_button.grid(row=1, column=3, padx=(4, 12), pady=5)
-        self._player_mode = ctk.CTkSegmentedButton(
-            playback_group,
-            values=["MANUELL", "HALBAUTOMATISCH", "AUTOMATISCH"],
-            command=self._player_mode_changed,
-        )
-        self._player_mode.set("HALBAUTOMATISCH")
-        self._player_mode.grid(row=2, column=0, columnspan=4, padx=12, pady=5, sticky="ew")
-        ctk.CTkLabel(playback_group, text="Fade-Dauer").grid(row=3, column=0, padx=(12, 4), pady=5)
-        self._fade_duration = ctk.CTkSlider(
-            playback_group,
-            from_=1,
-            to=30,
-            number_of_steps=29,
-            command=self._fade_duration_changed,
-        )
-        self._fade_duration.set(5)
-        self._fade_duration.grid(row=3, column=1, padx=4, pady=5, sticky="ew")
-        self._fade_duration_label = ctk.CTkLabel(playback_group, text="5 s", width=44)
-        self._fade_duration_label.grid(row=3, column=2, padx=4, pady=5)
-        self._fade_stop_switch = ctk.CTkSwitch(
-            playback_group,
-            text="Nach Fade-out stoppen",
-            command=self._fade_stop_changed,
-        )
-        self._fade_stop_switch.grid(
-            row=4, column=0, columnspan=2, padx=12, pady=(5, 10), sticky="w"
-        )
-        self._fullscreen_start_switch = ctk.CTkSwitch(
-            playback_group,
-            text="Vollbild beim Start",
-            command=self._fullscreen_start_changed,
-        )
-        self._fullscreen_start_switch.grid(
-            row=4, column=2, columnspan=2, padx=(4, 12), pady=(5, 10), sticky="w"
-        )
+        playback_group = self._preparation_playback_group
 
         options_group = ctk.CTkFrame(mixer, corner_radius=8)
         self._preparation_safety_group = options_group
@@ -2726,164 +1861,24 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self.schedule(2000, self._poll_display_environment)
         self._request_focus_setup(self)
 
-    def _display_snapshot(self) -> DisplaySnapshot:
-        if self._display_provider is not None:
-            return self._display_provider.snapshot(self.winfo_id())
-        if sys.platform.startswith("win"):
-            return WindowsDisplayProvider().snapshot(self.winfo_id())
-        return DisplaySnapshot(
-            (
-                MonitorGeometry(
-                    Rect(0, 0, self.winfo_screenwidth(), self.winfo_screenheight()),
-                    Rect(0, 0, self.winfo_screenwidth(), self.winfo_screenheight()),
-                    1.0,
-                    True,
-                ),
-            )
-        )
-
     def _logical_client_size(self, width: int, height: int) -> LogicalClientSize:
-        return logical_client_size(width, height, self._get_window_scaling())
-
-    @staticmethod
-    def _snapshot_fingerprint(snapshot: DisplaySnapshot) -> tuple[object, ...]:
-        return tuple(
-            (
-                monitor.bounds,
-                monitor.work_area,
-                round(monitor.dpi_scale, 4),
-                monitor.primary,
-            )
-            for monitor in snapshot.monitors
-        ) + (snapshot.insets,)
+        return self._window_geometry_ui.logical_client_size(width, height)
 
     def _apply_initial_window_geometry(self, saved_geometry: str | None) -> None:
-        snapshot = self._display_snapshot()
-        resolved = resolve_window_geometry(saved_geometry, snapshot)
-        self.minsize(resolved.minimum_width, resolved.minimum_height)
-        self.geometry(resolved.tk_geometry)
-        self._display_fingerprint = self._snapshot_fingerprint(snapshot)
-        self._log_window_geometry("startup", saved_geometry, snapshot, resolved)
-
-    def _current_stored_geometry(self, snapshot: DisplaySnapshot) -> StoredWindowGeometry | None:
-        current = parse_tk_geometry(self.geometry(), 1.0)
-        if current is None:
-            return None
-        monitor = max(
-            snapshot.monitors,
-            key=lambda item: item.bounds.intersection_area(
-                Rect(
-                    current.x,
-                    current.y,
-                    current.x + round(current.width * item.dpi_scale) + snapshot.insets.horizontal,
-                    current.y + round(current.height * item.dpi_scale) + snapshot.insets.vertical,
-                )
-            ),
-        )
-        return StoredWindowGeometry(
-            current.width,
-            current.height,
-            current.x,
-            current.y,
-            monitor.dpi_scale,
-        )
-
-    def _ensure_window_in_work_area(self, trigger: str) -> None:
-        if bool(self.attributes("-fullscreen")):
-            return
-        try:
-            snapshot = self._display_snapshot()
-        except OSError:
-            self._logger.exception("Fensterarbeitsfläche konnte nicht aktualisiert werden")
-            return
-        current = self._current_stored_geometry(snapshot)
-        if current is None:
-            return
-        resolved = resolve_window_geometry(current.serialize(), snapshot)
-        self._display_fingerprint = self._snapshot_fingerprint(snapshot)
-        if resolved.reasons:
-            self.minsize(resolved.minimum_width, resolved.minimum_height)
-            self.geometry(resolved.tk_geometry)
-            self._log_window_geometry(trigger, current.serialize(), snapshot, resolved)
+        self._window_geometry_ui.apply_initial_geometry(saved_geometry)
 
     def _poll_display_environment(self) -> None:
-        try:
-            snapshot = self._display_snapshot()
-        except OSError:
-            self._logger.exception("Fensterarbeitsfläche konnte nicht abgefragt werden")
-        else:
-            fingerprint = self._snapshot_fingerprint(snapshot)
-            if fingerprint != self._display_fingerprint:
-                self._ensure_window_in_work_area("display_change")
-                if self._presentation_coordinator is not None:
-                    self._presentation_coordinator.reevaluate(
-                        self._logical_client_size(self.winfo_width(), self.winfo_height()),
-                        reason="display-change",
-                    )
-        self.schedule(2000, self._poll_display_environment)
+        self._window_geometry_ui.poll_display_environment()
 
     def _schedule_window_geometry_save(self) -> None:
-        if self._save_window_geometry is None:
-            return
-        pending = self._window_geometry_after_id
-        if pending is not None:
-            try:
-                self.after_cancel(pending)
-            except TclError:
-                pass
-            self._scheduled_after_ids.discard(pending)
-
-        def save() -> None:
-            self._window_geometry_after_id = None
-            self._ensure_window_in_work_area("configure")
-            self._persist_window_geometry()
-
-        self._window_geometry_after_id = str(self.schedule(400, save))
+        self._window_geometry_ui.schedule_save()
 
     def _persist_window_geometry(self) -> None:
-        if self._save_window_geometry is None or bool(self.attributes("-fullscreen")):
-            return
-        try:
-            snapshot = self._display_snapshot()
-            geometry = self._current_stored_geometry(snapshot)
-        except OSError:
-            return
-        if geometry is not None:
-            self._save_window_geometry(geometry.serialize())
+        self._window_geometry_ui.persist()
 
-    def _log_window_geometry(
-        self,
-        trigger: str,
-        stored: str | None,
-        snapshot: DisplaySnapshot,
-        resolved: ResolvedWindowGeometry,
-    ) -> None:
-        self._logger.info(
-            "Fenstergeometrie trigger=%s monitors=%s stored=%s applied=%s reasons=%s",
-            trigger,
-            [
-                {
-                    "bounds": (
-                        m.bounds.left,
-                        m.bounds.top,
-                        m.bounds.right,
-                        m.bounds.bottom,
-                    ),
-                    "work": (
-                        m.work_area.left,
-                        m.work_area.top,
-                        m.work_area.right,
-                        m.work_area.bottom,
-                    ),
-                    "dpi_scale": round(m.dpi_scale, 3),
-                    "primary": m.primary,
-                }
-                for m in snapshot.monitors
-            ],
-            stored,
-            resolved.tk_geometry,
-            resolved.reasons or ("unchanged",),
-        )
+    def _reevaluate_presentation_for_display_change(self, size: LogicalClientSize) -> None:
+        if self._presentation_coordinator is not None:
+            self._presentation_coordinator.reevaluate(size, reason="display-change")
 
     def bind_controller(self, controller: MainController) -> None:
         self._controller = controller
@@ -3101,60 +2096,17 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self, controller: BackupRestoreController, default_backup_directory: Path
     ) -> None:
         self._backup_restore_controller = controller
-        self._default_backup_directory = default_backup_directory
+        self._backup_restore_ui_coordinator.bind(controller, default_backup_directory)
 
     @property
     def restart_requested(self) -> bool:
         return self._restart_requested
 
     def _show_database_backup(self) -> None:
-        if self._backup_restore_controller is None:
-            return
-        current = self._database_backup_dialog
-        if current is not None:
-            try:
-                if current.winfo_exists():
-                    current.focus_force()
-                    return
-            except (RuntimeError, TclError):
-                pass
-        controller = self._backup_restore_controller
-        self._database_backup_dialog_generation += 1
-        generation = self._database_backup_dialog_generation
-
-        def close() -> None:
-            if self._database_backup_dialog_generation == generation:
-                self._database_backup_dialog_generation += 1
-                self._database_backup_dialog = None
-
-        self._database_backup_dialog = DatabaseBackupDialog(
-            self,
-            lambda: self._start_database_operation(self._request_default_backup),
-            lambda: self._start_database_operation(self._request_backup),
-            lambda: self._start_database_operation(self._request_restore),
-            lambda: self._start_database_operation(self._request_playlist_export),
-            self._request_playlist_music_directory,
-            lambda: self._start_database_operation(self._request_playlist_import_preview),
-            lambda: self._start_database_operation(self._request_equalizer_export),
-            lambda: self._start_database_operation(self._request_equalizer_import_preview),
-            lambda: self._start_database_operation(self._request_overlay_export),
-            lambda: self._start_database_operation(self._request_overlay_import_preview),
-            lambda: self._start_database_operation(self._request_media_path_remap_preview),
-            lambda: self._start_database_operation(controller.start_quick_check),
-            lambda: self._start_database_operation(controller.start_integrity_check),
-            lambda: self._start_database_operation(controller.start_analyze),
-            lambda: self._start_database_operation(self._request_vacuum),
-            lambda: self._start_database_operation(self._request_reindex),
-            controller.destructive_maintenance_safety,
-            controller.last_manual_backup(),
-            close,
-        )
+        self._backup_restore_ui_coordinator.show_dialog()
 
     def _start_database_operation(self, action: Callable[[], bool]) -> bool:
-        started = action()
-        if started:
-            self._database_operation_generation = self._database_backup_dialog_generation
-        return started
+        return self._backup_restore_ui_coordinator.start_operation(action)
 
     def _request_playlist_export(self) -> bool:
         controller = self._backup_restore_controller
@@ -3327,128 +2279,36 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         return controller.start_reindex()
 
     def _request_backup(self) -> bool:
-        if self._backup_restore_controller is None:
-            return False
-        selected = filedialog.askdirectory(title="Zielordner für DeckRelay-Backup wählen")
-        if selected:
-            return self._backup_restore_controller.start_backup(Path(selected))
-        return False
+        return self._backup_restore_ui_coordinator.request_backup()
 
     def _request_default_backup(self) -> bool:
-        if self._backup_restore_controller is None or self._default_backup_directory is None:
-            return False
-        return self._backup_restore_controller.start_backup(self._default_backup_directory)
+        return self._backup_restore_ui_coordinator.request_default_backup()
 
     def _request_restore(self) -> bool:
-        if self._backup_restore_controller is None:
-            return False
-        selected = filedialog.askopenfilename(
-            title="DeckRelay-Backup wiederherstellen",
-            filetypes=(
-                ("DeckRelay-Backup", "*.partyplayer-backup"),
-                ("Alle Dateien", "*.*"),
-            ),
-        )
-        if not selected:
-            return False
-        if not ask_silent_yes_no(
-            self,
-            "Backup wirklich wiederherstellen?",
-            "Beide Decks müssen gestoppt und alle Audioaktionen beendet sein. "
-            "Unmittelbar vor dem Austausch wird automatisch ein Sicherheitsbackup erstellt.\n\n"
-            "Nach erfolgreichem Restore muss DeckRelay neu gestartet werden.",
-        ):
-            return False
-        safety_directory = Path(selected).resolve().parent / "safety-backups"
-        return self._backup_restore_controller.start_restore(Path(selected), safety_directory)
+        return self._backup_restore_ui_coordinator.request_restore()
 
     def show_backup_restore_result(self, result: BackupRestoreUiResult) -> None:
-        dialog = self.__dict__.get("_database_backup_dialog")
-        dialog_generation = self.__dict__.get("_database_backup_dialog_generation", 0)
-        operation_generation = self.__dict__.get("_database_operation_generation", 0)
-        current_dialog = dialog is not None and operation_generation == dialog_generation
-        if current_dialog and dialog is not None:
-            try:
-                if dialog.winfo_exists():
-                    dialog.complete(result)
-            except (RuntimeError, TclError):
-                pass
-        if result.operation is BackupRestoreOperation.PLAYLIST_IMPORT_PREVIEW:
-            self._database_operation_generation = None
-            if current_dialog and dialog is not None:
-                self._handle_playlist_import_preview(result, dialog)
-            return
-        if result.operation is BackupRestoreOperation.MEDIA_PATH_REMAP_PREVIEW:
-            self._database_operation_generation = None
-            if current_dialog and dialog is not None:
-                self._handle_media_path_remap_preview(result, dialog)
-            return
-        if result.operation is BackupRestoreOperation.EQUALIZER_IMPORT_PREVIEW:
-            self._database_operation_generation = None
-            if current_dialog and dialog is not None:
-                self._handle_equalizer_import_preview(result, dialog)
-            return
-        if result.operation is BackupRestoreOperation.OVERLAY_IMPORT_PREVIEW:
-            self._database_operation_generation = None
-            if current_dialog and dialog is not None:
-                self._handle_overlay_import_preview(result, dialog)
-            return
-        if result.state is not BackupRestoreUiState.BUSY:
-            self._database_operation_generation = None
-        if result.state is BackupRestoreUiState.RESTART_REQUIRED:
-            restore = result.operation is BackupRestoreOperation.RESTORE
-            safety = f"\n\nSicherheitsbackup: {result.path}" if restore and result.path else ""
-            title = (
-                "Restore abgeschlossen – Neustart erforderlich"
-                if restore
-                else "Pfad-Neuzuordnung abgeschlossen – Neustart erforderlich"
-            )
-            if ask_silent_yes_no(
-                self,
-                title,
-                result.message + safety + "\n\nDeckRelay jetzt kontrolliert neu starten?",
-            ):
-                self._restart_requested = True
-                self._dispose_resources()
-                self.destroy()
-            return
-        if result.state is BackupRestoreUiState.COMPLETED:
-            title = {
-                BackupRestoreOperation.BACKUP: "Sicherung erfolgreich",
-                BackupRestoreOperation.MAINTENANCE: "Datenbankwartung abgeschlossen",
-                BackupRestoreOperation.PLAYLIST_EXPORT: "Playlist exportiert",
-                BackupRestoreOperation.PLAYLIST_IMPORT: "Playlist importiert",
-                BackupRestoreOperation.MEDIA_PATH_REMAP: "Medienpfade neu zugeordnet",
-                BackupRestoreOperation.EQUALIZER_EXPORT: "Equalizer-Preset exportiert",
-                BackupRestoreOperation.EQUALIZER_IMPORT: "Equalizer-Preset importiert",
-                BackupRestoreOperation.OVERLAY_EXPORT: "Overlays/Jingles exportiert",
-                BackupRestoreOperation.OVERLAY_IMPORT: "Overlays/Jingles importiert",
-            }.get(result.operation, "Datenoperation abgeschlossen")
-        else:
-            title = "Backup/Restore/Wartung nicht ausgeführt"
-        path = f"\n\nDatei: {result.path}" if result.path else ""
-        message = result.message
-        if (
-            result.operation is BackupRestoreOperation.BACKUP
-            and result.state is BackupRestoreUiState.COMPLETED
-        ):
-            message = "Die komplette Veranstaltungssicherung wurde erfolgreich erstellt."
-        show_silent_message(
-            self,
-            title,
-            message + path,
-            error=result.state is not BackupRestoreUiState.COMPLETED,
-        )
-        if (
-            result.operation is BackupRestoreOperation.EQUALIZER_IMPORT
-            and result.state is BackupRestoreUiState.COMPLETED
-        ):
-            self._refresh_equalizer_presets()
-        if (
-            result.operation is BackupRestoreOperation.OVERLAY_IMPORT
-            and result.state is BackupRestoreUiState.COMPLETED
-        ):
-            self.refresh_overlays()
+        self._backup_restore_ui_coordinator.show_result(result)
+
+    def _handle_backup_restore_preview_result(
+        self, result: BackupRestoreUiResult, dialog: DatabaseBackupDialog
+    ) -> bool:
+        handlers = {
+            BackupRestoreOperation.PLAYLIST_IMPORT_PREVIEW: self._handle_playlist_import_preview,
+            BackupRestoreOperation.MEDIA_PATH_REMAP_PREVIEW: self._handle_media_path_remap_preview,
+            BackupRestoreOperation.EQUALIZER_IMPORT_PREVIEW: self._handle_equalizer_import_preview,
+            BackupRestoreOperation.OVERLAY_IMPORT_PREVIEW: self._handle_overlay_import_preview,
+        }
+        handler = handlers.get(result.operation)
+        if handler is None:
+            return False
+        handler(result, dialog)
+        return True
+
+    def _request_controlled_restart(self) -> None:
+        self._restart_requested = True
+        self._dispose_resources()
+        self.destroy()
 
     def _refresh_equalizer_presets(self) -> None:
         controller = self._controller
@@ -4686,7 +3546,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         )
         self._audio_device_retry_button.configure(state="normal" if lost else "disabled")
         self._audio_device_confirm_button.configure(state="normal" if ready else "disabled")
-        self._audio_device_menu.configure(state="disabled" if lost or ready else "normal")
+        self._audio_device_menu.configure(state="disabled" if ready else "normal")
         self._presentation_status = replace(
             self._presentation_status, warning=message if lost or ready else ""
         )
@@ -5186,7 +4046,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
                 pady=(8, 16),
                 sticky="nsew",
             )
-            self._mixer_panel.grid()
+            self._render_mixer_panel(workspace)
             self._mixer_toggle.configure(text="Vorbereitung ausblenden ▲")
             self._layout_preparation_content(compact=False)
             return
@@ -5195,6 +4055,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._center_panel.grid(**_center_panel_grid_options(False))
         self._mixer_container.grid(**_mixer_container_grid_options(False))
         self._layout_preparation_content(compact=False)
+        self._render_mixer_panel(workspace)
         self._summary.grid(row=0, column=0, padx=12, pady=(12, 4), sticky="w")
         self._search_frame.grid(row=1, column=0, padx=12, pady=4, sticky="ew")
         self._catalog.grid(row=2, column=0, padx=12, pady=6, sticky="nsew")
@@ -5235,7 +4096,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         if _workspace_content(ResolvedPresentation.COMPACT, workspace) == "preparation":
             self._center_panel.grid_remove()
             self._mixer_container.grid(**_compact_preparation_container_grid_options())
-            self._mixer_panel.grid()
+            self._render_mixer_panel(workspace)
             self._mixer_toggle.configure(text="Vorbereitung ausblenden ▲")
             self._layout_preparation_content(compact=True)
             return
@@ -5244,6 +4105,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._layout_preparation_content(compact=True)
         else:
             self._mixer_container.grid_remove()
+        self._render_mixer_panel(workspace)
         self._center_panel.grid(**_center_panel_grid_options(True))
         rows = _compact_live_rows()
         self._compact_decks_frame.grid(
@@ -5400,7 +4262,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
     def _render_overlay(self) -> None:
         model = self._overlay_view_model()
         self._overlay_panel.render(model)
-        expanded = bool(self._mixer_panel.winfo_ismapped())
+        expanded = self._mixer_expanded
         self._mixer_toggle.configure(
             text=mixer_overlay_header_text(
                 expanded=expanded,
@@ -6441,41 +5303,20 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._cover_images.pop(deck_id, None)
 
     def show_mixer(self, crossfader: float, master: float) -> None:
-        self._updating_mixer = True
-        self.show_crossfader(crossfader)
-        master_percent = round(master * 100)
-        if self._mixer_render_cache.get("master_percent") != master_percent:
-            self._master.set(master)
-            self._master_label.configure(text=f"Master {master_percent}%")
-            self._mixer_render_cache["master_percent"] = master_percent
-        mute_text = "Ton an" if master == 0 else "Stumm"
-        if self._mixer_render_cache.get("mute_text") != mute_text:
-            self._mute_button.configure(text=mute_text)
-            self._mixer_render_cache["mute_text"] = mute_text
-        self._updating_mixer = False
+        self._mixer_component.render_mixer(crossfader, master)
 
     def show_crossfader(self, crossfader: float) -> None:
         """Update only the visible crossfade fields and skip identical percentages."""
-        percent = round(crossfader * 100)
-        if self._mixer_render_cache.get("crossfade_percent") == percent:
+        percent = self._mixer_component.render_crossfader(crossfader)
+        if percent is None:
             return
-        self._updating_mixer = True
-        self._crossfader.set(crossfader)
-        self._crossfader_label.configure(text=f"Crossfader · {percent}%")
         self._presentation_status = replace(
             self._presentation_status, transition=f"Übergang {percent}%"
         )
         self._render_global_status()
-        self._mixer_render_cache["crossfade_percent"] = percent
-        self._updating_mixer = False
 
     def show_fade_settings(self, duration: float, stop_after: bool) -> None:
-        self._fade_duration.set(duration)
-        self._fade_duration_label.configure(text=f"{duration:.0f} s")
-        if stop_after:
-            self._fade_stop_switch.select()
-        else:
-            self._fade_stop_switch.deselect()
+        self._mixer_component.render_fade_settings(duration, stop_after)
 
     def show_player_mode(self, mode: str) -> None:
         labels = {
@@ -6484,8 +5325,7 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             "automatic": "AUTOMATISCH",
         }
         label = labels.get(mode, "MANUELL")
-        self._player_mode.set(label)
-        self._preparation_mode_status.configure(text=f"Betriebsart: {label}")
+        self._mixer_component.render_player_mode(label)
 
     def show_automatic_playback(self, active: bool) -> None:
         self._automatic_queue_active = active
@@ -7193,11 +6033,17 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._controller.reset_played_queue_track(queue_id)
 
     def _toggle_mixer_panel(self) -> None:
-        if self._mixer_panel.winfo_ismapped():
-            self._mixer_panel.grid_remove()
-        else:
-            self._mixer_panel.grid()
+        self._mixer_expanded = not self._mixer_expanded
+        coordinator = self._presentation_coordinator
+        workspace = coordinator.state.workspace if coordinator is not None else Workspace.LIVE
+        self._render_mixer_panel(workspace)
         self._render_overlay()
+
+    def _render_mixer_panel(self, workspace: Workspace) -> None:
+        self._mixer_component.render_visibility(
+            workspace_is_preparation=workspace is Workspace.PREPARATION,
+            expanded=self._mixer_expanded,
+        )
 
     def _toggle_diagnostic_panel(self) -> None:
         self._diagnostic_expanded = not self._diagnostic_expanded
@@ -7704,22 +6550,20 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._controller.add_playlist_track_to_queue(track_id)
 
     def _crossfade(self, value: float) -> None:
-        if not self._updating_mixer and self._controller is not None:
+        if self._controller is not None:
             self._controller.set_crossfader(float(value))
 
     def _move_crossfader_by_keyboard(self, change: float) -> str:
-        return self._set_crossfader_by_keyboard(self._crossfader.get() + change)
+        return self._set_crossfader_by_keyboard(self._mixer_component.move_crossfader(change))
 
     def _set_crossfader_by_keyboard(self, value: float) -> str:
-        position = max(0.0, min(float(value), 1.0))
-        self._crossfader.set(position)
-        self._crossfader_label.configure(text=f"Crossfader · {position:.0%}")
+        position = self._mixer_component.set_crossfader(value)
         if self._controller is not None:
             self._controller.set_crossfader(position)
         return "break"
 
     def _master_changed(self, value: float) -> None:
-        if not self._updating_mixer and self._controller is not None:
+        if self._controller is not None:
             self._controller.set_master_volume(float(value))
 
     def _audio_device_changed(self, label: str) -> None:
@@ -7810,22 +6654,20 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             self._controller.toggle_mute()
 
     def _fade_duration_changed(self, value: float) -> None:
-        duration = round(float(value))
-        self._fade_duration_label.configure(text=f"{duration} s")
         if self._controller is not None:
-            self._controller.set_fade_duration(duration)
+            self._controller.set_fade_duration(round(float(value)))
 
-    def _fade_stop_changed(self) -> None:
+    def _fade_stop_changed(self, selected: bool) -> None:
         if self._controller is not None:
-            self._controller.set_fade_out_stops_deck(bool(self._fade_stop_switch.get()))
+            self._controller.set_fade_out_stops_deck(selected)
 
     def _restore_session_changed(self) -> None:
         if self._controller is not None:
             self._controller.set_restore_last_session(bool(self._restore_session_switch.get()))
 
-    def _fullscreen_start_changed(self) -> None:
+    def _fullscreen_start_changed(self, selected: bool) -> None:
         if self._controller is not None:
-            self._controller.set_fullscreen_on_start(bool(self._fullscreen_start_switch.get()))
+            self._controller.set_fullscreen_on_start(selected)
 
     def _file_browser_changed(self) -> None:
         if self._controller is not None:
@@ -8010,8 +6852,8 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         overlay_dialog = self.__dict__.get("_overlay_management_dialog")
         if overlay_dialog is not None and overlay_dialog.winfo_exists():
             overlay_dialog.destroy()
-        database_dialog = self.__dict__.get("_database_backup_dialog")
-        if database_dialog is not None and database_dialog.winfo_exists():
-            database_dialog.destroy()
+        backup_restore_ui = self.__dict__.get("_backup_restore_ui_coordinator")
+        if backup_restore_ui is not None:
+            backup_restore_ui.dispose()
         for deck_id in tuple(self._cover_images):
             self._clear_deck_cover(deck_id, "Kein Cover")

@@ -4,7 +4,7 @@ import sqlite3
 
 from party_player.database.connection import Database
 
-LATEST_SCHEMA_VERSION = 44
+LATEST_SCHEMA_VERSION = 45
 
 
 def migrate(database: Database) -> None:
@@ -201,6 +201,12 @@ def migrate(database: Database) -> None:
                 connection.execute("BEGIN IMMEDIATE")
             _migrate_to_v44(connection)
             _set_version(connection, 44)
+            version = 44
+        if version < 45:
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            _migrate_to_v45(connection)
+            _set_version(connection, 45)
 
 
 def _migrate_to_v1(connection: sqlite3.Connection) -> None:
@@ -1823,3 +1829,76 @@ def _migrate_to_v44(connection: sqlite3.Connection) -> None:
     )
     for statement in statements:
         connection.execute(statement)
+
+
+def _migrate_to_v45(connection: sqlite3.Connection) -> None:
+    """Expand soft settings into the complete typed selection-rule registry."""
+    connection.execute(
+        """CREATE TABLE selection_rule_settings_v45 (
+            rule_id TEXT PRIMARY KEY,
+            rule_kind TEXT NOT NULL CHECK(rule_kind IN ('HARD_EXCLUSION', 'SOFT_WEIGHT')),
+            config_version INTEGER NOT NULL CHECK(config_version >= 1),
+            enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+            configurable INTEGER NOT NULL CHECK(configurable IN (0, 1)),
+            weight REAL,
+            default_enabled INTEGER NOT NULL CHECK(default_enabled IN (0, 1)),
+            default_weight REAL,
+            scope TEXT NOT NULL CHECK(scope IN ('ALL_SELECTIONS', 'AUTOMATIC_SELECTION')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK(
+                (rule_kind = 'HARD_EXCLUSION' AND enabled = 1 AND configurable = 0
+                    AND weight IS NULL AND default_enabled = 1 AND default_weight IS NULL)
+                OR
+                (rule_kind = 'SOFT_WEIGHT' AND configurable = 1
+                    AND weight IS NOT NULL AND default_weight IS NOT NULL
+                    AND weight >= 0 AND weight <= 100
+                    AND default_weight >= 0 AND default_weight <= 100)
+            )
+        )"""
+    )
+    soft_defaults = (
+        ("selection.play_count", 10.0),
+        ("selection.rating", 1.0),
+        ("selection.genre_diversity", 1.0),
+        ("selection.bpm_continuity", 1.0),
+        ("selection.energy_continuity", 1.0),
+        ("selection.mood_continuity", 1.0),
+    )
+    for rule_id, default_weight in soft_defaults:
+        default_enabled = 1 if rule_id in {"selection.play_count", "selection.rating"} else 0
+        connection.execute(
+            """INSERT INTO selection_rule_settings_v45
+               (rule_id, rule_kind, config_version, enabled, configurable, weight,
+                default_enabled, default_weight, scope, created_at, updated_at)
+               SELECT rule_id, 'SOFT_WEIGHT', config_version, enabled, 1, weight,
+                      ?, ?, 'AUTOMATIC_SELECTION', updated_at, updated_at
+               FROM selection_rule_settings WHERE rule_id = ?""",
+            (default_enabled, default_weight, rule_id),
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO selection_rule_settings_v45
+               (rule_id, rule_kind, config_version, enabled, configurable, weight,
+                default_enabled, default_weight, scope)
+               VALUES (?, 'SOFT_WEIGHT', 1, ?, 1, ?, ?, ?, 'AUTOMATIC_SELECTION')""",
+            (rule_id, default_enabled, default_weight, default_enabled, default_weight),
+        )
+    hard_rules = (
+        ("core.track_exists", "ALL_SELECTIONS"),
+        ("core.required_metadata", "ALL_SELECTIONS"),
+        ("selection.track_policy", "ALL_SELECTIONS"),
+        ("selection.artist_policy", "ALL_SELECTIONS"),
+        ("selection.track_suitability", "ALL_SELECTIONS"),
+        ("selection.repetition", "ALL_SELECTIONS"),
+        ("selection.short_track", "ALL_SELECTIONS"),
+        ("selection.automatic_recent_track", "AUTOMATIC_SELECTION"),
+    )
+    connection.executemany(
+        """INSERT INTO selection_rule_settings_v45
+           (rule_id, rule_kind, config_version, enabled, configurable, weight,
+            default_enabled, default_weight, scope)
+           VALUES (?, 'HARD_EXCLUSION', 1, 1, 0, NULL, 1, NULL, ?)""",
+        hard_rules,
+    )
+    connection.execute("DROP TABLE selection_rule_settings")
+    connection.execute("ALTER TABLE selection_rule_settings_v45 RENAME TO selection_rule_settings")

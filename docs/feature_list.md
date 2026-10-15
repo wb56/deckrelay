@@ -7,6 +7,12 @@ Dieses Dokument ist die verbindliche Abgrenzung des Funktionsumfangs für DeckRe
 Zeitaufnahmen erhalten; bei Aussagen zum heutigen Planungsstand hat diese Liste
 Vorrang.
 
+**Statusbegriffe:** *Implementiert* bedeutet, dass die Funktion vorhanden ist;
+*automatisiert getestet* bezeichnet ausschließlich die durch Tests abgedeckten
+Fälle. *Manuell geprüft* und *real abgenommen* gelten nur für den jeweils ausdrücklich
+dokumentierten Umfang und ersetzen keine weitergehende Freigabe. *Noch offen* bezeichnet
+eine ausstehende reale Prüfung oder noch fehlende Funktion, wie jeweils angegeben.
+
 Zuverlässige Wiedergabe ist keine aufschiebbare Komfortfunktion. Fehler wie ein nicht
 mehr ladendes Deck, eine nicht reaktivierbare Automatik, Audioaussetzer oder unklare
 Betriebszustände müssen vor einer stabilen Freigabe behoben sein. Der inzwischen in der
@@ -174,9 +180,15 @@ Produktfeatures:
 - Notfallbetrieb, isolierte Deck-Recovery, globale bedienergeführte Recovery und
   Panic-/Notfallübergabe unter realen Fehlerbedingungen;
 - Lautheit, Cue-Erkennung, Clip-Schutz, EQ und Übergänge als Hör- und Langzeitabnahme;
-- Titeleditor und Analyseabläufe mit realem Tk/VLC-Betrieb;
-- NAS-Wiedergabe, Quellenverlust und Wiederkehr unter realistischer Last;
+- Titeleditor und Analyseabläufe mit realem Tk/VLC-Betrieb, einschließlich
+  wiederholtem Öffnen, Vorhören und Schließen während laufender Wiedergabe ohne
+  Audiostörung oder Ressourcenwachstum;
+- NAS-Wiedergabe, Quellenverlust und Wiederkehr unter realistischer Last, auch bei
+  verzögerten oder instabilen Netzwerkpfaden mit Auswertung der vorhandenen
+  Diagnosemesswerte;
 - Zustands- und Quellenanzeige sowie responsive Bedienbarkeit in der Windows-Matrix;
+- responsiven Equalizer-Editor in den Zielgrößen praktisch prüfen; Layoutänderungen
+  nur bei reproduzierbarem Clipping vornehmen;
 - Speicherstabilität und mehrstündiger Veranstaltungsbetrieb;
 - Release-Build, Portable-Artefakt, Abhängigkeits-/Lizenzinventar und abschließender
   Release-Candidate-Test.

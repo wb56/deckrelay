@@ -11,18 +11,38 @@ It is designed for private parties, small events, clubs, associations, and anyon
 
 > DeckRelay 1.0.0 is the first stable release. It is available as a portable Windows application and does not require a traditional installation.
 
-## DeckRelay 2.0 beta preparation
+## DeckRelay 2.0 beta
 
-DeckRelay `2.0.0-beta.1` is the next planned prerelease. It is not published yet. When
-it becomes available, it will be listed on the general
-[Releases page](https://github.com/wb56/deckrelay/releases); there is currently no
-beta download or release asset.
+DeckRelay `2.0.0-beta.1` was published on September 1, 2026. It is a public prerelease
+for evaluation and testing of the new 2.0 development line.
+
+> **Which version should I use?** DeckRelay 1.0.0 remains the stable release. Beta.1 does
+> not replace it for unattended production use. Use beta.1 only if you want to test the
+> 2.0 line, and keep a backup of your `data` directory. Beta.1 is also not the same as
+> the current 2.0 development state described below.
+
+[Download DeckRelay 2.0.0-beta.1 for Windows](https://github.com/wb56/deckrelay/releases/download/v2.0.0-beta.1/DeckRelay-portable-2.0.0-beta.1.zip) ·
+[Beta release notes](https://github.com/wb56/deckrelay/releases/tag/v2.0.0-beta.1) ·
+[Beta SHA-256 checksums](https://github.com/wb56/deckrelay/releases/download/v2.0.0-beta.1/SHA256SUMS.txt)
 
 The 2.0 development line adds responsive large and compact workspaces, compact Live
 and Preparation modes, work-area-aware dialogs, an extended track editor, catalog and
 typed metadata maintenance, technical audio information, loudness analysis from the
 track editor, and contextual BPM analysis for full-track, cue and playlist scopes.
 Uncertain shuffle and changing-tempo material is kept out of automatic planning.
+Beta.1 contains only what its release notes list. It does not include explainable,
+rule-based automatic queue planning: selection preview, explanations of selected or
+skipped tracks and the related planning work are in development after beta.1 and are not
+part of that download. Their implementation status in the current source is not a
+release or acceptance statement; real listening acceptance of the automatic selection
+and planning work is still open.
+
+Recovery: DeckRelay 1.0.0 already recovers from unconfirmed playback starts. Further
+emergency-operation and recovery work is still being expanded. Complete session crash
+recovery, with a reliable resume dialog and verified idempotent resumption after an
+uncontrolled program exit, is not yet finished and has not been accepted on real
+hardware. Do not rely on it for unattended events.
+
 The authoritative split between completed work, remaining 2.0 development, deferred
 2.1 features and 3.0 topics is maintained in
 [the DeckRelay feature list](docs/feature_list.md).
@@ -67,7 +87,7 @@ DeckRelay is suitable for:
 * private parties and celebrations;
 * background music at events;
 * club and association events;
-* unattended or semi-automatic music playback;
+* unattended or semi-automatic music playback (recommended only with the stable 1.0.0 release, not with the beta);
 * managing larger local MP3 and FLAC collections.
 
 DeckRelay is not intended to replace performance-oriented DJ software. Its focus is on preparation, reliable automation, and easy control of continuous music playback.

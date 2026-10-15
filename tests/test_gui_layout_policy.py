@@ -1,3 +1,5 @@
+import pytest
+
 from party_player.ui.main_window import (
     MainWindow,
     _center_panel_grid_options,
@@ -16,6 +18,7 @@ from party_player.ui.main_window import (
     _workspace_content,
 )
 from party_player.ui.compact_deck_presentation import compact_deck_presentation
+from party_player.ui.mixer_panel import MixerPanel
 from party_player.enums import DeckState
 from party_player.models import Deck, QueueStats, Track
 from party_player.presentation import (
@@ -77,6 +80,111 @@ class ConfigureDouble:
 
     def configure(self, **values: object) -> None:
         self.values.update(values)
+
+
+class MixerValueDouble(ConfigureDouble):
+    def __init__(self) -> None:
+        super().__init__()
+        self.value: object = None
+        self.selected = False
+
+    def set(self, value: object) -> None:
+        self.value = value
+
+    def get(self) -> object:
+        return self.value
+
+    def select(self) -> None:
+        self.selected = True
+
+    def deselect(self) -> None:
+        self.selected = False
+
+
+class MappedGridDouble:
+    def __init__(self, *, mapped: bool) -> None:
+        self.mapped = mapped
+
+    def grid(self, **_values: object) -> None:
+        self.mapped = True
+
+    def grid_remove(self) -> None:
+        self.mapped = False
+
+    def winfo_ismapped(self) -> bool:
+        return self.mapped
+
+
+def mixer_component_double(*, mapped: bool) -> MixerPanel:
+    panel = object.__new__(MixerPanel)
+    panel.body = MappedGridDouble(mapped=mapped)
+    return panel
+
+
+def test_mixer_component_renders_controls_without_emitting_commands() -> None:
+    panel = object.__new__(MixerPanel)
+    panel._render_cache = {}
+    panel._updating = False
+    panel.crossfader = MixerValueDouble()
+    panel.crossfader_label = ConfigureDouble()
+    panel.master = MixerValueDouble()
+    panel.master_label = ConfigureDouble()
+    panel.mute_button = ConfigureDouble()
+    panel.fade_duration = MixerValueDouble()
+    panel.fade_duration_label = ConfigureDouble()
+    panel.fade_stop_switch = MixerValueDouble()
+
+    panel.render_mixer(0.25, 0.8)
+    panel.render_fade_settings(7.0, True)
+
+    assert panel.crossfader.value == 0.25
+    assert panel.crossfader_label.values["text"] == "Crossfader · 25%"
+    assert panel.master.value == 0.8
+    assert panel.master_label.values["text"] == "Master 80%"
+    assert panel.mute_button.values["text"] == "Stumm"
+    assert panel.fade_duration.value == 7.0
+    assert panel.fade_duration_label.values["text"] == "7 s"
+    assert panel.fade_stop_switch.selected is True
+
+
+def test_mixer_component_emits_explicit_presentation_values() -> None:
+    crossfades: list[float] = []
+    masters: list[float] = []
+    panel = object.__new__(MixerPanel)
+    panel._updating = False
+    panel._on_crossfade = crossfades.append
+    panel._on_master = masters.append
+
+    panel.emit_crossfade(0.4)
+    panel.emit_master(0.6)
+
+    assert crossfades == [0.4]
+    assert masters == [0.6]
+
+
+@pytest.mark.parametrize(
+    "state,menu,retry,confirm",
+    [
+        ("normal", "normal", "disabled", "disabled"),
+        ("device_lost", "normal", "normal", "disabled"),
+        ("ready_for_confirmation", "disabled", "disabled", "normal"),
+    ],
+)
+def test_audio_device_recovery_controls(state: str, menu: str, retry: str, confirm: str) -> None:
+    window = object.__new__(MainWindow)
+    window._audio_device_menu = ConfigureDouble()
+    window._audio_device_retry_button = ConfigureDouble()
+    window._audio_device_confirm_button = ConfigureDouble()
+    window._audio_device_recovery_label = ConfigureDouble()
+    window._presentation_status = GlobalStatusState()
+    window._render_global_status = lambda: None
+    window._force_live_workspace = lambda _reason: None
+
+    MainWindow.show_audio_device_recovery(window, state, "Audio-Recovery")
+
+    assert window._audio_device_menu.values["state"] == menu
+    assert window._audio_device_retry_button.values["state"] == retry
+    assert window._audio_device_confirm_button.values["state"] == confirm
 
 
 class GridConfigureDouble:
@@ -148,6 +256,77 @@ def test_mixer_disclosure_remains_reachable_in_compact_layout() -> None:
     assert compact["row"] == large["row"] == 2
     assert compact["columnspan"] == large["columnspan"] == 3
     assert compact["pady"] == (0, 8)
+
+
+def test_mixer_disclosure_toggle_restores_panel_from_explicit_state() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = True
+    window._mixer_component = mixer_component_double(mapped=True)
+    window._mixer_panel = window._mixer_component.body
+    window._presentation_coordinator = None
+    window._render_overlay = lambda: None
+
+    window._toggle_mixer_panel()
+    assert window._mixer_expanded is False
+    assert window._mixer_panel.mapped is False
+
+    window._toggle_mixer_panel()
+    assert window._mixer_expanded is True
+    assert window._mixer_panel.mapped is True
+
+
+def test_workspace_switch_does_not_replace_hidden_mixer_preference() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = False
+    window._mixer_component = mixer_component_double(mapped=False)
+    window._mixer_panel = window._mixer_component.body
+
+    window._render_mixer_panel(Workspace.PREPARATION)
+    assert window._mixer_panel.mapped is True
+    assert window._mixer_expanded is False
+
+    window._render_mixer_panel(Workspace.LIVE)
+    assert window._mixer_panel.mapped is False
+    assert window._mixer_expanded is False
+
+
+def test_workspace_switch_preserves_visible_mixer_preference() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = True
+    window._mixer_component = mixer_component_double(mapped=True)
+    window._mixer_panel = window._mixer_component.body
+
+    window._render_mixer_panel(Workspace.PREPARATION)
+    window._render_mixer_panel(Workspace.LIVE)
+
+    assert window._mixer_expanded is True
+    assert window._mixer_panel.mapped is True
+
+
+def test_large_compact_remapping_preserves_visible_mixer_preference() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = True
+    window._mixer_component = mixer_component_double(mapped=True)
+    window._mixer_panel = window._mixer_component.body
+
+    window._mixer_panel.grid_remove()
+    window._render_mixer_panel(Workspace.LIVE)
+
+    assert window._mixer_expanded is True
+    assert window._mixer_panel.mapped is True
+
+
+def test_temporary_layout_visibility_does_not_mark_hidden_mixer_visible() -> None:
+    window = object.__new__(MainWindow)
+    window._mixer_expanded = False
+    window._mixer_component = mixer_component_double(mapped=False)
+    window._mixer_panel = window._mixer_component.body
+
+    window._mixer_panel.grid()
+    window._render_mixer_panel(Workspace.LIVE)
+
+    assert window._mixer_expanded is False
+    assert window._mixer_panel.mapped is False
 
 
 def test_compact_jingle_pads_temporarily_use_mixer_footer_space() -> None:

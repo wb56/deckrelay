@@ -1,7 +1,9 @@
-"""Responsive editor for the two persisted automatic soft-scoring rules."""
+"""Responsive service-backed editor for persistent automatic-selection rules."""
 
 from dataclasses import dataclass
+from enum import Enum
 import math
+from tkinter import messagebox
 from typing import Any
 
 import customtkinter as ctk  # type: ignore[import-untyped]
@@ -11,10 +13,12 @@ from party_player.controllers.selection_rule_settings_controller import (
 )
 from party_player.selection_rule_settings import (
     DEFAULT_SELECTION_SCORING_SETTINGS,
+    EffectiveSelectionRuleConfiguration,
     PLAY_COUNT_RULE_ID,
     RATING_RULE_ID,
     SelectionScoringSettings,
     SoftRuleSetting,
+    selection_rule_weight_limits,
 )
 from party_player.selection_continuity import (
     BPM_CONTINUITY_RULE_ID,
@@ -57,6 +61,20 @@ class SelectionRuleFormResult:
 STRENGTH_WEIGHTS = {"Niedrig": 0.5, "Normal": 1.0, "Hoch": 2.0}
 
 
+class SelectionRuleMessageKind(Enum):
+    INFORMATION = "information"
+    SUCCESS = "success"
+    ERROR = "error"
+
+
+def selection_rule_message_color(kind: SelectionRuleMessageKind) -> str:
+    return {
+        SelectionRuleMessageKind.INFORMATION: theme.TEXT_MUTED,
+        SelectionRuleMessageKind.SUCCESS: theme.SUCCESS,
+        SelectionRuleMessageKind.ERROR: theme.ERROR,
+    }[kind]
+
+
 def strength_for_weight(weight: float) -> str:
     for label, value in STRENGTH_WEIGHTS.items():
         if weight == value:
@@ -69,7 +87,7 @@ def strength_for_weight(weight: float) -> str:
 def weight_for_strength(value: str) -> float:
     if value in STRENGTH_WEIGHTS:
         return STRENGTH_WEIGHTS[value]
-    weight, error = _parse_weight(value, 0.0, 2.0)
+    weight, error = _parse_weight(value, *selection_rule_weight_limits(GENRE_DIVERSITY_RULE_ID))
     if error or weight is None:
         raise ValueError("Ungültige Stärke für Übergangsregel")
     return weight
@@ -92,6 +110,31 @@ def form_values(settings: SelectionScoringSettings) -> SelectionRuleFormValues:
     )
 
 
+def form_values_from_snapshot(
+    snapshot: EffectiveSelectionRuleConfiguration,
+) -> SelectionRuleFormValues:
+    values = {
+        rule.rule_id: SoftRuleSetting(rule.rule_id, rule.enabled, float(rule.weight))
+        for rule in snapshot.rules
+        if rule.configurable and rule.weight is not None
+    }
+    return form_values(
+        SelectionScoringSettings(
+            *(
+                values[rule_id]
+                for rule_id in (
+                    PLAY_COUNT_RULE_ID,
+                    RATING_RULE_ID,
+                    GENRE_DIVERSITY_RULE_ID,
+                    BPM_CONTINUITY_RULE_ID,
+                    ENERGY_CONTINUITY_RULE_ID,
+                    MOOD_CONTINUITY_RULE_ID,
+                )
+            )
+        )
+    )
+
+
 def selection_rule_dialog_dimensions(
     compact: bool,
 ) -> tuple[tuple[int, int], tuple[int, int]]:
@@ -100,8 +143,12 @@ def selection_rule_dialog_dimensions(
 
 
 def validate_form(values: SelectionRuleFormValues) -> SelectionRuleFormResult:
-    play_count, play_error = _parse_weight(values.play_count_weight, 5.0, 100.0)
-    rating, rating_error = _parse_weight(values.rating_weight, 0.0, 1.0)
+    play_count, play_error = _parse_weight(
+        values.play_count_weight, *selection_rule_weight_limits(PLAY_COUNT_RULE_ID)
+    )
+    rating, rating_error = _parse_weight(
+        values.rating_weight, *selection_rule_weight_limits(RATING_RULE_ID)
+    )
     strengths = (
         values.genre_strength,
         values.bpm_strength,
@@ -161,6 +208,7 @@ class SelectionRuleSettingsDialog(ctk.CTkToplevel):  # type: ignore[misc]
     def __init__(self, parent: Any, controller: SelectionRuleSettingsController) -> None:
         super().__init__(parent)
         self._controller = controller
+        self._loaded = False
         self.title("Einstellungen – Automatische Titelauswahl")
         compact = bool(getattr(parent, "_compact_layout_active", False))
         self._compact = compact
@@ -225,7 +273,7 @@ class SelectionRuleSettingsDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._play_entry, self._play_effect, self._play_error = self._rule_group(
             priority,
             row=1,
-            title="Selten gespielte Titel",
+            title="Selten gespielte Titel bevorzugen",
             variable=self._play_enabled,
             weight=self._play_weight,
             label="Punktabzug je abgeschlossener Wiedergabe",
@@ -234,7 +282,7 @@ class SelectionRuleSettingsDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._rating_entry, self._rating_effect, self._rating_error = self._rule_group(
             priority,
             row=2,
-            title="Titelbewertung",
+            title="Bewertung berücksichtigen",
             variable=self._rating_enabled,
             weight=self._rating_weight,
             label="Gewichtung der Bewertung",
@@ -301,24 +349,51 @@ class SelectionRuleSettingsDialog(ctk.CTkToplevel):  # type: ignore[misc]
         ).grid(row=5, column=0, padx=14, pady=(8, 14), sticky="ew")
         self._transition_error = ctk.CTkLabel(content, text="", text_color=theme.ERROR, anchor="w")
         self._transition_error.grid(row=2, column=0, padx=20, pady=2, sticky="ew")
-        self._message = ctk.CTkLabel(content, text="", text_color=theme.ERROR, anchor="w")
-        self._message.grid(row=3, column=0, padx=20, pady=6, sticky="ew")
+        ctk.CTkLabel(
+            content,
+            text=(
+                "Immer aktive Schutzregeln prüfen unter anderem Dateiverfügbarkeit, "
+                "Pflichtmetadaten, Sperren und Wiederholungen. Sie können hier nicht "
+                "deaktiviert werden."
+            ),
+            justify="left",
+            anchor="w",
+            wraplength=850 if not compact else 580,
+            text_color=theme.TEXT_MUTED,
+        ).grid(row=3, column=0, padx=20, pady=(4, 2), sticky="ew")
+        self._message = ctk.CTkLabel(content, text="", text_color=theme.TEXT_MUTED, anchor="w")
+        self._message_kind = SelectionRuleMessageKind.INFORMATION
+        self._message.grid(row=4, column=0, padx=20, pady=6, sticky="ew")
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=2, column=0, padx=20, pady=(8, 20), sticky="ew")
-        ctk.CTkButton(actions, text="Standardwerte", command=self._restore_defaults).pack(
-            side="left"
-        )
+        ctk.CTkButton(
+            actions, text="Standardwerte wiederherstellen", command=self._restore_defaults
+        ).pack(side="left")
         ctk.CTkButton(actions, text="Abbrechen", command=self._close).pack(side="right")
-        ctk.CTkButton(actions, text="Speichern", command=self._save).pack(side="right", padx=8)
+        self._save_button = ctk.CTkButton(actions, text="Speichern", command=self._save)
+        self._save_button.pack(side="right", padx=8)
         self.protocol("WM_DELETE_WINDOW", self._close)
         bind_dialog_escape(self, self._close)
         self.bind("<Return>", lambda _event: self._save())
-        try:
-            self._set_values(form_values(controller.load()))
-        except Exception as exc:
-            self._message.configure(text=f"Einstellungen konnten nicht geladen werden: {exc}")
-            self._set_values(form_values(DEFAULT_SELECTION_SCORING_SETTINGS))
+        self._load_settings()
         self._play_entry.focus_set()
+
+    def _load_settings(self) -> None:
+        try:
+            self._set_values(form_values_from_snapshot(self._controller.load()))
+            self._loaded = True
+        except Exception:
+            self._show_message(
+                "Die Auswahlregel-Einstellungen konnten nicht geladen werden. "
+                "Es können keine Änderungen gespeichert werden.",
+                SelectionRuleMessageKind.ERROR,
+            )
+            self._set_values(form_values(DEFAULT_SELECTION_SCORING_SETTINGS))
+            self._save_button.configure(state="disabled")
+
+    def _show_message(self, text: str, kind: SelectionRuleMessageKind) -> None:
+        self._message_kind = kind
+        self._message.configure(text=text, text_color=selection_rule_message_color(kind))
 
     def _rule_group(
         self,
@@ -431,14 +506,18 @@ class SelectionRuleSettingsDialog(ctk.CTkToplevel):  # type: ignore[misc]
     def _refresh_form(self) -> None:
         self._refresh_effects()
         result = validate_form(self._current_values())
-        self._play_error.configure(text=result.play_count_error)
-        self._rating_error.configure(text=result.rating_error)
-        self._transition_error.configure(text=result.transition_error)
+        self._play_error.configure(text=result.play_count_error, text_color=theme.ERROR)
+        self._rating_error.configure(text=result.rating_error, text_color=theme.ERROR)
+        self._transition_error.configure(text=result.transition_error, text_color=theme.ERROR)
 
     def _refresh_effects(self) -> None:
         values = self._current_values()
-        play, _ = _parse_weight(values.play_count_weight, 5.0, 100.0)
-        rating, _ = _parse_weight(values.rating_weight, 0.0, 1.0)
+        play, _ = _parse_weight(
+            values.play_count_weight, *selection_rule_weight_limits(PLAY_COUNT_RULE_ID)
+        )
+        rating, _ = _parse_weight(
+            values.rating_weight, *selection_rule_weight_limits(RATING_RULE_ID)
+        )
         self._play_effect.configure(
             text=(f"Eine vollständige Wiedergabe: −{play:g} Punkte" if play is not None else "")
         )
@@ -447,15 +526,27 @@ class SelectionRuleSettingsDialog(ctk.CTkToplevel):  # type: ignore[misc]
         )
 
     def _restore_defaults(self) -> None:
-        self._set_values(form_values(DEFAULT_SELECTION_SCORING_SETTINGS))
-        self._message.configure(text="Standardwerte im Formular – zum Übernehmen speichern.")
+        if not messagebox.askyesno(
+            "Standardwerte wiederherstellen",
+            "Alle Eingaben im Dialog auf die sicheren Standardwerte zurücksetzen? "
+            "Gespeichert wird erst mit „Speichern“.",
+            parent=self,
+        ):
+            return
+        self._set_values(form_values_from_snapshot(self._controller.defaults()))
+        self._show_message(
+            "Standardwerte im Formular – zum Übernehmen speichern.",
+            SelectionRuleMessageKind.INFORMATION,
+        )
 
     def _save(self) -> None:
+        if not self._loaded:
+            return
         result = validate_form(self._current_values())
-        self._play_error.configure(text=result.play_count_error)
-        self._rating_error.configure(text=result.rating_error)
-        self._transition_error.configure(text=result.transition_error)
-        self._message.configure(text="")
+        self._play_error.configure(text=result.play_count_error, text_color=theme.ERROR)
+        self._rating_error.configure(text=result.rating_error, text_color=theme.ERROR)
+        self._transition_error.configure(text=result.transition_error, text_color=theme.ERROR)
+        self._show_message("", SelectionRuleMessageKind.INFORMATION)
         if result.settings is None:
             if result.play_count_error:
                 self._play_entry.focus_set()
@@ -463,13 +554,19 @@ class SelectionRuleSettingsDialog(ctk.CTkToplevel):  # type: ignore[misc]
                 self._rating_entry.focus_set()
             return
         try:
-            self._controller.save(result.settings)
-        except Exception as exc:
-            self._message.configure(
-                text=f"Speichern fehlgeschlagen. Die bisherigen Einstellungen bleiben erhalten: {exc}"
+            saved = self._controller.save(result.settings)
+        except (ValueError, RuntimeError):
+            self._show_message(
+                "Speichern fehlgeschlagen. Die bisherigen Einstellungen bleiben "
+                "vollständig erhalten. Bitte Eingaben prüfen oder später erneut versuchen.",
+                SelectionRuleMessageKind.ERROR,
             )
             return
-        self._close()
+        self._set_values(form_values_from_snapshot(saved))
+        self._show_message(
+            "Auswahlregel-Einstellungen wurden gespeichert.",
+            SelectionRuleMessageKind.SUCCESS,
+        )
 
     def _close(self) -> None:
         release_dialog(self)
