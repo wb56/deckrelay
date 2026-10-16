@@ -3,13 +3,7 @@ name: Windows quality gates
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
 
 permissions:
   contents: read
@@ -19,7 +13,96 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: windows-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: classify
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if ($env:EVENT_NAME -ne "pull_request") {
+            "docs_only=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          if ($env:PR_BASE_SHA -notmatch '^[0-9a-f]{40}$' -or
+              $env:PR_HEAD_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw "Pull request base or head SHA is unavailable."
+          }
+
+          $changedFiles = @(git -c core.quotePath=true diff --no-renames --name-only --diff-filter=ACDMRTUXB `
+              "$($env:PR_BASE_SHA)...$($env:PR_HEAD_SHA)")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not determine changed files for the pull request."
+          }
+
+          $fileModes = @(git -c core.quotePath=true diff --no-renames --raw --diff-filter=ACDMRTUXB `
+              "$($env:PR_BASE_SHA)...$($env:PR_HEAD_SHA)")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not validate changed file types for the pull request."
+          }
+          if ($fileModes.Count -ne $changedFiles.Count) {
+            throw "Changed-file results are incomplete or inconsistent."
+          }
+
+          $docsOnly = $changedFiles.Count -gt 0
+          for ($index = 0; $index -lt $changedFiles.Count; $index++) {
+            $path = $changedFiles[$index]
+            $modeLine = [string]$fileModes[$index]
+            if ($modeLine -notmatch '^:(?<oldMode>[0-7]{6}) (?<newMode>[0-7]{6}) \S+ \S+ [A-Z]\t(?<path>.*)$') {
+              throw "Could not parse changed file metadata."
+            }
+            if ($Matches.path -cne $path) {
+              throw "Changed-file results are inconsistent."
+            }
+
+            if ([string]::IsNullOrWhiteSpace($path) -or $path -match '["\\\r\n]') {
+              $docsOnly = $false
+              break
+            }
+
+            if ($Matches.oldMode -notin @('000000', '100644') -or
+                $Matches.newMode -notin @('000000', '100644')) {
+              $docsOnly = $false
+              break
+            }
+
+            $normalizedPath = $path.ToLowerInvariant()
+            $sensitivePath = $normalizedPath -match '(^|/)(\.github|\.devcontainer|\.vscode|scripts|src|tests|build|dist|security|infra|deploy)(/|$)' -or
+                $normalizedPath -match '(^|/)security\.(md|rst|txt)$'
+            if ($sensitivePath) {
+              $docsOnly = $false
+              break
+            }
+
+            $extension = [System.IO.Path]::GetExtension($path)
+            $isMarkdown = $extension -ieq '.md'
+            $isDocsFile = $normalizedPath.StartsWith('docs/') -and
+                $extension.ToLowerInvariant() -in @('.rst', '.txt', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp')
+            if (-not $isMarkdown -and -not $isDocsFile) {
+              $docsOnly = $false
+              break
+            }
+          }
+
+          "docs_only=$($docsOnly.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
   static:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: windows-latest
     timeout-minutes: 15
 
@@ -47,6 +130,8 @@ jobs:
         run: python -m mypy src/party_player
 
   tests:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -81,6 +166,8 @@ jobs:
           tests/test_metadata_analysis_prototype.py
 
   real-formats:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -115,7 +202,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   quality:
-    needs: [static, tests, real-formats]
+    needs: [changes, static, tests, real-formats]
     if: always()
     runs-on: windows-latest
     timeout-minutes: 5
@@ -124,12 +211,24 @@ jobs:
       - name: Require all quality jobs to succeed
         shell: pwsh
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           STATIC_RESULT: ${{ needs.static.result }}
           TESTS_RESULT: ${{ needs.tests.result }}
           REAL_FORMATS_RESULT: ${{ needs.real-formats.result }}
         run: |
+          if ($env:CHANGES_RESULT -ne "success") {
+            Write-Error "Changed-file classification did not succeed."
+            exit 1
+          }
+
           $results = @($env:STATIC_RESULT, $env:TESTS_RESULT, $env:REAL_FORMATS_RESULT)
-          $unsuccessful = $results.Where({ $_ -ne "success" })
+          if ($env:DOCS_ONLY -ceq "true") {
+            $unsuccessful = $results.Where({ $_ -notin @("success", "skipped") })
+          }
+          else {
+            $unsuccessful = $results.Where({ $_ -ne "success" })
+          }
           if ($unsuccessful.Count -gt 0) {
             Write-Error "Required quality job did not succeed: $($results -join ', ')"
             exit 1
