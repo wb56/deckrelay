@@ -14,6 +14,13 @@ import pytest
 from pytest import MonkeyPatch
 
 from party_player.audio.fake_backend import FakeAudioBackend
+from party_player.automatic_selection_plan_recovery import (
+    AutomaticSelectionPlanRecoveryResult,
+    AutomaticSelectionPlanRecoveryResultCode,
+)
+from party_player.automatic_selection_plan_execution import (
+    AutomaticSelectionPlanExecutionStatus,
+)
 from party_player.audio_recovery import (
     AudioRecoveryPolicy,
     AudioRecoveryResult,
@@ -39,7 +46,7 @@ from party_player.emergency_actions import EmergencyActionProfile
 from party_player.emergency_playback import EmergencyPlaybackResult
 from party_player.source_availability_monitor import SourceAvailabilityMonitor
 from party_player.equalizer_resolver import EqualizerResolver
-from party_player.enums import DeckState, PlayerMode, QueueStatus, SessionStatus
+from party_player.enums import DeckState, PlayerMode, QueueSource, QueueStatus, SessionStatus
 from party_player.loudness import LoudnessRepository, LoudnessService
 from party_player.models import Deck, QueueEntry, QueueStats, SavedQueue, Track
 from party_player.one_deck_mode import AudioOperatingMode
@@ -59,6 +66,15 @@ from party_player.services.library_service import LibraryService
 from party_player.saved_queue_service import SavedQueueService
 from party_player.transition_controller import TransitionState
 from party_player.track_selection import SelectionDecision
+
+
+def _drain_controller_worker(controller: MainController, completed: Callable[[], bool]) -> None:
+    for _attempt in range(100):
+        controller._drain_background_callbacks()
+        if completed():
+            return
+        sleep(0.01)
+    pytest.fail("Hintergrundaktion wurde nicht abgeschlossen")
 
 
 class GainObservingAudioBackend(FakeAudioBackend):
@@ -5027,6 +5043,255 @@ def test_automatic_runner_starts_loaded_second_deck_after_first_finishes(tmp_pat
 
     assert controller.deck_b.model.state.value == "playing"
     assert controller._automatic_run_active
+
+
+def test_explicit_successful_plan_recalculation_restarts_automatic_runner_and_refill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, view = build_controller(tmp_path)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller._automatic_run_active = False
+    controller._automatic_run_paused = True
+    active_plan = SimpleNamespace(
+        plan=SimpleNamespace(status=SimpleNamespace(value="ACTIVE"), planned_depth=5)
+    )
+    controller._automatic_plan_ui = SimpleNamespace(
+        recalculate=lambda _plan_id, _revision: AutomaticSelectionPlanRecoveryResult(
+            AutomaticSelectionPlanRecoveryResultCode.RECALCULATED,
+            plan=active_plan,
+        )
+    )
+    refills: list[int] = []
+    monkeypatch.setattr(
+        controller._queue_service,
+        "ensure_automatic_buffer",
+        lambda target: (
+            refills.append(target)
+            or SimpleNamespace(
+                status=AutomaticSelectionPlanExecutionStatus.MATERIALIZED,
+                reason_code=None,
+            )
+        ),
+    )
+    completed: list[bool] = []
+    failed: list[str] = []
+
+    assert controller.request_automatic_plan_action(
+        "recalculate", "plan", 2, lambda: completed.append(True), failed.append
+    )
+    _drain_controller_worker(controller, lambda: bool(completed or failed))
+
+    assert completed == [True]
+    assert failed == []
+    assert refills == [5]
+    assert controller.player_mode is PlayerMode.AUTOMATIC
+    assert controller._automatic_run_active
+    assert not controller._automatic_run_paused
+    assert any(
+        deck.model.state is DeckState.PLAYING for deck in (controller.deck_a, controller.deck_b)
+    )
+
+
+def test_successful_recalculation_reports_failure_when_recovery_gate_blocks_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _view = build_controller(tmp_path)
+    controller.initialize()
+    controller.add_catalog_track_to_queue(1)
+    controller._automatic_run_active = False
+    controller._automatic_run_paused = True
+    controller._global_audio_recovery_ready_for_release = True
+    active_plan = SimpleNamespace(
+        plan=SimpleNamespace(status=SimpleNamespace(value="ACTIVE"), planned_depth=5)
+    )
+    controller._automatic_plan_ui = SimpleNamespace(
+        recalculate=lambda _plan_id, _revision: AutomaticSelectionPlanRecoveryResult(
+            AutomaticSelectionPlanRecoveryResultCode.RECALCULATED,
+            plan=active_plan,
+        )
+    )
+    monkeypatch.setattr(
+        controller._queue_service,
+        "ensure_automatic_buffer",
+        lambda _target: SimpleNamespace(
+            status=AutomaticSelectionPlanExecutionStatus.MATERIALIZED,
+            reason_code=None,
+        ),
+    )
+    completed: list[bool] = []
+    failed: list[str] = []
+
+    assert controller.request_automatic_plan_action(
+        "recalculate", "plan", 2, lambda: completed.append(True), failed.append
+    )
+    _drain_controller_worker(controller, lambda: bool(completed or failed))
+
+    assert completed == []
+    assert failed == ["Die Automatik konnte nicht sicher wieder aktiviert werden."]
+    assert controller.player_mode is not PlayerMode.AUTOMATIC
+    assert not controller._automatic_run_active
+    assert controller._automatic_run_paused
+
+
+def test_missing_planned_file_stays_paused_until_explicit_recalculation_recovers_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _view = build_controller(tmp_path, track_count=3)
+    controller.initialize()
+    controller.set_automatic_deck_loading(False)
+    controller.add_catalog_track_to_queue(1)
+    controller.add_catalog_track_to_queue(2)
+    missing = controller._queue_service.entries()[-1]
+    (tmp_path / "song-2.mp3").unlink()
+
+    controller.set_player_mode(PlayerMode.AUTOMATIC)
+
+    missing_entry = controller._queue_service.entry(missing.queue_id)
+    assert missing_entry is not None
+    assert missing_entry.status is QueueStatus.FAILED
+    controller._pause_automatic_queue("Geplante Mediendatei fehlt")
+    assert controller._automatic_run_paused
+    assert not controller._automatic_run_active
+
+    controller._automatic_playback_tick()
+    assert controller._automatic_run_paused
+    assert not controller._automatic_run_active
+
+    active_plan = SimpleNamespace(
+        plan=SimpleNamespace(status=SimpleNamespace(value="ACTIVE"), planned_depth=2)
+    )
+    controller._automatic_plan_ui = SimpleNamespace(
+        recalculate=lambda _plan_id, _revision: AutomaticSelectionPlanRecoveryResult(
+            AutomaticSelectionPlanRecoveryResultCode.RECALCULATED,
+            plan=active_plan,
+        )
+    )
+
+    def refill(_target: int) -> SimpleNamespace:
+        controller._queue_service.add(3, QueueSource.AUTOMATIC)
+        return SimpleNamespace(
+            status=AutomaticSelectionPlanExecutionStatus.MATERIALIZED,
+            reason_code=None,
+        )
+
+    monkeypatch.setattr(controller._queue_service, "ensure_automatic_buffer", refill)
+    completed: list[bool] = []
+    failed: list[str] = []
+
+    assert controller.request_automatic_plan_action(
+        "recalculate", "plan", 2, lambda: completed.append(True), failed.append
+    )
+    _drain_controller_worker(controller, lambda: bool(completed or failed))
+
+    assert completed == [True]
+    assert failed == []
+    assert controller.player_mode is PlayerMode.AUTOMATIC
+    assert controller._automatic_run_active
+    assert not controller._automatic_run_paused
+    assert any(
+        deck.model.state is DeckState.PLAYING for deck in (controller.deck_a, controller.deck_b)
+    )
+    assert controller._queue_service.entry(missing.queue_id).status is QueueStatus.FAILED  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("result_code", "plan"),
+    [
+        (AutomaticSelectionPlanRecoveryResultCode.PERSISTENCE_FAILED, None),
+        (AutomaticSelectionPlanRecoveryResultCode.CONCURRENT_UPDATE, None),
+        (
+            AutomaticSelectionPlanRecoveryResultCode.RECALCULATED,
+            SimpleNamespace(
+                plan=SimpleNamespace(status=SimpleNamespace(value="PAUSED"), planned_depth=5)
+            ),
+        ),
+        (
+            AutomaticSelectionPlanRecoveryResultCode.RECALCULATED,
+            SimpleNamespace(
+                plan=SimpleNamespace(status=SimpleNamespace(value="DRAFT"), planned_depth=5)
+            ),
+        ),
+    ],
+)
+def test_failed_or_unusable_plan_recalculation_remains_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    result_code: AutomaticSelectionPlanRecoveryResultCode,
+    plan: object | None,
+) -> None:
+    controller, view = build_controller(tmp_path)
+    controller.initialize()
+    controller._automatic_run_active = False
+    controller._automatic_run_paused = True
+    controller._automatic_plan_ui = SimpleNamespace(
+        recalculate=lambda _plan_id, _revision: AutomaticSelectionPlanRecoveryResult(
+            result_code, plan=plan
+        )
+    )
+    modes: list[PlayerMode] = []
+    refills: list[int] = []
+    monkeypatch.setattr(controller, "set_player_mode", lambda mode: modes.append(mode))
+    monkeypatch.setattr(
+        controller._queue_service,
+        "ensure_automatic_buffer",
+        lambda target: refills.append(target),
+    )
+    completed: list[bool] = []
+    failed: list[str] = []
+
+    assert controller.request_automatic_plan_action(
+        "recalculate", "plan", 2, lambda: completed.append(True), failed.append
+    )
+    _drain_controller_worker(controller, lambda: bool(completed or failed))
+
+    assert completed == []
+    assert len(failed) == 1
+    assert modes == []
+    assert refills == []
+    assert not controller._automatic_run_active
+    assert controller._automatic_run_paused
+
+
+def test_recalculated_plan_with_unusable_buffer_remains_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _view = build_controller(tmp_path)
+    controller.initialize()
+    controller._automatic_run_active = False
+    controller._automatic_run_paused = True
+    active_plan = SimpleNamespace(
+        plan=SimpleNamespace(status=SimpleNamespace(value="ACTIVE"), planned_depth=5)
+    )
+    controller._automatic_plan_ui = SimpleNamespace(
+        recalculate=lambda _plan_id, _revision: AutomaticSelectionPlanRecoveryResult(
+            AutomaticSelectionPlanRecoveryResultCode.RECALCULATED,
+            plan=active_plan,
+        )
+    )
+    monkeypatch.setattr(
+        controller._queue_service,
+        "ensure_automatic_buffer",
+        lambda _target: SimpleNamespace(
+            status=AutomaticSelectionPlanExecutionStatus.RECALCULATION_REQUIRED,
+            reason_code="FILE_UNAVAILABLE",
+        ),
+    )
+    modes: list[PlayerMode] = []
+    monkeypatch.setattr(controller, "set_player_mode", lambda mode: modes.append(mode))
+    completed: list[bool] = []
+    failed: list[str] = []
+
+    assert controller.request_automatic_plan_action(
+        "recalculate", "plan", 2, lambda: completed.append(True), failed.append
+    )
+    _drain_controller_worker(controller, lambda: bool(completed or failed))
+
+    assert completed == []
+    assert len(failed) == 1
+    assert modes == []
+    assert not controller._automatic_run_active
+    assert controller._automatic_run_paused
 
 
 def test_worker_queue_update_is_applied_only_by_gui_dispatcher(tmp_path: Path) -> None:

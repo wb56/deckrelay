@@ -6278,8 +6278,17 @@ class MainController:
                         raise RuntimeError(result.code)
                 elif action == "recalculate":
                     result = service.recalculate(plan_id, revision)
-                    if result.plan is None:
+                    if result.plan is None or result.plan.plan.status.value != "ACTIVE":
                         raise RuntimeError(result.code)
+                    target = self._dynamic_automatic_target_count or result.plan.plan.planned_depth
+                    buffer_result = self._queue_service.ensure_automatic_buffer(target)
+                    if buffer_result is None or buffer_result.status not in {
+                        AutomaticSelectionPlanExecutionStatus.MATERIALIZED,
+                        AutomaticSelectionPlanExecutionStatus.ALREADY_MATERIALIZED,
+                    }:
+                        raise RuntimeError(
+                            buffer_result.reason_code if buffer_result is not None else "NO_PLAN"
+                        )
                 elif action == "discard":
                     result = service.discard(plan_id, revision)
                     if result.plan is None:
@@ -6297,8 +6306,15 @@ class MainController:
                 return
 
             def action_completed() -> None:
-                if action in {"activate", "resume"}:
+                if action in {"activate", "resume", "recalculate"}:
                     self.set_player_mode(PlayerMode.AUTOMATIC)
+                if action == "recalculate" and (
+                    self.player_mode is not PlayerMode.AUTOMATIC
+                    or not self._automatic_run_active
+                    or self._automatic_run_paused
+                ):
+                    failed("Die Automatik konnte nicht sicher wieder aktiviert werden.")
+                    return
                 completed()
 
             self._publish_gui_callback(action_completed, "automatic-plan-ui")

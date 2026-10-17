@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from tinytag import TinyTag
+
 from party_player import __version__
 from party_player.database.connection import Database
 from party_player.database.migrations import migrate
@@ -15,6 +17,17 @@ from party_player.track_suitability import (
     TrackSuitabilityRepository,
     TrackSuitabilityStatus,
 )
+
+
+def _audio_duration(path: Path) -> float:
+    """Return a positive measured duration for one E8 source file."""
+    try:
+        duration = TinyTag.get(path).duration
+    except Exception as exc:
+        raise ValueError(f"Audiodauer konnte nicht gelesen werden: {path.name}") from exc
+    if duration is None or duration <= 0:
+        raise ValueError(f"Keine gültige Audiodauer ermittelt: {path.name}")
+    return float(duration)
 
 
 def main() -> int:
@@ -33,6 +46,10 @@ def main() -> int:
     missing = tuple(path for path in files if not path.is_file())
     if missing:
         raise SystemExit(f"Es fehlen {len(missing)} E8-Audiodateien in {media}")
+    try:
+        durations = tuple(_audio_duration(path) for path in files)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     database_path.parent.mkdir(parents=True, exist_ok=True)
     database = Database(database_path)
@@ -49,7 +66,7 @@ def main() -> int:
                     f"E8 Hörtest {index:02d}",
                     f"E8 Interpret {((index - 1) % 10) + 1:02d}",
                     "E8 reale Hörabnahme",
-                    12.0,
+                    durations[index - 1],
                     ("Dance", "Pop", "Rock")[(index - 1) % 3],
                     float(96 + index),
                     20 + ((index * 7) % 80),
