@@ -15,20 +15,28 @@ project policies and `CONTRIBUTING.md` are normative.
   an explicit architecture decision.
 - Preserve the `UI -> Controller -> Service -> Repository -> SQLite` boundaries and
   keep domain behavior separate from concrete widgets.
+- UI code must not contain SQL queries, business logic or file manipulation, and must
+  not access a concrete audio backend directly.
 - Keep player, catalog, queue, playlist, source and automation state outside widgets.
   Widget text, color, visibility and enabled state are presentation, not domain truth.
 - Access Tkinter widgets only on the main thread. Route worker results through the
   existing `GuiEventDispatcher` or another existing main-thread scheduling path.
 - Run blocking file, database and audio work outside the GUI thread.
 - Implement database changes only through forward-compatible SQLite migrations.
+- Parameterize SQL queries; never use `SELECT *`.
+- Design catalog operations for at least 100,000 tracks; use pagination, suitable
+  indexes, lazy loading and background processing where required.
 - Never modify, move, rename or bundle users' music or other media files.
 - Keep new audio behavior testable with a fake backend.
+- Party interfaces must not offer tag editors, database maintenance or file operations.
 - Place new behavior in the existing module or package that owns its domain
   responsibility. Keep `main.py` limited to application entry and initialization.
 - Do not grow monolithic modules or place new modules in the package root by default.
   Inspect the existing package structure before adding a subpackage, and preserve clear
   responsibilities, import boundaries and the established dependency direction.
 - Do not reorganize packages or architecture outside the explicit assignment.
+- Use project logging for application diagnostics; do not use `print()`.
+- Provide type hints and appropriate docstrings.
 
 ## Binding project policies
 
@@ -62,6 +70,8 @@ names in rules.
   paths, node IDs or keyword expression.
 - If a direct Pytest call is necessary, include
   `--tb=short -x --no-header --no-summary`.
+- Use temporary SQLite databases, fake or mocked players, and no dependency on a real
+  music collection.
 
 ### T2
 
@@ -87,6 +97,9 @@ names in rules.
   main-integrity evidence.
 
 ## Git and pull-request workflow
+
+This section documents the existing Codex B3 workflow. It does not authorize Copilot to
+perform mutating Git or GitHub operations; see `.github/copilot-instructions.md`.
 
 - Prefer `scripts/Invoke-DevPr.ps1` for its supported actions: `status`, `validate`,
   `commit`, `publish`, `gates`, `merge` and `cleanup`. Do not claim that it performs

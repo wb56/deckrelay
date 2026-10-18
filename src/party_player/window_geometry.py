@@ -317,6 +317,25 @@ class WindowsDisplayProvider:
         callback_type = ctypes.WINFUNCTYPE(
             wintypes.BOOL, wintypes.HANDLE, wintypes.HDC, ctypes.POINTER(_WinRect), wintypes.LPARAM
         )
+        user32.EnumDisplayMonitors.argtypes = [
+            wintypes.HDC,
+            ctypes.POINTER(_WinRect),
+            callback_type,
+            wintypes.LPARAM,
+        ]
+        user32.EnumDisplayMonitors.restype = wintypes.BOOL
+        user32.GetMonitorInfoW.argtypes = [
+            wintypes.HMONITOR,
+            ctypes.POINTER(_MonitorInfo),
+        ]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        shcore.GetDpiForMonitor.argtypes = [
+            wintypes.HMONITOR,
+            ctypes.c_int,
+            ctypes.POINTER(wintypes.UINT),
+            ctypes.POINTER(wintypes.UINT),
+        ]
+        shcore.GetDpiForMonitor.restype = ctypes.c_long
 
         def collect(handle: int, _hdc: int, _rect: object, _data: int) -> bool:
             info = _MonitorInfo()
@@ -349,6 +368,23 @@ class WindowsDisplayProvider:
     @staticmethod
     def _window_insets(window_handle: int) -> WindowInsets:
         user32 = ctypes.windll.user32
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(_WinRect)]
+        user32.GetWindowRect.restype = wintypes.BOOL
+        user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(_WinRect)]
+        user32.GetClientRect.restype = wintypes.BOOL
+        user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(_Point)]
+        user32.ClientToScreen.restype = wintypes.BOOL
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongW.restype = wintypes.LONG
+        user32.AdjustWindowRectEx.argtypes = [
+            ctypes.POINTER(_WinRect),
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        user32.AdjustWindowRectEx.restype = wintypes.BOOL
+        user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+        user32.GetSystemMetrics.restype = ctypes.c_int
         window = _WinRect()
         client = _WinRect()
         top_left = _Point(0, 0)
@@ -375,8 +411,20 @@ class WindowsDisplayProvider:
         extended_style = user32.GetWindowLongW(window_handle, -20)  # GWL_EXSTYLE
         adjusted = _WinRect(0, 0, 100, 100)
         get_dpi = getattr(user32, "GetDpiForWindow", None)
+        if get_dpi is not None:
+            get_dpi.argtypes = [wintypes.HWND]
+            get_dpi.restype = wintypes.UINT
         dpi = int(get_dpi(window_handle)) if get_dpi is not None else 96
         adjust_for_dpi = getattr(user32, "AdjustWindowRectExForDpi", None)
+        if adjust_for_dpi is not None:
+            adjust_for_dpi.argtypes = [
+                ctypes.POINTER(_WinRect),
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+                wintypes.UINT,
+            ]
+            adjust_for_dpi.restype = wintypes.BOOL
         adjusted_ok = (
             adjust_for_dpi(ctypes.byref(adjusted), style, False, extended_style, max(96, dpi))
             if adjust_for_dpi is not None
@@ -391,6 +439,9 @@ class WindowsDisplayProvider:
         if adjusted_ok and (adjusted_insets.horizontal or adjusted_insets.vertical):
             return adjusted_insets
         get_metric_for_dpi = getattr(user32, "GetSystemMetricsForDpi", None)
+        if get_metric_for_dpi is not None:
+            get_metric_for_dpi.argtypes = [ctypes.c_int, wintypes.UINT]
+            get_metric_for_dpi.restype = ctypes.c_int
 
         def metric(index: int) -> int:
             if get_metric_for_dpi is not None:

@@ -134,6 +134,34 @@ function Expand-PagedData {
     return $items
 }
 
+function ConvertTo-UtcDateTimeOffset {
+    param($Value, [string]$InvalidCause)
+    if ($null -eq $Value) { Stop-Blocked $InvalidCause }
+    if ($Value -is [DateTimeOffset]) { return $Value.ToUniversalTime() }
+    if ($Value -is [DateTime]) {
+        if ($Value.Kind -eq [DateTimeKind]::Unspecified) { Stop-Blocked $InvalidCause }
+        return ([DateTimeOffset]$Value).ToUniversalTime()
+    }
+    if ($Value -isnot [string] -or [string]::IsNullOrWhiteSpace($Value)) {
+        Stop-Blocked $InvalidCause
+    }
+
+    $text = $Value.Trim()
+    if ($text -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z') {
+        Stop-Blocked $InvalidCause
+    }
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+            $text,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None,
+            [ref]$parsed
+        )) {
+        Stop-Blocked $InvalidCause
+    }
+    return $parsed.ToUniversalTime()
+}
+
 function Get-CurrentBranch {
     (Invoke-Git @("branch", "--show-current")).Text.Trim()
 }
@@ -209,7 +237,7 @@ function Get-GateState {
 
 function Assert-OwnerAttestation {
     param([string]$Name, $Pr, [string]$Label, [string]$Type, [string]$Description)
-    $repoData = ConvertFrom-JsonSafe (Invoke-Gh @("repo", "view", "--repo", $Name, "--json", "owner")).Text "Eigentümer"
+    $repoData = ConvertFrom-JsonSafe (Invoke-Gh @("repo", "view", $Name, "--json", "owner")).Text "Eigentümer"
     $owner = $repoData.owner.login
     if ([string]::IsNullOrWhiteSpace($owner)) { Stop-Blocked "Repository-Eigentümer ist unbekannt." }
     $activeLabels = @($Pr.labels | ForEach-Object { $_.name })
@@ -218,12 +246,10 @@ function Assert-OwnerAttestation {
     }
 
     $headCommit = @($Pr.commits | Where-Object { $_.oid -ceq $ExpectedHeadSha })
-    if ($headCommit.Count -ne 1 -or [string]::IsNullOrWhiteSpace($headCommit[0].committedDate)) {
+    if ($headCommit.Count -ne 1) {
         Stop-Blocked "$Description kann zeitlich nicht an den Head-SHA gebunden werden."
     }
-    try { $headTime = [DateTimeOffset]::Parse([string]$headCommit[0].committedDate) }
-    catch { Stop-Blocked "$Description enthält keine überprüfbare Head-Zeit."
-    }
+    $headTime = ConvertTo-UtcDateTimeOffset $headCommit[0].committedDate "$Description enthält keine überprüfbare Head-Zeit."
 
     # Attestations are read-only inputs. This script deliberately has no path that creates them.
     $commentPages = ConvertFrom-JsonSafe (Invoke-Gh @(
@@ -238,11 +264,8 @@ function Assert-OwnerAttestation {
         $match = [regex]::Match([string]$comment.body, $pattern)
         if ($match.Success -and $comment.user.login -eq $owner -and
             $comment.user.type -eq "User" -and $comment.author_association -eq "OWNER") {
-            try {
-                $created = [DateTimeOffset]::Parse([string]$comment.created_at)
-                $updated = [DateTimeOffset]::Parse([string]$comment.updated_at)
-            }
-            catch { Stop-Blocked "$Description enthält ungültige serverseitige Zeitangaben." }
+            $created = ConvertTo-UtcDateTimeOffset $comment.created_at "$Description enthält ungültige serverseitige Zeitangaben."
+            $updated = ConvertTo-UtcDateTimeOffset $comment.updated_at "$Description enthält ungültige serverseitige Zeitangaben."
             if ($created -ne $updated) { Stop-Blocked "$Description wurde nachträglich verändert." }
             $records += [pscustomobject]@{
                 Id = [long]$comment.id
@@ -266,9 +289,8 @@ function Assert-OwnerAttestation {
     foreach ($event in $events) {
         if ($event.event -eq "labeled" -and $event.label.name -ceq $Label -and
             $event.actor.login -eq $owner) {
-            try { $eventTime = [DateTimeOffset]::Parse([string]$event.created_at) }
-            catch { Stop-Blocked "$Description enthält eine ungültige Label-Ereigniszeit." }
-            if ($eventTime -ge $latest.Created) { $validLabelEvents += $event }
+            $eventTime = ConvertTo-UtcDateTimeOffset $event.created_at "$Description enthält eine ungültige Label-Ereigniszeit."
+            if ($eventTime -gt $latest.Created) { $validLabelEvents += $event }
         }
     }
     if ($validLabelEvents.Count -eq 0) {

@@ -2,7 +2,6 @@
 
 from collections.abc import Callable
 from dataclasses import replace
-import math
 from pathlib import Path
 from time import monotonic
 from tkinter import TclError
@@ -15,7 +14,6 @@ from party_player.ui.responsive_dialog import (
     release_dialog,
 )
 
-from party_player.analysis.loudness_service import LoudnessAnalysisJob
 from party_player.controllers.cue_point_controller import CuePointController, CuePointEditorState
 from party_player.controllers.loudness_controller import LoudnessController, LoudnessEditorState
 from party_player.controllers.track_editor_controller import (
@@ -43,9 +41,15 @@ from party_player.metadata_analysis_service import (
     TempoAnalysisView,
 )
 from party_player.metadata_analysis_contracts import TempoAnalysisScope
+from party_player.ui.loudness_dialogs import (  # noqa: F401
+    LoudnessDialog,
+    NormalizationSettingsDialog,
+    _parse_gain_db,
+)
 from party_player.ui.tooltip import Tooltip
 from party_player.track_suitability import TrackSuitabilityStatus
 from party_player.ui.help_content import tempo_analysis_help_text
+from party_player.ui import technical_audio_presentation
 
 
 SUITABILITY_LABELS = {
@@ -57,275 +61,6 @@ SUITABILITY_LABELS = {
 
 
 DialogKind = Literal["info", "error", "yes_no", "yes_no_cancel"]
-
-
-def _parse_gain_db(raw: str) -> float:
-    normalized = raw.strip().replace("−", "-")
-    if normalized.casefold().endswith("db"):
-        normalized = normalized[:-2].strip()
-    if not normalized:
-        raise ValueError("Bitte einen Gain-Wert eingeben.")
-    try:
-        return float(normalized.replace(",", "."))
-    except ValueError as exc:
-        raise ValueError("Ungültiger Gain-Wert. Beispiele: −4, −4 dB oder −4,5 dB.") from exc
-
-
-class LoudnessDialog(ctk.CTkToplevel):  # type: ignore[misc]
-    """Edit or reset a manual per-track gain without a native system dialog."""
-
-    def __init__(self, parent: Any, controller: LoudnessController, track_id: int) -> None:
-        super().__init__(parent)
-        self._controller = controller
-        self._track_id = track_id
-        state = controller.state(track_id)
-        self.title("Lautstärkeanpassung")
-        self.geometry("560x390")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.protocol("WM_DELETE_WINDOW", self._cancel)
-        self.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(self, text=state.title, font=("Segoe UI", 18, "bold"), anchor="w").grid(
-            row=0, column=0, padx=24, pady=(24, 12), sticky="ew"
-        )
-        self._status = ctk.CTkLabel(
-            self,
-            text=(
-                f"Aktive Quelle: {state.source_text}\n"
-                f"Metadatenstatus: {state.metadata_status_text}\n"
-                f"Effektiver Gain: {state.resolved.effective_gain_db:+.2f} dB\n"
-                f"{state.clip_protection_text}"
-            ),
-            justify="left",
-            anchor="w",
-            text_color="#b8c7d9",
-        )
-        self._status.grid(row=1, column=0, padx=24, pady=(0, 18), sticky="ew")
-        self._analysis_job: LoudnessAnalysisJob | None = None
-        ctk.CTkLabel(
-            self,
-            text="Manuelle Korrektur von −12 bis +12 dB:",
-            anchor="w",
-        ).grid(row=2, column=0, padx=24, pady=(0, 6), sticky="ew")
-        self._gain = ctk.CTkEntry(self, placeholder_text="z. B. −2,50")
-        self._gain.grid(row=3, column=0, padx=24, pady=(0, 6), sticky="ew")
-        if state.manual_gain_db is not None:
-            self._gain.insert(0, f"{state.manual_gain_db:.2f}")
-        self._error = ctk.CTkLabel(
-            self,
-            text="",
-            anchor="w",
-            text_color="#ff8585",
-            wraplength=500,
-        )
-        self._error.grid(row=4, column=0, padx=24, pady=(2, 14), sticky="ew")
-
-        buttons = ctk.CTkFrame(self, fg_color="transparent")
-        buttons.grid(row=5, column=0, padx=24, pady=(8, 24), sticky="e")
-        ctk.CTkButton(
-            buttons,
-            text="Abbrechen",
-            fg_color="#555555",
-            command=self._cancel,
-        ).pack(side="right", padx=(6, 0))
-        ctk.CTkButton(
-            buttons,
-            text="Speichern",
-            fg_color="#2f7d4f",
-            command=self._save,
-        ).pack(side="right", padx=6)
-        ctk.CTkButton(
-            buttons,
-            text="Zurücksetzen",
-            fg_color="#7d3030",
-            command=self._reset,
-        ).pack(side="right", padx=(0, 6))
-        self._analysis_button = ctk.CTkButton(
-            buttons,
-            text="EBU R128 analysieren",
-            command=self._analyze,
-        )
-        self._analysis_button.pack(side="right", padx=(0, 6))
-        analysis_available, analysis_message = controller.analysis_availability()
-        if not analysis_available:
-            self._analysis_button.configure(state="disabled")
-            self._error.configure(text=analysis_message)
-            Tooltip(self._analysis_button, analysis_message)
-
-        self.bind("<Return>", lambda _event: self._save())
-        self.bind("<Escape>", lambda _event: self._cancel())
-        self.grab_set()
-        self._gain.focus_set()
-
-    def _save(self) -> None:
-        try:
-            raw = self._gain.get().strip()
-            if not raw:
-                raise ValueError("Bitte einen Gain-Wert eingeben oder „Zurücksetzen“ wählen.")
-            gain = _parse_gain_db(raw)
-            self._controller.save_manual_gain(self._track_id, gain)
-        except ValueError as exc:
-            self._error.configure(text=str(exc))
-            return
-        self.destroy()
-
-    def _reset(self) -> None:
-        try:
-            self._controller.save_manual_gain(self._track_id, None)
-        except ValueError as exc:
-            self._error.configure(text=str(exc))
-            return
-        self.destroy()
-
-    def _analyze(self) -> None:
-        self._analysis_button.configure(state="disabled")
-        self._status.configure(text="EBU-R128-Analyse läuft im Hintergrund …")
-        try:
-            self._analysis_job = self._controller.analyze_track(
-                self._track_id,
-                self._analysis_completed,
-            )
-        except (ValueError, RuntimeError) as exc:
-            self._analysis_button.configure(state="normal")
-            self._error.configure(text=str(exc))
-
-    def _analysis_completed(self, _result: object, error: str | None) -> None:
-        if not self.winfo_exists():
-            return
-        self._analysis_job = None
-        self._analysis_button.configure(state="normal")
-        if error is not None:
-            self._error.configure(text=error)
-            self._status.configure(text="EBU-R128-Analyse fehlgeschlagen.")
-            return
-        state = self._controller.state(self._track_id)
-        self._error.configure(text="")
-        self._status.configure(
-            text=(
-                "EBU-R128-Analyse abgeschlossen.\n"
-                f"Aktive Quelle: {state.source_text}\n"
-                f"Effektiver Gain: {state.resolved.effective_gain_db:+.2f} dB\n"
-                f"{state.clip_protection_text}"
-            )
-        )
-
-    def _cancel(self) -> None:
-        analysis_job = getattr(self, "_analysis_job", None)
-        if analysis_job is not None:
-            analysis_job.cancel()
-        self.destroy()
-
-
-class NormalizationSettingsDialog(ctk.CTkToplevel):  # type: ignore[misc]
-    """Edit persistent normalization and safety settings in one transaction."""
-
-    def __init__(self, parent: Any, controller: LoudnessController) -> None:
-        super().__init__(parent)
-        self._controller = controller
-        state = controller.settings_state()
-        self.title("Normalisierung einstellen")
-        self.geometry("650x620")
-        self.minsize(620, 590)
-        self.transient(parent)
-        self.protocol("WM_DELETE_WINDOW", self._cancel)
-        self.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            self,
-            text="Lautheitsnormalisierung",
-            font=("Segoe UI", 20, "bold"),
-        ).grid(row=0, column=0, columnspan=2, padx=24, pady=(24, 16), sticky="w")
-        self._enabled = ctk.CTkSwitch(self, text="Normalisierung aktiv")
-        self._enabled.grid(row=1, column=0, columnspan=2, padx=24, pady=8, sticky="w")
-        if state.enabled:
-            self._enabled.select()
-        self._clip_protection = ctk.CTkSwitch(self, text="Clip-Schutz aktiv")
-        self._clip_protection.grid(row=1, column=1, padx=24, pady=8, sticky="e")
-        if state.clip_protection_enabled:
-            self._clip_protection.select()
-        self._mode_labels = {"Titel": "TRACK", "Album": "ALBUM", "Aus": "OFF"}
-        self._mode = ctk.CTkOptionMenu(self, values=list(self._mode_labels))
-        self._mode.set(
-            next(label for label, mode in self._mode_labels.items() if mode == state.mode)
-        )
-        self._mode.grid(row=2, column=1, padx=24, pady=8, sticky="ew")
-        ctk.CTkLabel(self, text="Modus:", anchor="w").grid(
-            row=2, column=0, padx=24, pady=8, sticky="w"
-        )
-        self._target_loudness = self._field(3, "Ziel-Lautheit (LUFS)", state.target_loudness_lufs)
-        self._maximum_positive = self._field(
-            4, "Maximale positive Verstärkung (dB)", state.maximum_positive_gain_db
-        )
-        self._maximum_negative = self._field(
-            5, "Maximale negative Verstärkung (dB)", state.maximum_negative_gain_db
-        )
-        self._maximum_peak = self._field(
-            6, "Absolute Peak-Grenze (dBFS)", state.maximum_output_peak_db
-        )
-        self._headroom = self._field(7, "Zusätzlicher Headroom (dB)", state.headroom_db)
-        self._fallback = self._field(
-            8, "Positiver Fallback ohne Peak (dB)", state.fallback_positive_gain_db
-        )
-        self._smoothing = self._field(9, "Gain-Glättung (Sekunden)", state.smoothing_seconds)
-        ctk.CTkLabel(
-            self,
-            text=(
-                "Sicherer Ausgangspegel = absolute Peak-Grenze minus Headroom. "
-                "Änderungen an geladenen Titeln werden weich eingeblendet."
-            ),
-            justify="left",
-            wraplength=590,
-            text_color="#9fb3c8",
-        ).grid(row=10, column=0, columnspan=2, padx=24, pady=(10, 4), sticky="w")
-        self._error = ctk.CTkLabel(self, text="", text_color="#ff8585", wraplength=590, anchor="w")
-        self._error.grid(row=11, column=0, columnspan=2, padx=24, pady=6, sticky="ew")
-        buttons = ctk.CTkFrame(self, fg_color="transparent")
-        buttons.grid(row=12, column=0, columnspan=2, padx=24, pady=(10, 24), sticky="e")
-        ctk.CTkButton(buttons, text="Abbrechen", fg_color="#555555", command=self._cancel).pack(
-            side="right", padx=(6, 0)
-        )
-        ctk.CTkButton(buttons, text="Speichern", fg_color="#2f7d4f", command=self._save).pack(
-            side="right", padx=6
-        )
-        self.bind("<Return>", lambda _event: self._save())
-        self.bind("<Escape>", lambda _event: self._cancel())
-        self.grab_set()
-
-    def _field(self, row: int, label: str, value: float) -> ctk.CTkEntry:
-        ctk.CTkLabel(self, text=f"{label}:", anchor="w").grid(
-            row=row, column=0, padx=24, pady=7, sticky="w"
-        )
-        entry = ctk.CTkEntry(self)
-        entry.insert(0, f"{value:.2f}")
-        entry.grid(row=row, column=1, padx=24, pady=7, sticky="ew")
-        return entry
-
-    @staticmethod
-    def _number(entry: Any) -> float:
-        return float(entry.get().strip().replace(",", "."))
-
-    def _save(self) -> None:
-        try:
-            self._controller.update_normalization_settings(
-                enabled=bool(self._enabled.get()),
-                clip_protection_enabled=bool(self._clip_protection.get()),
-                mode=self._mode_labels[self._mode.get()],
-                target_loudness_lufs=self._number(self._target_loudness),
-                maximum_positive_gain_db=self._number(self._maximum_positive),
-                maximum_negative_gain_db=self._number(self._maximum_negative),
-                maximum_output_peak_db=self._number(self._maximum_peak),
-                headroom_db=self._number(self._headroom),
-                fallback_positive_gain_db=self._number(self._fallback),
-                smoothing_seconds=self._number(self._smoothing),
-            )
-        except ValueError as exc:
-            self._error.configure(text=str(exc))
-            return
-        self.destroy()
-
-    def _cancel(self) -> None:
-        self.destroy()
 
 
 class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
@@ -904,139 +639,35 @@ class CuePointDialog(ctk.CTkToplevel):  # type: ignore[misc]
 
     @staticmethod
     def _technical_audio_field_names() -> tuple[str, ...]:
-        return (
-            "Audioformat/Codec",
-            "Container",
-            "Bitratenmodus",
-            "Bitrate",
-            "Abtastrate",
-            "Bittiefe",
-            "Kanäle",
-            "Kanallayout",
-            "Technische Dauer",
-            "Codec-Profil",
-            "Encoder",
-        )
+        return technical_audio_presentation._technical_audio_field_names()
 
     @classmethod
     def _technical_audio_unavailable_text(cls, reason: str) -> str:
-        rows = "\n".join(f"{name}: Nicht verfügbar" for name in cls._technical_audio_field_names())
-        return f"Status: Nicht verfügbar\nGrund: {reason}\n\n{rows}"
+        return technical_audio_presentation._technical_audio_unavailable_text(reason)
 
     @classmethod
     def _technical_audio_text(cls, info: AudioFileInfo) -> str:
-        return "Status: Verfügbar\n" + "\n".join(
-            f"{name}: {value}" for name, value in cls._technical_audio_fields(info)
-        )
+        return technical_audio_presentation._technical_audio_text(info)
 
     @classmethod
     def _technical_audio_fields(cls, info: AudioFileInfo) -> tuple[tuple[str, str], ...]:
-        unavailable = "Nicht verfügbar"
-        codec_key = info.codec_name.casefold()
-        codec = {
-            "flac": "FLAC",
-            "mp3": "MP3 – MPEG Audio Layer III",
-        }.get(codec_key)
-        if codec is None:
-            short = info.codec_name.upper() if info.codec_name else unavailable
-            codec = (
-                f"{short} – {info.codec_long_name}"
-                if info.codec_long_name and info.codec_long_name.casefold() != codec_key
-                else short
-            )
-        format_key = info.format_name.split(",", 1)[0].casefold()
-        container = {"flac": "FLAC", "mp3": "MP3"}.get(
-            format_key, info.format_long_name or info.format_name.upper() or unavailable
-        )
-        if codec_key == "flac":
-            bitrate_mode = "Nicht als MP3-CBR/VBR klassifiziert"
-        else:
-            bitrate_mode = info.bitrate_mode or "Nicht zuverlässig bestimmbar"
-        if info.bitrate_bps is None:
-            bitrate = unavailable
-        else:
-            prefix = (
-                "durchschnittlich " if codec_key == "flac" or info.bitrate_mode == "VBR" else ""
-            )
-            bitrate = f"{prefix}{info.bitrate_bps / 1000:.0f} kbit/s"
-        sample_rate = (
-            f"{info.sample_rate_hz / 1000:g} kHz" if info.sample_rate_hz > 0 else unavailable
-        )
-        if codec_key in {"mp3", "mp2", "aac", "vorbis", "opus", "wma"}:
-            bit_depth = "Nicht anwendbar"
-        else:
-            bit_depth = (
-                f"{info.bits_per_sample} Bit" if info.bits_per_sample is not None else unavailable
-            )
-        channels = str(info.channels) if info.channels > 0 else unavailable
-        layout = cls._channel_layout_text(info.channel_layout, info.channels)
-        streams = (
-            f" · Audiostreams: {info.audio_stream_count}; verwendet wird Stream "
-            f"{info.selected_stream_index}"
-            if info.audio_stream_count > 1
-            else ""
-        )
-        return (
-            ("Audioformat/Codec", codec),
-            ("Container", container),
-            ("Bitratenmodus", bitrate_mode),
-            ("Bitrate", bitrate),
-            ("Abtastrate", sample_rate),
-            ("Bittiefe", bit_depth),
-            ("Kanäle", channels),
-            ("Kanallayout", layout),
-            ("Technische Dauer", cls._format_audio_duration(info.duration_seconds)),
-            ("Codec-Profil", info.codec_profile or unavailable),
-            ("Encoder", f"{info.encoder or unavailable}{streams}"),
-        )
+        return technical_audio_presentation._technical_audio_fields(info)
 
     @staticmethod
     def _technical_audio_error_text(error: Exception) -> str:
-        text = str(error).casefold()
-        if isinstance(error, FileNotFoundError) or "nicht erreichbar" in text:
-            return "Datei fehlt oder ist nicht erreichbar."
-        if "timeout" in text or "timed out" in text or "zeitlimit" in text:
-            return "FFprobe hat das Zeitlimit überschritten."
-        if "geändert" in text:
-            return "Datei wurde während der Ermittlung geändert."
-        if "audiostream" in text or "unvollständige audiodaten" in text:
-            return "Datei enthält keinen verwendbaren Audiostream."
-        if "nicht verfügbar" in text or "nicht gefunden" in text:
-            return "FFprobe ist nicht verfügbar oder nicht ausführbar."
-        if "nicht gestartet" in text or "warteschlange" in text:
-            return "Hintergrundwarteschlange ist ausgelastet; bitte erneut versuchen."
-        return "Datei konnte technisch nicht gelesen werden."
+        return technical_audio_presentation._technical_audio_error_text(error)
 
     @staticmethod
     def _channel_description(channels: int) -> str:
-        if channels == 1:
-            return "Mono (1 Kanal)"
-        if channels == 2:
-            return "Stereo (2 Kanäle)"
-        return f"{channels} Kanäle" if channels > 0 else "Nicht verfügbar"
+        return technical_audio_presentation._channel_description(channels)
 
     @staticmethod
     def _channel_layout_text(layout: str, channels: int) -> str:
-        return {
-            "mono": "Mono",
-            "stereo": "Stereo",
-        }.get(layout.casefold(), layout or CuePointDialog._channel_description(channels))
+        return technical_audio_presentation._channel_layout_text(layout, channels)
 
     @staticmethod
     def _format_audio_duration(seconds: float) -> str:
-        if not math.isfinite(seconds) or seconds <= 0:
-            return "Nicht verfügbar"
-        whole_seconds = int(seconds)
-        milliseconds = round((seconds - whole_seconds) * 1000)
-        if milliseconds == 1000:
-            whole_seconds += 1
-            milliseconds = 0
-        minutes, remaining = divmod(whole_seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-        base = (
-            f"{hours:d}:{minutes:02d}:{remaining:02d}" if hours else f"{minutes:d}:{remaining:02d}"
-        )
-        return f"{base},{milliseconds:03d}"
+        return technical_audio_presentation._format_audio_duration(seconds)
 
     def _metadata_load_failed(self, error: Exception) -> None:
         if not self._is_active():
