@@ -573,7 +573,7 @@ def test_controller_appends_preview_to_editable_queue_in_displayed_order() -> No
     assert completed == [(1, 0)]
 
 
-def test_controller_extends_existing_queue_without_pausing_or_replacing_it() -> None:
+def test_controller_extends_existing_queue_with_automatic_priority_without_replacing_it() -> None:
     preview = replace(
         _preview(),
         planning_basis=SelectionPreviewPlanningBasis(42, "digest", 3, None, "history"),
@@ -628,7 +628,8 @@ def test_controller_extends_existing_queue_without_pausing_or_replacing_it() -> 
     )
 
     assert not controller.paused
-    assert controller._queue_service.source == QueueSource.MANUAL.value
+    assert controller._queue_service.source == QueueSource.AUTOMATIC.value
+    assert QueueSource(controller._queue_service.source).default_priority == 100
     assert completed == [(1, 0)]
 
 

@@ -6424,9 +6424,7 @@ class MainController:
                     service.discard_resumable_for_session(session.session_id)
                 added, skipped = self._queue_service.add_many(
                     entries,
-                    source=(
-                        QueueSource.AUTOMATIC.value if replace_queue else QueueSource.MANUAL.value
-                    ),
+                    source=QueueSource.AUTOMATIC.value,
                     use_saved_cues=False,
                     replace_queue=replace_queue,
                 )
