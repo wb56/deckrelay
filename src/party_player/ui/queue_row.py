@@ -55,6 +55,24 @@ def _priority_suffix(entry: QueueEntry) -> str:
     return f" · Priorität {entry.priority}" if entry.priority else ""
 
 
+def ellipsize_to_width(text: str, maximum_width: int, measure: Callable[[str], int]) -> str:
+    """Fit one line into a pixel width while preserving its complete source text."""
+    if not text or measure(text) <= maximum_width:
+        return text
+    ellipsis = "…"
+    if maximum_width <= 0 or measure(ellipsis) > maximum_width:
+        return ""
+    low = 0
+    high = len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if measure(f"{text[:middle]}{ellipsis}") <= maximum_width:
+            low = middle
+        else:
+            high = middle - 1
+    return f"{text[:low].rstrip()}{ellipsis}"
+
+
 def _row_colors(*, selected: bool, status: str, locked: bool = False) -> tuple[str, str]:
     if selected:
         return theme.SURFACE_HOVER, theme.DECK_ACCENTS["A"]
@@ -99,8 +117,10 @@ class QueueRowView:
             border_width=1,
             border_color=theme.BORDER,
         )
-        self._title = ctk.CTkLabel(self._frame, text="", anchor="w")
-        self._title.pack(side="left", fill="x", expand=True, padx=6)
+        self._title = ctk.CTkLabel(self._frame, text="", anchor="w", width=1)
+        self._title_available_width: int | None = None
+        self._title_full_text = ""
+        self._title_rendered_text = ""
         self._display_base = ""
         self._display_without_requests = ""
         self._display_metadata_suffix = ""
@@ -115,7 +135,7 @@ class QueueRowView:
         }
         self._buttons: dict[str, Any] = {}
         self._tooltips: dict[str, Tooltip | SharedTooltipTarget] = {}
-        for action in self.ACTIONS:
+        for action in reversed(self.ACTIONS):
             text, tooltip = specs[action]
             button = ctk.CTkButton(
                 self._frame,
@@ -138,13 +158,20 @@ class QueueRowView:
                     )
                 ),
             )
-            button.pack(side="left", padx=1, pady=3)
+            button.pack(side="right", padx=1, pady=3)
             self._buttons[action] = button
             self._tooltips[action] = (
                 tooltip_manager.register(button, tooltip)
                 if tooltip_manager is not None
                 else Tooltip(button, tooltip)
             )
+        self._title.pack(side="left", fill="x", expand=True, padx=6)
+        self._tooltips["title"] = (
+            tooltip_manager.register(self._title, "")
+            if tooltip_manager is not None
+            else Tooltip(self._title, "")
+        )
+        self._title.bind("<Configure>", self._resize_title)
         if self._callbacks.get("select") is not None:
             for widget in (self._frame, self._title):
                 bind = getattr(widget, "bind", None)
@@ -275,8 +302,7 @@ class QueueRowView:
                 f"{cue_warning_suffix}{skip_suffix}"
             )
             self._display_base = display_base
-            self._title.configure(text=f"{display_base}  ·  {_status_badge(entry.status.value)}")
-            self._configured_widget_count += 1
+            self._set_title_text(f"{display_base}  ·  {_status_badge(entry.status.value)}")
         if changed_fields & {"style", "selected", "locked"}:
             row_color, border_color = _row_colors(
                 selected=view_model.selected,
@@ -307,8 +333,7 @@ class QueueRowView:
             return False
         self._fields["state"] = value
         self._fields["style"] = value == "playing"
-        self._title.configure(text=f"{self._display_base}  ·  {_status_badge(value)}")
-        self._configured_widget_count += 1
+        self._set_title_text(f"{self._display_base}  ·  {_status_badge(value)}")
         selected = bool(self._fields.get("selected"))
         row_color, border_color = _row_colors(
             selected=selected,
@@ -336,10 +361,43 @@ class QueueRowView:
             f"{self._display_without_requests}{suffix}{self._display_metadata_suffix}"
         )
         state = str(self._fields.get("state", ""))
-        self._title.configure(text=f"{self._display_base}  ·  {_status_badge(state)}")
-        self._configured_widget_count += 1
+        self._set_title_text(f"{self._display_base}  ·  {_status_badge(state)}")
         self._last_values = None
         return True
+
+    def _set_title_text(self, text: str) -> None:
+        self._title_full_text = text
+        self._tooltips["title"].set_text(text)
+        self._render_title_text()
+
+    def _resize_title(self, event: object) -> None:
+        width = int(getattr(event, "width", 0))
+        if width <= 0 or width == self._title_available_width:
+            return
+        self._title_available_width = width
+        self._render_title_text()
+
+    def _render_title_text(self) -> None:
+        rendered = (
+            self._title_full_text
+            if self._title_available_width is None
+            else ellipsize_to_width(
+                self._title_full_text,
+                self._title_available_width,
+                self._measure_title_text,
+            )
+        )
+        if rendered == self._title_rendered_text:
+            return
+        self._title.configure(text=rendered)
+        self._title_rendered_text = rendered
+        self._configured_widget_count += 1
+
+    def _measure_title_text(self, text: str) -> int:
+        cget = getattr(self._title, "cget", None)
+        font = cget("font") if callable(cget) else None
+        measure = getattr(font, "measure", None)
+        return int(measure(text)) if callable(measure) else len(text) * 7
 
     def update_selection(self, selected: bool) -> bool:
         """Update the selection styling without rebuilding the row."""
