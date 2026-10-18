@@ -1,17 +1,76 @@
+import ctypes
+from ctypes import wintypes
 import json
 
 import pytest
 
+import party_player.window_geometry as window_geometry
 from party_player.window_geometry import (
     DisplaySnapshot,
     MonitorGeometry,
     Rect,
     StoredWindowGeometry,
     WindowInsets,
+    WindowsDisplayProvider,
     parse_stored_geometry,
     resolve_child_window_geometry,
     resolve_window_geometry,
 )
+
+
+class FakeWindowsFunction:
+    def __init__(self, implementation: object) -> None:
+        self.implementation = implementation
+        self.argtypes: list[object] | None = None
+        self.restype: object | None = None
+
+    def __call__(self, *args: object) -> object:
+        return self.implementation(*args)  # type: ignore[operator]
+
+
+class FakeWindowsLibrary:
+    pass
+
+
+def fake_monitor_libraries(
+    monitor_handle: int, *, monitor_info_succeeds: bool = True, enumeration_succeeds: bool = True
+) -> tuple[FakeWindowsLibrary, FakeWindowsLibrary, list[int]]:
+    user32 = FakeWindowsLibrary()
+    shcore = FakeWindowsLibrary()
+    observed_handles: list[int] = []
+
+    def get_monitor_info(handle: int, info_pointer: object) -> bool:
+        argtypes = user32.GetMonitorInfoW.argtypes  # type: ignore[attr-defined]
+        if not argtypes:
+            raise ctypes.ArgumentError("argument 1: OverflowError: int too long to convert")
+        converted_handle = argtypes[0](handle)
+        observed_handles.append(converted_handle.value)
+        if not monitor_info_succeeds:
+            return False
+        info = ctypes.cast(info_pointer, ctypes.POINTER(window_geometry._MonitorInfo)).contents
+        info.rcMonitor = window_geometry._WinRect(0, 0, 1920, 1080)
+        info.rcWork = window_geometry._WinRect(0, 0, 1920, 1040)
+        info.dwFlags = 1
+        return True
+
+    def enum_display_monitors(_hdc: object, _clip: object, callback: object, _data: object) -> bool:
+        if not enumeration_succeeds:
+            return False
+        rect = window_geometry._WinRect(0, 0, 1920, 1080)
+        callback(monitor_handle, None, ctypes.pointer(rect), 0)  # type: ignore[operator]
+        return True
+
+    def get_dpi_for_monitor(
+        _handle: object, _kind: object, x_dpi_pointer: object, y_dpi_pointer: object
+    ) -> int:
+        ctypes.cast(x_dpi_pointer, ctypes.POINTER(wintypes.UINT)).contents.value = 96
+        ctypes.cast(y_dpi_pointer, ctypes.POINTER(wintypes.UINT)).contents.value = 96
+        return 0
+
+    user32.GetMonitorInfoW = FakeWindowsFunction(get_monitor_info)  # type: ignore[attr-defined]
+    user32.EnumDisplayMonitors = FakeWindowsFunction(enum_display_monitors)  # type: ignore[attr-defined]
+    shcore.GetDpiForMonitor = FakeWindowsFunction(get_dpi_for_monitor)  # type: ignore[attr-defined]
+    return user32, shcore, observed_handles
 
 
 def snapshot(
@@ -147,3 +206,76 @@ def test_child_dialog_uses_parent_monitor_and_is_clamped_to_its_work_area() -> N
     assert result.height == 551
     assert 1920 <= result.x < 3286
     assert result.y == 0
+
+
+def test_windows_snapshot_passes_pointer_width_monitor_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitor_handle = 0x1_0000_1234
+    user32, shcore, observed_handles = fake_monitor_libraries(monitor_handle)
+    monkeypatch.setattr(window_geometry.ctypes.windll, "user32", user32)
+    monkeypatch.setattr(window_geometry.ctypes.windll, "shcore", shcore)
+    provider = WindowsDisplayProvider()
+    monkeypatch.setattr(provider, "_window_insets", lambda _handle: WindowInsets())
+
+    result = provider.snapshot(0x1_0000_5678)
+
+    assert observed_handles == [monitor_handle]
+    assert result.monitors == (
+        MonitorGeometry(Rect(0, 0, 1920, 1080), Rect(0, 0, 1920, 1040), 1.0, True),
+    )
+    assert user32.GetMonitorInfoW.argtypes[0] is wintypes.HMONITOR  # type: ignore[attr-defined]
+    assert user32.GetMonitorInfoW.restype is wintypes.BOOL  # type: ignore[attr-defined]
+
+
+def test_windows_snapshot_rejects_monitor_when_get_monitor_info_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user32, shcore, _observed_handles = fake_monitor_libraries(
+        0x1_0000_1234, monitor_info_succeeds=False
+    )
+    monkeypatch.setattr(window_geometry.ctypes.windll, "user32", user32)
+    monkeypatch.setattr(window_geometry.ctypes.windll, "shcore", shcore)
+
+    with pytest.raises(OSError, match="Arbeitsflächen"):
+        WindowsDisplayProvider().snapshot(1)
+
+
+def test_windows_snapshot_rejects_failed_monitor_enumeration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user32, shcore, _observed_handles = fake_monitor_libraries(
+        0x1_0000_1234, enumeration_succeeds=False
+    )
+    monkeypatch.setattr(window_geometry.ctypes.windll, "user32", user32)
+    monkeypatch.setattr(window_geometry.ctypes.windll, "shcore", shcore)
+
+    with pytest.raises(OSError, match="Arbeitsflächen"):
+        WindowsDisplayProvider().snapshot(1)
+
+
+def test_window_insets_passes_pointer_width_window_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window_handle = 0x1_0000_5678
+    user32 = FakeWindowsLibrary()
+    observed_handles: list[int] = []
+
+    def failed_rect_lookup(handle: int, _rect_pointer: object) -> bool:
+        argtypes = user32.GetWindowRect.argtypes  # type: ignore[attr-defined]
+        assert argtypes
+        observed_handles.append(argtypes[0](handle).value)
+        return False
+
+    user32.GetWindowRect = FakeWindowsFunction(failed_rect_lookup)  # type: ignore[attr-defined]
+    user32.GetClientRect = FakeWindowsFunction(lambda *_args: False)  # type: ignore[attr-defined]
+    user32.ClientToScreen = FakeWindowsFunction(lambda *_args: False)  # type: ignore[attr-defined]
+    user32.GetWindowLongW = FakeWindowsFunction(lambda *_args: 0)  # type: ignore[attr-defined]
+    user32.AdjustWindowRectEx = FakeWindowsFunction(lambda *_args: True)  # type: ignore[attr-defined]
+    user32.GetSystemMetrics = FakeWindowsFunction(lambda _index: 0)  # type: ignore[attr-defined]
+    monkeypatch.setattr(window_geometry.ctypes.windll, "user32", user32)
+
+    WindowsDisplayProvider._window_insets(window_handle)
+
+    assert observed_handles == [window_handle]
+    assert user32.GetWindowRect.argtypes[0] is wintypes.HWND  # type: ignore[attr-defined]
