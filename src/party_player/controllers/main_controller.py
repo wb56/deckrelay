@@ -4592,7 +4592,9 @@ class MainController:
                 )
                 return
             candidate.set_transition_muted(False)
-            self.crossfader.set_position(0.0 if candidate.model.deck_id == "A" else 1.0)
+            start_position = 0.0 if candidate.model.deck_id == "A" else 1.0
+            self.crossfader.set_position(start_position)
+            self._refresh_crossfade_display()
             if not self._one_deck_mode.crossfade_allowed():
                 candidate.set_fade_level_immediately(0.0)
             self.deck_action(candidate.model.deck_id, "play", automatic=True)
@@ -6278,8 +6280,17 @@ class MainController:
                         raise RuntimeError(result.code)
                 elif action == "recalculate":
                     result = service.recalculate(plan_id, revision)
-                    if result.plan is None:
+                    if result.plan is None or result.plan.plan.status.value != "ACTIVE":
                         raise RuntimeError(result.code)
+                    target = self._dynamic_automatic_target_count or result.plan.plan.planned_depth
+                    buffer_result = self._queue_service.ensure_automatic_buffer(target)
+                    if buffer_result is None or buffer_result.status not in {
+                        AutomaticSelectionPlanExecutionStatus.MATERIALIZED,
+                        AutomaticSelectionPlanExecutionStatus.ALREADY_MATERIALIZED,
+                    }:
+                        raise RuntimeError(
+                            buffer_result.reason_code if buffer_result is not None else "NO_PLAN"
+                        )
                 elif action == "discard":
                     result = service.discard(plan_id, revision)
                     if result.plan is None:
@@ -6297,8 +6308,15 @@ class MainController:
                 return
 
             def action_completed() -> None:
-                if action in {"activate", "resume"}:
+                if action in {"activate", "resume", "recalculate"}:
                     self.set_player_mode(PlayerMode.AUTOMATIC)
+                if action == "recalculate" and (
+                    self.player_mode is not PlayerMode.AUTOMATIC
+                    or not self._automatic_run_active
+                    or self._automatic_run_paused
+                ):
+                    failed("Die Automatik konnte nicht sicher wieder aktiviert werden.")
+                    return
                 completed()
 
             self._publish_gui_callback(action_completed, "automatic-plan-ui")
@@ -6408,9 +6426,7 @@ class MainController:
                     service.discard_resumable_for_session(session.session_id)
                 added, skipped = self._queue_service.add_many(
                     entries,
-                    source=(
-                        QueueSource.AUTOMATIC.value if replace_queue else QueueSource.MANUAL.value
-                    ),
+                    source=QueueSource.AUTOMATIC.value,
                     use_saved_cues=False,
                     replace_queue=replace_queue,
                 )

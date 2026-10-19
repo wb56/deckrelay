@@ -1,6 +1,8 @@
 from dataclasses import replace
 from typing import Any
 
+import pytest
+
 from party_player.enums import QueueStatus
 from party_player.models import QueueEntry, Track
 from party_player.performance_monitor import PerformanceMonitor
@@ -16,13 +18,14 @@ class FakeWidget:
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         type(self).created += 1
         self.options: dict[str, object] = dict(_kwargs)
+        self.pack_calls: list[dict[str, object]] = []
 
     def configure(self, **_kwargs: object) -> None:
         type(self).configured += 1
         self.options.update(_kwargs)
 
     def pack(self, **_kwargs: object) -> None:
-        pass
+        self.pack_calls.append(dict(_kwargs))
 
     def pack_forget(self) -> None:
         pass
@@ -89,6 +92,60 @@ def model(queue_id: int, status: QueueStatus) -> QueueEntryViewModel:
     return QueueEntryViewModel(QueueEntry(queue_id, queue_id, queue_id, status), track)
 
 
+@pytest.mark.parametrize(
+    ("maximum_width", "expected"),
+    [
+        (200, "Short title"),
+        (70, "Long t…"),
+        (35, "Lo…"),
+    ],
+)
+def test_queue_title_is_ellipsized_to_available_width(maximum_width: int, expected: str) -> None:
+    assert (
+        queue_row.ellipsize_to_width(
+            "Short title" if maximum_width == 200 else "Long title for the queue",
+            maximum_width,
+            lambda value: len(value) * 10,
+        )
+        == expected
+    )
+
+
+def test_queue_row_reserves_right_side_for_all_actions(monkeypatch) -> None:
+    monkeypatch.setattr(queue_row.ctk, "CTkFrame", FakeWidget)
+    monkeypatch.setattr(queue_row.ctk, "CTkLabel", FakeWidget)
+    monkeypatch.setattr(queue_row.ctk, "CTkButton", FakeWidget)
+    monkeypatch.setattr(queue_row, "Tooltip", FakeTooltip)
+
+    row = QueueRowView(object(), callbacks(), PerformanceMonitor())
+
+    assert row._title.options["width"] == 1
+    assert row._title.pack_calls[-1]["side"] == "left"
+    assert all(button.pack_calls[0]["side"] == "right" for button in row._buttons.values())
+
+
+def test_long_queue_title_keeps_full_text_in_tooltip_and_actions_unchanged(monkeypatch) -> None:
+    monkeypatch.setattr(queue_row.ctk, "CTkFrame", FakeWidget)
+    monkeypatch.setattr(queue_row.ctk, "CTkLabel", FakeWidget)
+    monkeypatch.setattr(queue_row.ctk, "CTkButton", FakeWidget)
+    monkeypatch.setattr(queue_row, "Tooltip", FakeTooltip)
+    invoked: list[int] = []
+    row_callbacks = callbacks()
+    row_callbacks["deck_a"] = invoked.append
+    row = QueueRowView(object(), row_callbacks, PerformanceMonitor())
+    long_title = "A very long queue title " * 12
+    track = Track(1, "one.mp3", long_title, "Artist", "", 90.0)
+    entry = QueueEntry(1, 1, 1, QueueStatus.WAITING)
+
+    row.bind_entry(QueueEntryViewModel(entry, track))
+    row._resize_title(type("ConfigureEvent", (), {"width": 160})())
+    row._buttons["deck_a"].options["command"]()
+
+    assert str(row._title.options["text"]).endswith("…")
+    assert long_title in row._tooltips["title"].text
+    assert invoked == [1]
+
+
 def test_queue_rebinding_reuses_compact_widgets_and_tooltips(monkeypatch) -> None:
     FakeWidget.created = 0
     FakeTooltip.created = 0
@@ -104,7 +161,7 @@ def test_queue_rebinding_reuses_compact_widgets_and_tooltips(monkeypatch) -> Non
     row.bind_entry(model(2, QueueStatus.PLAYING))
 
     assert FakeWidget.created == widgets
-    assert FakeTooltip.created == tooltips == 4
+    assert FakeTooltip.created == tooltips == 5
 
 
 def test_reused_commands_and_selection_target_current_entry(monkeypatch) -> None:
@@ -259,8 +316,8 @@ def test_rebind_reuses_tooltips_and_cancels_delayed_callbacks(monkeypatch) -> No
     row.bind_entry(None)
     row.bind_entry(model(2, QueueStatus.WAITING))
 
-    assert FakeTooltip.created == 4
-    assert FakeTooltip.cancelled == 4
+    assert FakeTooltip.created == 5
+    assert FakeTooltip.cancelled == 5
 
 
 def test_dispose_closes_all_tooltips_once(monkeypatch) -> None:
@@ -274,7 +331,7 @@ def test_dispose_closes_all_tooltips_once(monkeypatch) -> None:
     row.dispose()
     row.dispose()
 
-    assert FakeTooltip.closed == 4
+    assert FakeTooltip.closed == 5
 
 
 def test_priority_lock_requests_and_skip_reason_are_rendered_fieldwise(monkeypatch) -> None:
