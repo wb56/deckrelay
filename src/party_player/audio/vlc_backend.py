@@ -6,7 +6,6 @@ import sys
 from ctypes import windll
 from pathlib import Path
 from threading import Event, Lock, Thread
-from time import monotonic
 from typing import Any
 
 from party_player.equalizer import EqualizerService, ResolvedEqualizerPreset
@@ -16,8 +15,6 @@ class VlcAudioBackend:
     """One media player per deck backed by one shared LibVLC instance."""
 
     MAXIMUM_VOLUME_FACTOR = 2.0
-    VOLUME_RETRY_ATTEMPTS = 3
-    VOLUME_RETRY_DELAY_SECONDS = 0.05
     _shared_instance: Any = None
     _shared_installation_directory: Path | None = None
     _active_players = 0
@@ -74,7 +71,6 @@ class VlcAudioBackend:
         self._volume_changed = Event()
         self._volume_stop = Event()
         self._volume_thread: Thread | None = None
-        self._volume_retry_not_before = 0.0
         self._closed = False
         self._equalizer: Any = None
         self._equalizer_snapshot: ResolvedEqualizerPreset | None = None
@@ -328,9 +324,8 @@ class VlcAudioBackend:
                 self._logger.debug(
                     "VLC-Audioausgang noch nicht bereit; Lautstärke wird erneut gesetzt"
                 )
-                self._start_volume_worker(retry_delay=self.VOLUME_RETRY_DELAY_SECONDS)
 
-    def _start_volume_worker(self, *, retry_delay: float = 0.0) -> None:
+    def _start_volume_worker(self) -> None:
         """Wake one persistent coalescing worker without taking a fade-thread lock."""
         # Tests may construct the adapter via __new__; initialize worker state lazily.
         if not hasattr(self, "_volume_changed"):
@@ -339,14 +334,8 @@ class VlcAudioBackend:
             self._volume_stop = Event()
             self._closed = False
             self._volume_thread = None
-            self._volume_retry_not_before = 0.0
         if self._closed:
             return
-        if retry_delay > 0.0:
-            self._volume_retry_not_before = max(
-                self._volume_retry_not_before,
-                monotonic() + retry_delay,
-            )
         if self._volume_thread is None or not self._volume_thread.is_alive():
             self._volume_thread = Thread(
                 target=self._volume_worker,
@@ -360,12 +349,6 @@ class VlcAudioBackend:
         while not self._volume_stop.is_set():
             self._volume_changed.wait()
             self._volume_changed.clear()
-            retry_not_before = self._volume_retry_not_before
-            if retry_not_before > 0.0:
-                remaining = retry_not_before - monotonic()
-                if remaining > 0.0 and self._volume_stop.wait(remaining):
-                    return
-                self._volume_retry_not_before = 0.0
             failed_attempts = 0
             while not self._volume_stop.is_set():
                 requested = self._requested_volume_percent
@@ -378,11 +361,9 @@ class VlcAudioBackend:
                     failed_attempts = 0
                 else:
                     failed_attempts += 1
-                    if failed_attempts >= self.VOLUME_RETRY_ATTEMPTS:
+                    if failed_attempts >= 2:
                         self._logger.debug("VLC-Audioausgang noch nicht bereit")
                         break
-                    if self._volume_stop.wait(self.VOLUME_RETRY_DELAY_SECONDS):
-                        return
 
     @staticmethod
     def _is_network_path(file_path: Path) -> bool:

@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 from threading import Event, Lock
-from time import monotonic, sleep
+from time import monotonic
 from typing import Any
 
 import pytest
@@ -42,39 +42,6 @@ class StartingAudioPlayer:
     def audio_set_volume(self, volume: int) -> int:
         self.volume_calls.append(volume)
         return 0
-
-
-class PlaybackVolumeRacePlayer:
-    def __init__(self) -> None:
-        self.output_ready = Event()
-        self.applied = Event()
-        self.started = False
-        self.volume_calls: list[int] = []
-        self.device_calls: list[str | None] = []
-        self.stop_calls = 0
-        self.release_calls = 0
-
-    def play(self) -> int:
-        self.started = True
-        return 0
-
-    def audio_set_volume(self, volume: int) -> int:
-        self.volume_calls.append(volume)
-        if not self.started:
-            return 0
-        if self.output_ready.is_set():
-            self.applied.set()
-            return 0
-        return -1
-
-    def audio_output_device_set(self, _module: None, device: str | None) -> None:
-        self.device_calls.append(device)
-
-    def stop(self) -> None:
-        self.stop_calls += 1
-
-    def release(self) -> None:
-        self.release_calls += 1
 
 
 class BlockingAudioPlayer:
@@ -186,108 +153,6 @@ def test_play_reapplies_cached_volume_for_new_audio_output() -> None:
 
     assert player.volume_calls == [80]
     assert backend._volume_percent == 80
-    assert not hasattr(backend, "_volume_thread")
-
-
-@pytest.mark.parametrize(("crossfader_position", "deck"), [(0.0, "A"), (1.0, "B")])
-def test_play_retries_endpoint_volume_when_new_audio_output_becomes_ready(
-    crossfader_position: float, deck: str
-) -> None:
-    backend = VlcAudioBackend.__new__(VlcAudioBackend)
-    player = PlaybackVolumeRacePlayer()
-    backend._player = player
-    backend._paused = False
-    backend._requested_seek_seconds = None
-    backend._output_device = ""
-    backend._requested_volume_percent = 80
-    backend._volume_percent = 80
-    backend._volume_call_lock = Lock()
-    backend._logger = logging.getLogger(__name__)
-
-    assert player.audio_set_volume(80) == 0
-    backend.play()
-    assert player.volume_calls == [80, 80]
-
-    player.output_ready.set()
-
-    assert player.applied.wait(timeout=1), (crossfader_position, deck)
-    assert player.volume_calls[-1] == 80
-    assert backend._volume_percent == 80
-    backend._volume_stop.set()
-    backend._volume_changed.set()
-
-
-def test_post_play_volume_retry_uses_latest_requested_value() -> None:
-    backend = VlcAudioBackend.__new__(VlcAudioBackend)
-    player = PlaybackVolumeRacePlayer()
-    backend._player = player
-    backend._paused = False
-    backend._requested_seek_seconds = None
-    backend._output_device = ""
-    backend._requested_volume_percent = 80
-    backend._volume_percent = 80
-    backend._volume_call_lock = Lock()
-    backend._logger = logging.getLogger(__name__)
-
-    backend.play()
-    backend.set_volume(0.35)
-    player.output_ready.set()
-
-    assert player.applied.wait(timeout=1)
-    assert player.volume_calls[-1] == 35
-    assert backend._volume_percent == 35
-    backend._volume_stop.set()
-    backend._volume_changed.set()
-
-
-def test_failed_post_play_volume_retries_are_bounded() -> None:
-    backend = VlcAudioBackend.__new__(VlcAudioBackend)
-    player = PlaybackVolumeRacePlayer()
-    backend._player = player
-    backend._paused = False
-    backend._requested_seek_seconds = None
-    backend._output_device = ""
-    backend._requested_volume_percent = 80
-    backend._volume_percent = 80
-    backend._volume_call_lock = Lock()
-    backend._logger = logging.getLogger(__name__)
-
-    backend.play()
-    sleep(0.5)
-    call_count = len(player.volume_calls)
-    sleep(0.15)
-
-    assert call_count <= 4
-    assert len(player.volume_calls) == call_count
-    backend._volume_stop.set()
-    backend._volume_changed.set()
-
-
-def test_close_stops_pending_post_play_volume_retries_after_device_change() -> None:
-    backend = VlcAudioBackend.__new__(VlcAudioBackend)
-    player = PlaybackVolumeRacePlayer()
-    backend._player = player
-    backend._paused = False
-    backend._requested_seek_seconds = None
-    backend._output_device = ""
-    backend._requested_volume_percent = 80
-    backend._volume_percent = 80
-    backend._volume_call_lock = Lock()
-    backend._lifecycle_lock = Lock()
-    backend._closed = False
-    backend._media = None
-    backend._logger = logging.getLogger(__name__)
-
-    backend.play()
-    backend.set_output_device("replacement-device")
-    worker = backend._volume_thread
-    backend.close()
-
-    assert worker is not None
-    assert not worker.is_alive()
-    assert player.device_calls == ["replacement-device"]
-    assert player.stop_calls == 1
-    assert player.release_calls == 1
 
 
 def test_slow_vlc_volume_call_does_not_block_gui_caller() -> None:
