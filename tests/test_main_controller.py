@@ -1747,6 +1747,79 @@ def test_automatic_start_clears_stale_transition_mute(tmp_path: Path) -> None:
     assert controller.deck_a.backend.volume > 0
 
 
+@pytest.mark.parametrize(
+    ("deck_id", "initial_position", "expected_position"),
+    [("A", 1.0, 0.0), ("A", 0.0, 0.0), ("B", 0.0, 1.0)],
+)
+def test_automatic_start_aligns_crossfader_before_playback(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    deck_id: str,
+    initial_position: float,
+    expected_position: float,
+) -> None:
+    controller, view = build_controller(tmp_path)
+    controller.initialize()
+    controller.set_player_mode(PlayerMode.MANUAL)
+    controller.load_catalog_track(1, deck_id)
+    controller.crossfader.set_position(initial_position)
+    view.show_crossfader(initial_position)
+    deck = controller._deck(deck_id)
+    original_play = deck.play
+    state_at_play: list[tuple[float, float, tuple[float, float]]] = []
+
+    def observe_play() -> None:
+        state_at_play.append(
+            (
+                controller.crossfader.position,
+                view.crossfader_render,
+                controller.crossfader.effective_volumes(),
+            )
+        )
+        original_play()
+
+    monkeypatch.setattr(deck, "play", observe_play)
+
+    controller.start_automatic_queue()
+
+    assert state_at_play
+    position_at_play, visible_position_at_play, volumes_at_play = state_at_play[0]
+    assert position_at_play == pytest.approx(expected_position)
+    assert visible_position_at_play == pytest.approx(expected_position)
+    assert controller.crossfader.position == pytest.approx(expected_position)
+    assert view.crossfader_render == pytest.approx(expected_position)
+    audible_index = 0 if deck_id == "A" else 1
+    muted_index = 1 - audible_index
+    assert volumes_at_play[audible_index] > 0.0
+    assert volumes_at_play[muted_index] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_automatic_start_without_playable_deck_keeps_crossfader_position(
+    tmp_path: Path,
+) -> None:
+    controller, view = build_controller(tmp_path, track_count=0)
+    controller.initialize()
+    controller.crossfader.set_position(0.73)
+    view.show_crossfader(0.73)
+
+    controller.start_automatic_queue()
+
+    assert controller.crossfader.position == pytest.approx(0.73)
+    assert view.crossfader_render == pytest.approx(0.73)
+
+
+def test_manual_playback_does_not_reset_crossfader_position(tmp_path: Path) -> None:
+    controller, _view = build_controller(tmp_path)
+    controller.initialize()
+    controller.set_player_mode(PlayerMode.MANUAL)
+    controller.load_catalog_track(1, "A")
+    controller.set_crossfader(0.64)
+
+    controller.deck_action("A", "play")
+
+    assert controller.crossfader.position == pytest.approx(0.64)
+
+
 def test_background_preload_applies_gain_before_automatic_playback(
     tmp_path: Path,
 ) -> None:

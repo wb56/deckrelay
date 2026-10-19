@@ -4592,7 +4592,9 @@ class MainController:
                 )
                 return
             candidate.set_transition_muted(False)
-            self.crossfader.set_position(0.0 if candidate.model.deck_id == "A" else 1.0)
+            start_position = 0.0 if candidate.model.deck_id == "A" else 1.0
+            self.crossfader.set_position(start_position)
+            self._refresh_crossfade_display()
             if not self._one_deck_mode.crossfade_allowed():
                 candidate.set_fade_level_immediately(0.0)
             self.deck_action(candidate.model.deck_id, "play", automatic=True)
