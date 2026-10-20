@@ -46,6 +46,12 @@ LAYOUT_POLICY_FUNCTION_NAMES = (
     "_compact_preparation_rows",
 )
 
+VIRTUALIZED_ROW_POLICY_FUNCTION_NAMES = (
+    "_initial_catalog_pool_target",
+    "_queue_pool_size",
+    "_queue_model_count",
+)
+
 
 class Disposable:
     def __init__(self) -> None:
@@ -233,6 +239,43 @@ class TooltipDouble:
 def test_initial_catalog_pool_is_bounded_and_reuses_existing_rows() -> None:
     assert _initial_catalog_pool_target(50, 0) == 10
     assert _initial_catalog_pool_target(10, 0) == 10
+
+
+@pytest.mark.parametrize(
+    ("total", "existing", "initial", "expected"),
+    (
+        (0, 0, 10, 0),
+        (5, 0, 10, 5),
+        (5, 8, 10, 5),
+        (10, 0, 10, 10),
+        (20, 10, 10, 10),
+        (12, 12, 10, 12),
+        (50, 0, 7, 7),
+        (0, 0, 0, 0),
+        (-5, -2, -3, -5),
+        (10**100, 10**99, 10**98, 10**99),
+    ),
+)
+def test_initial_catalog_pool_target_characterizes_existing_formula(
+    total: int, existing: int, initial: int, expected: int
+) -> None:
+    assert _initial_catalog_pool_target(total, existing, initial) == expected
+
+
+def test_initial_catalog_pool_target_signature_remains_stable() -> None:
+    assert inspect.signature(_initial_catalog_pool_target) == inspect.Signature(
+        parameters=(
+            inspect.Parameter("total", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=int),
+            inspect.Parameter("existing", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=int),
+            inspect.Parameter(
+                "initial",
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=10,
+                annotation=int,
+            ),
+        ),
+        return_annotation=int,
+    )
 
 
 def test_main_layout_spacing_uses_only_two_stable_size_classes() -> None:
@@ -759,6 +802,112 @@ def test_queue_pool_tracks_height_but_never_exceeds_virtualization_limits() -> N
     assert _queue_pool_size(5000) == 20
     assert _queue_model_count(10, 20) == 20
     assert _queue_model_count(20, 10) == 20
+
+
+@pytest.mark.parametrize(
+    ("available_height", "kwargs", "expected"),
+    (
+        (0, {}, 10),
+        (-100, {}, 10),
+        (239, {}, 10),
+        (240, {}, 10),
+        (639, {}, 19),
+        (640, {}, 20),
+        (5000, {}, 20),
+        (100, {"row_height": 25, "minimum": 2, "overscan": 3, "maximum": 9}, 7),
+        (5, {"row_height": 0}, 10),
+        (5, {"row_height": -2}, 10),
+        (400, {"overscan": -20}, 10),
+        (400, {"minimum": 30, "maximum": 20}, 20),
+        (0, {"minimum": -10, "overscan": -5, "maximum": -2}, -4),
+        (10**100, {"row_height": 1, "minimum": 0, "overscan": 0, "maximum": 10**99}, 10**99),
+    ),
+)
+def test_queue_pool_size_characterizes_existing_formula(
+    available_height: int, kwargs: dict[str, int], expected: int
+) -> None:
+    assert _queue_pool_size(available_height, **kwargs) == expected
+
+
+def test_queue_pool_size_signature_remains_stable() -> None:
+    assert inspect.signature(_queue_pool_size) == inspect.Signature(
+        parameters=(
+            inspect.Parameter(
+                "available_height", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=int
+            ),
+            inspect.Parameter(
+                "row_height", inspect.Parameter.KEYWORD_ONLY, default=40, annotation=int
+            ),
+            inspect.Parameter(
+                "minimum", inspect.Parameter.KEYWORD_ONLY, default=10, annotation=int
+            ),
+            inspect.Parameter(
+                "overscan", inspect.Parameter.KEYWORD_ONLY, default=4, annotation=int
+            ),
+            inspect.Parameter(
+                "maximum", inspect.Parameter.KEYWORD_ONLY, default=20, annotation=int
+            ),
+        ),
+        return_annotation=int,
+    )
+
+
+@pytest.mark.parametrize(
+    ("pool_target", "existing_rows", "expected"),
+    (
+        (10, 10, 10),
+        (0, 0, 0),
+        (10, -5, 10),
+        (-5, 10, 10),
+        (-5, -10, -5),
+        (10**100, 10**99, 10**100),
+    ),
+)
+def test_queue_model_count_characterizes_existing_formula(
+    pool_target: int, existing_rows: int, expected: int
+) -> None:
+    assert _queue_model_count(pool_target, existing_rows) == expected
+
+
+def test_queue_model_count_signature_remains_stable() -> None:
+    assert inspect.signature(_queue_model_count) == inspect.Signature(
+        parameters=(
+            inspect.Parameter(
+                "pool_target", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=int
+            ),
+            inspect.Parameter(
+                "existing_rows", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=int
+            ),
+        ),
+        return_annotation=int,
+    )
+
+
+class TestVirtualizedRowPolicyExtractionContract:
+    @staticmethod
+    def _target_module() -> object:
+        return importlib.import_module("party_player.ui.virtualized_row_policy")
+
+    def test_target_module_exports_all_virtualized_row_policies(self) -> None:
+        target_module = self._target_module()
+
+        assert all(
+            callable(getattr(target_module, name)) for name in VIRTUALIZED_ROW_POLICY_FUNCTION_NAMES
+        )
+
+    def test_main_window_keeps_exporting_all_virtualized_row_policies(self) -> None:
+        imported_main_window = importlib.import_module("party_player.ui.main_window")
+
+        assert all(
+            callable(getattr(imported_main_window, name))
+            for name in VIRTUALIZED_ROW_POLICY_FUNCTION_NAMES
+        )
+
+    def test_both_import_paths_export_identical_function_objects(self) -> None:
+        target_module = self._target_module()
+
+        for name in VIRTUALIZED_ROW_POLICY_FUNCTION_NAMES:
+            assert getattr(main_window_module, name) is getattr(target_module, name)
 
 
 def test_workspace_split_keeps_both_lists_visible_and_persists_choice() -> None:
