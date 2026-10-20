@@ -1,4 +1,9 @@
+import importlib
+import inspect
+
 import pytest
+
+import party_player.ui.main_window as main_window_module
 
 from party_player.ui.main_window import (
     MainWindow,
@@ -6,6 +11,7 @@ from party_player.ui.main_window import (
     _compact_mixer_visible,
     _compact_live_rows,
     _compact_preparation_container_grid_options,
+    _compact_preparation_rows,
     _diagnostic_toggle_text,
     _automatic_help_text,
     _initial_catalog_pool_target,
@@ -26,6 +32,18 @@ from party_player.presentation import (
     PresentationState,
     ResolvedPresentation,
     Workspace,
+)
+
+
+LAYOUT_POLICY_FUNCTION_NAMES = (
+    "_center_panel_grid_options",
+    "_presentation_header_grid_options",
+    "_mixer_container_grid_options",
+    "_compact_preparation_container_grid_options",
+    "_workspace_content",
+    "_compact_mixer_visible",
+    "_compact_live_rows",
+    "_compact_preparation_rows",
 )
 
 
@@ -225,37 +243,88 @@ def test_main_layout_spacing_uses_only_two_stable_size_classes() -> None:
     assert _initial_catalog_pool_target(50, 24) == 24
 
 
-def test_center_panel_restores_one_column_after_compact_layout() -> None:
-    assert _center_panel_grid_options(True)["columnspan"] == 3
-    assert _center_panel_grid_options(False) == {
-        "row": 1,
-        "column": 1,
-        "columnspan": 1,
-        "padx": 8,
-        "pady": 8,
-        "sticky": "nsew",
-    }
-
-
-def test_presentation_header_restores_one_column_after_compact_layout() -> None:
-    assert _presentation_header_grid_options(True)["columnspan"] == 2
-    assert _presentation_header_grid_options(False) == {
-        "row": 0,
-        "column": 1,
-        "columnspan": 1,
-        "padx": 8,
-        "pady": (6, 3),
-        "sticky": "ew",
-    }
-
-
-def test_mixer_disclosure_remains_reachable_in_compact_layout() -> None:
-    compact = _mixer_container_grid_options(True)
-    large = _mixer_container_grid_options(False)
-
-    assert compact["row"] == large["row"] == 2
-    assert compact["columnspan"] == large["columnspan"] == 3
-    assert compact["pady"] == (0, 8)
+@pytest.mark.parametrize(
+    ("policy", "compact", "expected"),
+    (
+        (
+            _center_panel_grid_options,
+            True,
+            {
+                "row": 1,
+                "column": 0,
+                "columnspan": 3,
+                "padx": 16,
+                "pady": (4, 10),
+                "sticky": "nsew",
+            },
+        ),
+        (
+            _center_panel_grid_options,
+            False,
+            {
+                "row": 1,
+                "column": 1,
+                "columnspan": 1,
+                "padx": 8,
+                "pady": 8,
+                "sticky": "nsew",
+            },
+        ),
+        (
+            _presentation_header_grid_options,
+            True,
+            {
+                "row": 0,
+                "column": 0,
+                "columnspan": 2,
+                "padx": (16, 8),
+                "pady": (4, 2),
+                "sticky": "ew",
+            },
+        ),
+        (
+            _presentation_header_grid_options,
+            False,
+            {
+                "row": 0,
+                "column": 1,
+                "columnspan": 1,
+                "padx": 8,
+                "pady": (6, 3),
+                "sticky": "ew",
+            },
+        ),
+        (
+            _mixer_container_grid_options,
+            True,
+            {
+                "row": 2,
+                "column": 0,
+                "columnspan": 3,
+                "padx": 16,
+                "pady": (0, 8),
+                "sticky": "ew",
+            },
+        ),
+        (
+            _mixer_container_grid_options,
+            False,
+            {
+                "row": 2,
+                "column": 0,
+                "columnspan": 3,
+                "padx": 16,
+                "pady": (8, 16),
+                "sticky": "ew",
+            },
+        ),
+    ),
+)
+def test_layout_grid_options_are_fully_characterized(
+    policy: object, compact: bool, expected: dict[str, object]
+) -> None:
+    assert callable(policy)
+    assert policy(compact) == expected
 
 
 def test_mixer_disclosure_toggle_restores_panel_from_explicit_state() -> None:
@@ -335,10 +404,27 @@ def test_compact_jingle_pads_temporarily_use_mixer_footer_space() -> None:
 
 
 def test_compact_jingle_disclosure_precedes_flexible_queue_rows() -> None:
-    rows = _compact_live_rows()
+    assert _compact_live_rows() == {
+        "decks": 0,
+        "crossfader": 1,
+        "overlays": 2,
+        "queue_header": 3,
+        "queue_toolbar": 4,
+        "directory_progress": 5,
+        "queue": 6,
+    }
 
-    assert rows["crossfader"] < rows["overlays"] < rows["queue_header"]
-    assert rows["queue_toolbar"] < rows["queue"]
+
+def test_compact_preparation_rows_are_fully_characterized() -> None:
+    assert _compact_preparation_rows() == {
+        "live_status": 0,
+        "search": 1,
+        "summary": 2,
+        "catalog": 3,
+        "tools": 4,
+        "progress": 5,
+        "playlist": 6,
+    }
 
 
 def test_compact_preparation_uses_the_center_cell_without_horizontal_span() -> None:
@@ -361,6 +447,105 @@ def test_workspace_content_selects_preparation_in_both_presentations() -> None:
 def test_workspace_content_keeps_both_live_presentations_unchanged() -> None:
     assert _workspace_content(ResolvedPresentation.LARGE, Workspace.LIVE) == "large_live"
     assert _workspace_content(ResolvedPresentation.COMPACT, Workspace.LIVE) == "compact_live"
+
+
+def test_all_layout_policies_remain_importable_from_main_window() -> None:
+    assert all(callable(getattr(main_window_module, name)) for name in LAYOUT_POLICY_FUNCTION_NAMES)
+
+
+@pytest.mark.parametrize(
+    ("policy", "args"),
+    (
+        (_center_panel_grid_options, (True,)),
+        (_presentation_header_grid_options, (True,)),
+        (_mixer_container_grid_options, (True,)),
+        (_compact_preparation_container_grid_options, ()),
+        (_compact_live_rows, ()),
+        (_compact_preparation_rows, ()),
+    ),
+)
+def test_dict_layout_policies_return_fresh_instances(
+    policy: object, args: tuple[object, ...]
+) -> None:
+    assert callable(policy)
+    first = policy(*args)
+    second = policy(*args)
+
+    assert first == second
+    assert first is not second
+
+
+@pytest.mark.parametrize(
+    ("policy", "parameter_annotations", "return_annotation"),
+    (
+        (_center_panel_grid_options, {"compact": bool}, dict[str, object]),
+        (_presentation_header_grid_options, {"compact": bool}, dict[str, object]),
+        (_mixer_container_grid_options, {"compact": bool}, dict[str, object]),
+        (_compact_preparation_container_grid_options, {}, dict[str, object]),
+        (
+            _workspace_content,
+            {"resolved": ResolvedPresentation, "workspace": Workspace},
+            str,
+        ),
+        (_compact_mixer_visible, {"overlays_expanded": bool}, bool),
+        (_compact_live_rows, {}, dict[str, int]),
+        (_compact_preparation_rows, {}, dict[str, int]),
+    ),
+)
+def test_layout_policy_signatures_and_annotations_remain_stable(
+    policy: object,
+    parameter_annotations: dict[str, object],
+    return_annotation: object,
+) -> None:
+    assert callable(policy)
+    signature = inspect.signature(policy)
+
+    assert {
+        name: parameter.annotation for name, parameter in signature.parameters.items()
+    } == parameter_annotations
+    assert signature.return_annotation == return_annotation
+
+
+class TestResponsiveLayoutPolicyExtractionContract:
+    @staticmethod
+    def _target_module() -> object:
+        return importlib.import_module("party_player.ui.responsive_layout_policy")
+
+    def test_target_module_exports_all_layout_policies(self) -> None:
+        target_module = self._target_module()
+
+        assert all(callable(getattr(target_module, name)) for name in LAYOUT_POLICY_FUNCTION_NAMES)
+
+    def test_main_window_exports_identical_layout_policy_objects(self) -> None:
+        target_module = self._target_module()
+
+        for name in LAYOUT_POLICY_FUNCTION_NAMES:
+            assert getattr(main_window_module, name) is getattr(target_module, name)
+
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        (
+            ("_center_panel_grid_options", (True,)),
+            ("_center_panel_grid_options", (False,)),
+            ("_presentation_header_grid_options", (True,)),
+            ("_presentation_header_grid_options", (False,)),
+            ("_mixer_container_grid_options", (True,)),
+            ("_mixer_container_grid_options", (False,)),
+            ("_compact_preparation_container_grid_options", ()),
+            ("_workspace_content", (ResolvedPresentation.LARGE, Workspace.PREPARATION)),
+            ("_workspace_content", (ResolvedPresentation.COMPACT, Workspace.LIVE)),
+            ("_compact_mixer_visible", (False,)),
+            ("_compact_mixer_visible", (True,)),
+            ("_compact_live_rows", ()),
+            ("_compact_preparation_rows", ()),
+        ),
+    )
+    def test_both_import_paths_return_identical_values(
+        self, name: str, args: tuple[object, ...]
+    ) -> None:
+        target_module = self._target_module()
+
+        assert getattr(main_window_module, name)(*args) == getattr(target_module, name)(*args)
 
 
 def test_preparation_groups_switch_between_large_and_compact_without_recreation() -> None:
