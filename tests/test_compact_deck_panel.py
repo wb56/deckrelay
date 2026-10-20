@@ -7,7 +7,8 @@ import pytest
 from party_player.enums import DeckState
 from party_player.models import Deck, Track
 from party_player.performance_monitor import PerformanceMonitor
-from party_player.ui import compact_deck_actions, deck_panels, theme
+from party_player.ui import compact_deck_actions, compact_deck_panel, deck_panels, theme
+from party_player.ui.compact_deck_panel import CompactDeckPanel as ExtractedCompactDeckPanel
 from party_player.ui.deck_panels import CompactDeckPanel
 
 
@@ -71,7 +72,7 @@ def widget_doubles(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(deck_panels.ctk, "CTkLabel", WidgetDouble)
     monkeypatch.setattr(deck_panels.ctk, "CTkSlider", WidgetDouble)
-    monkeypatch.setattr(deck_panels, "_SeekProgressBar", WidgetDouble)
+    monkeypatch.setattr(compact_deck_panel, "_SeekProgressBar", WidgetDouble)
 
 
 def make_panel(deck_id: str = "A") -> CompactDeckPanel:
@@ -345,4 +346,8 @@ def test_bind_compact_decks_uses_controller_callbacks_and_existing_import(
         assert panel._volume_callback is controller.set_deck_volume
         assert panel._fade_callback is controller.fade
         assert panel._cancel_fade_callback is controller.cancel_fade
-    assert CompactDeckPanel.__module__ == "party_player.ui.deck_panels"
+    assert CompactDeckPanel is ExtractedCompactDeckPanel
+
+
+def test_legacy_and_extracted_imports_share_class_identity() -> None:
+    assert deck_panels.CompactDeckPanel is compact_deck_panel.CompactDeckPanel
