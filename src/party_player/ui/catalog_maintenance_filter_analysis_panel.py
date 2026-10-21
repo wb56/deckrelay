@@ -3,12 +3,33 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import logging
-from typing import Any
+from typing import Any, Literal, Protocol
 
 import customtkinter as ctk  # type: ignore[import-untyped]
 
 
 LOGGER = logging.getLogger(__name__)
+ButtonState = Literal["normal", "disabled"]
+
+
+class AnalysisActions(Protocol):
+    @property
+    def analyze_cues_outdated(self) -> Callable[[], None]: ...
+
+    @property
+    def analyze_cues_all(self) -> Callable[[], None]: ...
+
+    @property
+    def cancel_cues(self) -> Callable[[], None]: ...
+
+    @property
+    def analyze_loudness_outdated(self) -> Callable[[], None]: ...
+
+    @property
+    def analyze_loudness_all(self) -> Callable[[], None]: ...
+
+    @property
+    def cancel_loudness(self) -> Callable[[], None]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +65,15 @@ def _labeled_entry(
     return frame, entry
 
 
+def _analysis_callback(
+    action: Callable[[], None], on_error: Callable[[Exception], None]
+) -> Callable[[], None]:
+    def callback() -> None:
+        CatalogMaintenanceFilterAnalysisPanel.run_analysis_action(action, on_error)
+
+    return callback
+
+
 class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
     """Render catalog filter controls and expose their presentation state."""
 
@@ -59,6 +89,15 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         suggestion_labels: Mapping[str, str],
         apply_filter: Callable[[], None],
         reset_filters: Callable[[], None],
+        analysis_actions: AnalysisActions | None,
+        metadata_analysis_available: bool,
+        analysis_error: Callable[[Exception], None],
+        prepare_tempo: Callable[[], None],
+        pause_tempo: Callable[[], None],
+        resume_tempo: Callable[[], None],
+        abort_tempo: Callable[[], None],
+        resume_pending_tempo: Callable[[], None],
+        discard_pending_tempo: Callable[[], None],
     ) -> None:
         super().__init__(parent)
         self.grid_columnconfigure(0, weight=1)
@@ -152,6 +191,17 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         bpm_to.grid(row=3, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
         self._analysis_host = ctk.CTkFrame(self._filter_details, fg_color="transparent")
         self._analysis_host.grid(row=2, column=0, sticky="ew")
+        self._build_analysis(
+            analysis_actions,
+            metadata_analysis_available=metadata_analysis_available,
+            analysis_error=analysis_error,
+            prepare_tempo=prepare_tempo,
+            pause_tempo=pause_tempo,
+            resume_tempo=resume_tempo,
+            abort_tempo=abort_tempo,
+            resume_pending_tempo=resume_pending_tempo,
+            discard_pending_tempo=discard_pending_tempo,
+        )
         self._filter_actions = ctk.CTkFrame(self, fg_color="transparent")
         self._filter_actions.grid(row=1, column=2, columnspan=2, padx=2, pady=0, sticky="e")
         ctk.CTkButton(self._filter_actions, text="Filtern", command=apply_filter).pack(
@@ -161,9 +211,177 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
             side="left", padx=3
         )
 
-    @property
-    def analysis_host(self) -> Any:
-        return self._analysis_host
+    def _build_analysis(
+        self,
+        actions: AnalysisActions | None,
+        *,
+        metadata_analysis_available: bool,
+        analysis_error: Callable[[Exception], None],
+        prepare_tempo: Callable[[], None],
+        pause_tempo: Callable[[], None],
+        resume_tempo: Callable[[], None],
+        abort_tempo: Callable[[], None],
+        resume_pending_tempo: Callable[[], None],
+        discard_pending_tempo: Callable[[], None],
+    ) -> None:
+        self._analysis_toggle = ctk.CTkButton(
+            self._analysis_host,
+            text="Audioanalyse anzeigen ▾",
+            command=self.toggle_analysis,
+            anchor="w",
+        )
+        self._analysis_toggle.grid(row=0, column=0, padx=3, pady=(5, 2), sticky="ew")
+        panel = ctk.CTkFrame(self._analysis_host)
+        self._analysis_panel = panel
+        panel.grid(row=1, column=0, padx=3, pady=3, sticky="ew")
+        panel.grid_columnconfigure(1, weight=1)
+        definitions = (
+            (
+                "Cues",
+                "Neue/veraltete Cues",
+                actions.analyze_cues_outdated if actions else None,
+                "Alle Cues neu",
+                actions.analyze_cues_all if actions else None,
+                "Cue-Analyse abbrechen",
+                actions.cancel_cues if actions else None,
+            ),
+            (
+                "Lautheit",
+                "Neue/veraltete Lautheit",
+                actions.analyze_loudness_outdated if actions else None,
+                "Alle Lautheiten neu",
+                actions.analyze_loudness_all if actions else None,
+                "Lautheit abbrechen",
+                actions.cancel_loudness if actions else None,
+            ),
+        )
+        for row, definition in enumerate(definitions):
+            label, first_text, first, all_text, all_action, cancel_text, cancel = definition
+            ctk.CTkLabel(panel, text=label, width=75, anchor="w").grid(
+                row=row, column=0, padx=6, pady=3, sticky="w"
+            )
+            controls = ctk.CTkFrame(panel, fg_color="transparent")
+            controls.grid(row=row, column=1, padx=3, pady=3, sticky="w")
+            for text, command, danger in (
+                (first_text, first, False),
+                (all_text, all_action, False),
+                (cancel_text, cancel, True),
+            ):
+                callback = (
+                    _analysis_callback(command, analysis_error) if command is not None else None
+                )
+                ctk.CTkButton(
+                    controls,
+                    text=text,
+                    command=callback,
+                    state="normal" if command is not None else "disabled",
+                    fg_color="#7d3030" if danger else None,
+                ).pack(side="left", padx=3)
+        ctk.CTkLabel(panel, text="Tempo", width=75, anchor="w").grid(
+            row=2, column=0, padx=6, pady=3, sticky="w"
+        )
+        bpm = ctk.CTkFrame(panel, fg_color="transparent")
+        bpm.grid(row=2, column=1, padx=3, pady=3, sticky="ew")
+        self._tempo_profile = ctk.CTkOptionMenu(
+            bpm, values=("Tempo", "Tempo und experimentelle Energie"), width=230
+        )
+        self._tempo_profile.pack(side="left", padx=3)
+        self._tempo_scope = ctk.CTkOptionMenu(
+            bpm,
+            values=("Vollständige Aufnahme", "Wirksame Katalog-Cue-Bereiche"),
+            width=245,
+        )
+        self._tempo_scope.pack(side="left", padx=3)
+        self._tempo_skip_current = ctk.CTkSwitch(bpm, text="Aktuelle Ergebnisse überspringen")
+        self._tempo_skip_current.select()
+        self._tempo_skip_current.pack(side="left", padx=6)
+        available = "normal" if metadata_analysis_available else "disabled"
+        self._tempo_start = ctk.CTkButton(
+            bpm, text="Auswahl analysieren …", command=prepare_tempo, state=available
+        )
+        self._tempo_start.pack(side="left", padx=3)
+        controls = ctk.CTkFrame(panel, fg_color="transparent")
+        controls.grid(row=3, column=1, padx=3, pady=3, sticky="w")
+        self._tempo_pause = ctk.CTkButton(
+            controls, text="Pause", state="disabled", command=pause_tempo
+        )
+        self._tempo_resume = ctk.CTkButton(
+            controls, text="Fortsetzen", state="disabled", command=resume_tempo
+        )
+        self._tempo_abort = ctk.CTkButton(
+            controls,
+            text="Gesamten Auftrag abbrechen",
+            state="disabled",
+            fg_color="#7d3030",
+            command=abort_tempo,
+        )
+        self._tempo_pending_resume = ctk.CTkButton(
+            controls,
+            text="Wartende Runs fortsetzen",
+            command=resume_pending_tempo,
+            state=available,
+        )
+        self._tempo_pending_discard = ctk.CTkButton(
+            controls,
+            text="Wartende Runs verwerfen",
+            fg_color="#6b5b2a",
+            command=discard_pending_tempo,
+            state=available,
+        )
+        for button in (
+            self._tempo_pause,
+            self._tempo_resume,
+            self._tempo_abort,
+            self._tempo_pending_resume,
+            self._tempo_pending_discard,
+        ):
+            button.pack(side="left", padx=3)
+        self._tempo_progress = ctk.CTkLabel(
+            panel,
+            text="Tempoanalyse startet nur nach ausdrücklicher Bedienung. Ergebnisse bleiben Vorschläge.",
+            text_color="#9fb3c8",
+            anchor="w",
+            justify="left",
+            wraplength=760,
+        )
+        self._tempo_progress.grid(row=4, column=0, columnspan=2, padx=6, pady=(2, 6), sticky="ew")
+        panel.grid_remove()
+
+    def toggle_analysis(self) -> None:
+        if self._analysis_panel.winfo_ismapped():
+            self._analysis_panel.grid_remove()
+            self._analysis_toggle.configure(text="Audioanalyse anzeigen ▾")
+        else:
+            self._analysis_panel.grid()
+            self._analysis_toggle.configure(text="Audioanalyse ausblenden ▴")
+
+    @staticmethod
+    def run_analysis_action(
+        action: Callable[[], None], on_error: Callable[[Exception], None]
+    ) -> None:
+        try:
+            action()
+        except Exception as error:
+            on_error(error)
+
+    def render_tempo_state(
+        self,
+        text: str,
+        *,
+        start: ButtonState | None = None,
+        pause: ButtonState | None = None,
+        resume: ButtonState | None = None,
+        abort: ButtonState | None = None,
+    ) -> None:
+        self._tempo_progress.configure(text=text)
+        for widget, state in (
+            (self._tempo_start, start),
+            (self._tempo_pause, pause),
+            (self._tempo_resume, resume),
+            (self._tempo_abort, abort),
+        ):
+            if state is not None:
+                widget.configure(state=state)
 
     def read_filter_values(self) -> CatalogFilterValues:
         return CatalogFilterValues(
@@ -273,3 +491,15 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
     filter_details = property(lambda self: self._filter_details)
     filter_actions = property(lambda self: self._filter_actions)
     counts = property(lambda self: self._counts)
+    analysis_toggle = property(lambda self: self._analysis_toggle)
+    analysis_panel = property(lambda self: self._analysis_panel)
+    tempo_profile = property(lambda self: self._tempo_profile)
+    tempo_scope = property(lambda self: self._tempo_scope)
+    tempo_skip_current = property(lambda self: self._tempo_skip_current)
+    tempo_start = property(lambda self: self._tempo_start)
+    tempo_pause = property(lambda self: self._tempo_pause)
+    tempo_resume = property(lambda self: self._tempo_resume)
+    tempo_abort = property(lambda self: self._tempo_abort)
+    tempo_pending_resume = property(lambda self: self._tempo_pending_resume)
+    tempo_pending_discard = property(lambda self: self._tempo_pending_discard)
+    tempo_progress = property(lambda self: self._tempo_progress)

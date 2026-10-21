@@ -37,6 +37,9 @@ class _Widget:
     def grid_remove(self) -> None:
         self.visible = False
 
+    def winfo_ismapped(self) -> bool:
+        return self.visible
+
     def update_idletasks(self) -> None:
         pass
 
@@ -117,3 +120,55 @@ def test_filter_panel_disclosure_preserves_values_and_compact_layout() -> None:
     assert panel.filter_actions.options["row"] == 2
     assert panel.counts.options["row"] == 3
     assert panel.filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
+
+
+def test_analysis_disclosure_preserves_filter_values() -> None:
+    panel = _panel()
+    panel._analysis_panel = _Widget()
+    panel._analysis_toggle = _Widget()
+
+    panel.toggle_analysis()
+    panel.toggle_analysis()
+
+    assert panel.search.get() == "Dance"
+    assert not panel._analysis_panel.visible
+    assert panel._analysis_toggle.options["text"] == "Audioanalyse anzeigen ▾"
+
+
+def test_analysis_callback_is_forwarded_and_errors_use_supplied_handler() -> None:
+    calls: list[str] = []
+    errors: list[Exception] = []
+    failure = RuntimeError("Analyse konnte nicht gestartet werden")
+
+    CatalogMaintenanceFilterAnalysisPanel.run_analysis_action(
+        lambda: calls.append("ok"), errors.append
+    )
+    CatalogMaintenanceFilterAnalysisPanel.run_analysis_action(
+        lambda: (_ for _ in ()).throw(failure), errors.append
+    )
+
+    assert calls == ["ok"]
+    assert errors == [failure]
+
+
+def test_tempo_presentation_updates_status_and_button_states() -> None:
+    panel = _panel()
+    panel._tempo_progress = _Widget()
+    panel._tempo_start = _Widget()
+    panel._tempo_pause = _Widget()
+    panel._tempo_resume = _Widget()
+    panel._tempo_abort = _Widget()
+
+    panel.render_tempo_state(
+        "Tempoanalyse läuft …",
+        start="disabled",
+        pause="normal",
+        resume="disabled",
+        abort="normal",
+    )
+
+    assert panel._tempo_progress.options["text"] == "Tempoanalyse läuft …"
+    assert panel._tempo_start.options["state"] == "disabled"
+    assert panel._tempo_pause.options["state"] == "normal"
+    assert panel._tempo_resume.options["state"] == "disabled"
+    assert panel._tempo_abort.options["state"] == "normal"
