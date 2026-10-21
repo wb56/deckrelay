@@ -69,7 +69,8 @@ Der Pull Request soll Zweck, zugehöriges Issue, Risiken und den Testnachweis ne
 ## Deterministische PR-Automatisierung
 
 `scripts/Invoke-DevPr.ps1` ist der bevorzugte Einstieg für die unterstützten Git- und
-GitHub-Schritte `status`, `validate`, `commit`, `publish`, `gates`, `merge` und `cleanup`.
+GitHub-Schritte `status`, `validate`, `commit`, `publish`, `gates`, `preflight`, `merge`
+und `cleanup`.
 Es führt sie einzeln und fail-closed aus. Jeder Aufruf schreibt ein kompaktes
 Sicherheitsprotokoll nach `logs/dev-pr/`; dieses enthält nur Aktions-/Operationsnamen und
 Exit-Codes, keine vollständige Prozessausgabe. Die Konsole zeigt nur Status, Ergebnis und
@@ -87,7 +88,18 @@ und ändert keine globale Git-Konfiguration.
 
 # Gates immer an den vollständigen, erwarteten Head-SHA binden
 .\scripts\Invoke-DevPr.ps1 -Action gates -Repository wb56/deckrelay -PrNumber 54 -ExpectedHeadSha <40-stelliger-sha>
+
+# Vollständige OWNER-APPROVED-Mergevorprüfung ohne Merge
+.\scripts\Invoke-DevPr.ps1 -Action preflight -Repository wb56/deckrelay -PrNumber 54 -ExpectedHeadSha <40-stelliger-sha> -Mode OWNER-APPROVED
 ```
+
+Ein erfolgreicher `preflight` meldet `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION`. Diese
+Meldung ist ausschließlich das Ergebnis der vollständigen, SHA-gebundenen Vorprüfung und
+keine Merge-Autorisierung. Die Aktion führt weder Merge, Push, Commit, GitHub-Schreibzugriff
+noch CI-Rerun aus; auch `-ConfirmMerge` ändert dieses Verhalten nicht. Das minimale,
+ignorierte Sicherheitslog unter `logs/dev-pr/` bleibt zulässig. Fehlende, laufende,
+unklare oder widersprüchliche Voraussetzungen führen fail-closed zu `BLOCKED`; eindeutig
+fehlgeschlagene Quality Gates führen weiterhin zu `FAIL`.
 
 Die Zustandsfolge ist `lokal -> validiert -> committed -> published -> gates passed ->
 reviewed -> owner-approved -> mergeable -> merged -> main gate -> cleanup`. Technische

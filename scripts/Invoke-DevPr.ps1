@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("status", "validate", "commit", "publish", "gates", "merge", "cleanup")]
+    [ValidateSet("status", "validate", "commit", "publish", "gates", "preflight", "merge", "cleanup")]
     [string]$Action,
     [string]$RepositoryRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$Repository,
@@ -208,7 +208,11 @@ function Get-PrData {
         "pr", "view", [string]$PrNumber, "--repo", $Name, "--json",
         "number,state,isDraft,headRefOid,headRefName,baseRefName,author,labels,mergeable,reviewDecision,commits"
     )
-    ConvertFrom-JsonSafe $response.Text "PR-Status"
+    $pr = ConvertFrom-JsonSafe $response.Text "PR-Status"
+    if ([int]$pr.number -ne $PrNumber) {
+        Stop-Blocked "GitHub lieferte eine abweichende PR-Nummer."
+    }
+    return $pr
 }
 
 function Assert-ExpectedHead {
@@ -347,6 +351,27 @@ function Assert-BranchProtection {
     }
 }
 
+function Assert-OwnerApprovedMergeReadiness {
+    param([string]$Name)
+    if ($Mode -ne "OWNER-APPROVED") {
+        Stop-Blocked "OWNER-APPROVED ist für die vollständige Merge-Prüfung erforderlich."
+    }
+    Assert-PushPermission $Name
+    $pr = Get-PrData $Name
+    Assert-ExpectedHead $pr
+    if ($pr.state -ne "OPEN" -or $pr.isDraft -eq $true) {
+        Stop-Blocked "PR ist nicht offen und review-bereit."
+    }
+    Assert-OwnerAttestation $Name $pr "technical-reviewed" "technical-review" "Technischer Review-Nachweis"
+    Assert-OwnerAttestation $Name $pr "owner-approved" "owner-approval" "Eigentümerfreigabe"
+    Get-GateState $Name $pr
+    Assert-BranchProtection $Name $pr
+    if ($pr.mergeable -ne "MERGEABLE") {
+        Stop-Blocked "Mergefähigkeit ist nicht eindeutig gegeben."
+    }
+    return $pr
+}
+
 if (-not (Test-Path -LiteralPath $RepositoryRoot -PathType Container)) {
     Write-Result "FAIL" "CAUSE: Repository-Pfad fehlt."
     exit $ExitFailed
@@ -439,19 +464,15 @@ switch ($Action) {
         Get-GateState $name $pr
         Write-Result "PASS" "GATES: PASS`nHEAD: $ExpectedHeadSha`nLOG: $script:LogPath"
     }
+    "preflight" {
+        $name = Resolve-Repository
+        [void](Assert-OwnerApprovedMergeReadiness $name)
+        Write-Result "PASS" "PREFLIGHT: READY_FOR_EXPLICIT_MERGE_AUTHORIZATION`nHEAD: $ExpectedHeadSha`nLOG: $script:LogPath"
+    }
     "merge" {
         if (-not $ConfirmMerge) { Stop-Blocked "Merge erfordert die ausdrückliche Option -ConfirmMerge." }
-        if ($Mode -ne "OWNER-APPROVED") { Stop-Blocked "REVIEW-REQUIRED erlaubt keinen automatischen Merge." }
         $name = Resolve-Repository
-        Assert-PushPermission $name
-        $pr = Get-PrData $name
-        Assert-ExpectedHead $pr
-        if ($pr.state -ne "OPEN" -or $pr.isDraft -eq $true) { Stop-Blocked "PR ist nicht offen und review-bereit." }
-        Assert-OwnerAttestation $name $pr "technical-reviewed" "technical-review" "Technischer Review-Nachweis"
-        Assert-OwnerAttestation $name $pr "owner-approved" "owner-approval" "Eigentümerfreigabe"
-        Get-GateState $name $pr
-        Assert-BranchProtection $name $pr
-        if ($pr.mergeable -ne "MERGEABLE") { Stop-Blocked "Mergefähigkeit ist nicht eindeutig gegeben." }
+        [void](Assert-OwnerApprovedMergeReadiness $name)
         # --match-head-commit bindet die serverseitige Mutation an den erneut geprüften SHA.
         [void](Invoke-Gh @("pr", "merge", [string]$PrNumber, "--repo", $name, "--merge", "--match-head-commit", $ExpectedHeadSha))
         Write-Result "PASS" "MERGE: ausgeführt`nHEAD: $ExpectedHeadSha`nLOG: $script:LogPath"
