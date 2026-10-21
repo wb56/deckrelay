@@ -178,7 +178,11 @@ def write_fake_gh(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         r"""$scenario = $env:FAKE_GH_SCENARIO
 $sha = $env:FAKE_HEAD_SHA
 $joined = $args -join ' '
+if (-not [string]::IsNullOrWhiteSpace($env:FAKE_CALLS_FILE)) {
+    [System.IO.File]::AppendAllText($env:FAKE_CALLS_FILE, $joined + [Environment]::NewLine)
+}
 if ($scenario -eq 'permissions' -and $joined.Contains('repos/acme/project')) { '{"permissions":{"push":false}}'; exit 0 }
+if ($scenario -eq 'permissions-unknown' -and $joined.Contains('repos/acme/project')) { '{"permissions":{}}'; exit 0 }
 if ($args[0] -eq 'repo' -and $args[1] -eq 'view') {
     [System.IO.File]::WriteAllText($env:FAKE_OWNER_LOOKUP_FILE, ($args | ConvertTo-Json -Compress))
     if ($args.Count -ne 5 -or $args[2] -ne $env:FAKE_EXPECTED_REPOSITORY -or $args -contains '--repo') {
@@ -193,7 +197,8 @@ if ($args[0] -eq 'repo' -and $args[1] -eq 'view') {
     exit 0
 }
 if ($args[0] -eq 'pr' -and $args[1] -eq 'view') {
-    $mergeable = if ($scenario -eq 'conflict') { 'CONFLICTING' } else { 'MERGEABLE' }
+    if ($scenario -eq 'pr-api-error') { [Console]::Error.WriteLine('unavailable'); exit 1 }
+    $mergeable = if ($scenario -eq 'conflict') { 'CONFLICTING' } elseif ($scenario -eq 'mergeable-unknown') { 'UNKNOWN' } else { 'MERGEABLE' }
     $labels = @()
     if ($scenario -ne 'review-missing') { $labels += @{name='technical-reviewed'} }
     if ($scenario -ne 'owner-missing') { $labels += @{name='owner-approved'} }
@@ -203,7 +208,11 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'view') {
         elseif ($scenario -eq 'offset-timestamps') { '2026-10-13T12:00:00+02:00' }
         else { '2026-10-13T10:00:00Z' }
     $commit = @{oid=$sha;committedDate=$headTime}
-    $pr = @{number=7;state='OPEN';isDraft=$false;headRefOid=$sha;headRefName='feature/test';baseRefName='main';author=@{login='author'};labels=@($labels | ConvertFrom-Json);mergeable=$mergeable;reviewDecision='';commits=@($commit)}
+    $number = if ($scenario -eq 'pr-number-mismatch') { 8 } else { 7 }
+    $state = if ($scenario -eq 'pr-closed') { 'CLOSED' } else { 'OPEN' }
+    $draft = $scenario -eq 'pr-draft'
+    $reviewDecision = if ($scenario -eq 'protected-success') { 'APPROVED' } else { '' }
+    $pr = @{number=$number;state=$state;isDraft=$draft;headRefOid=$sha;headRefName='feature/test';baseRefName='main';author=@{login='author'};labels=@($labels | ConvertFrom-Json);mergeable=$mergeable;reviewDecision=$reviewDecision;commits=@($commit)}
     ConvertTo-Json -InputObject $pr -Compress -Depth 6
     exit 0
 }
@@ -257,14 +266,14 @@ if ($joined.Contains('branches/main/protection')) {
         if ($scenario -eq 'protection-403-with-404-text') { 'HTTP/2.0 403 Forbidden'; [Console]::Error.WriteLine('request 404 API_SECRET_PAYLOAD'); exit 1 }
         if ($scenario -eq 'protection-500') { 'HTTP/2.0 500 Internal Server Error'; exit 1 }
         if ($scenario -eq 'protection-network') { [Console]::Error.WriteLine('network API_SECRET_PAYLOAD 404'); exit 1 }
-        if ($scenario -eq 'protection') { 'HTTP/2.0 200 OK'; exit 0 }
+        if ($scenario -eq 'protection' -or $scenario -eq 'protected-success') { 'HTTP/2.0 200 OK'; exit 0 }
         'HTTP/2.0 404 Not Found'; exit 1
     }
-    if ($scenario -eq 'protection') { '{"required_pull_request_reviews":{"required_approving_review_count":1}}'; exit 0 }
+    if ($scenario -eq 'protection' -or $scenario -eq 'protected-success') { '{"required_pull_request_reviews":{"required_approving_review_count":1}}'; exit 0 }
     [Console]::Error.WriteLine('unexpected protection body request'); exit 9
 }
 if ($joined.Contains('rules/branches/main')) {
-    if ($scenario -eq 'rules-effective') { '[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]'; exit 0 }
+    if ($scenario -eq 'rules-effective' -or $scenario -eq 'protected-success') { '[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]'; exit 0 }
     if ($scenario -eq 'rules-ambiguous' -or $scenario -eq 'rules-network') { [Console]::Error.WriteLine('effective rules unavailable API_SECRET_PAYLOAD'); exit 1 }
     '[]'
     exit 0
@@ -281,9 +290,116 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'merge') {
     env = os.environ.copy()
     env["FAKE_HEAD_SHA"] = "a" * 40
     env["FAKE_MERGE_FILE"] = str(tmp_path / "merge invocation.txt")
+    env["FAKE_CALLS_FILE"] = str(tmp_path / "gh calls.txt")
     env["FAKE_OWNER_LOOKUP_FILE"] = str(tmp_path / "owner lookup arguments.json")
     env["FAKE_EXPECTED_REPOSITORY"] = "acme/project"
     return executable, env
+
+
+def owner_approved_args(repository: Path, gh: Path, action: str) -> tuple[str, ...]:
+    return (
+        "-Action",
+        action,
+        "-RepositoryRoot",
+        str(repository),
+        "-GitHubExecutable",
+        str(gh),
+        "-Repository",
+        "acme/project",
+        "-PrNumber",
+        "7",
+        "-ExpectedHeadSha",
+        "a" * 40,
+        "-Mode",
+        "OWNER-APPROVED",
+    )
+
+
+def test_preflight_reports_ready_and_never_mutates(repository: Path, tmp_path: Path) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    env["FAKE_GH_SCENARIO"] = "protected-success"
+    before_head = git(repository, "rev-parse", "HEAD")
+    before_status = git(repository, "status", "--porcelain=v1")
+    before_worktrees = git(repository, "worktree", "list", "--porcelain")
+
+    result = run(
+        *owner_approved_args(repository, gh, "preflight"),
+        "-ConfirmMerge",
+        cwd=repository,
+        env=env,
+    )
+
+    assert result.returncode == 0, combined(result)
+    assert "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION" in result.stdout
+    assert not Path(env["FAKE_MERGE_FILE"]).exists()
+    calls = Path(env["FAKE_CALLS_FILE"]).read_text(encoding="utf-8")
+    assert "pr merge" not in calls
+    assert "workflow run" not in calls
+    assert "--method POST" not in calls
+    assert git(repository, "rev-parse", "HEAD") == before_head
+    assert git(repository, "status", "--porcelain=v1") == before_status
+    assert git(repository, "worktree", "list", "--porcelain") == before_worktrees
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "pr-number-mismatch",
+        "pr-closed",
+        "pr-draft",
+        "review-missing",
+        "owner-missing",
+        "review-stale",
+        "review-too-early",
+        "comment-edited",
+        "review-revoked",
+        "attestation-wrong-author",
+        "label-before-comment",
+        "gates-running",
+        "gates-failed",
+        "permissions",
+        "permissions-unknown",
+        "protection",
+        "rules-effective",
+        "rules-ambiguous",
+        "protection-403-with-404-text",
+        "protection-500",
+        "protection-network",
+        "conflict",
+        "mergeable-unknown",
+        "pr-api-error",
+    ],
+)
+def test_preflight_fails_closed(repository: Path, tmp_path: Path, scenario: str) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    env["FAKE_GH_SCENARIO"] = scenario
+    result = run(*owner_approved_args(repository, gh, "preflight"), cwd=repository, env=env)
+    assert result.returncode != 0
+    assert "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION" not in combined(result)
+    assert not Path(env["FAKE_MERGE_FILE"]).exists()
+
+
+@pytest.mark.parametrize("scenario", ["review-stale", "gates-running", "conflict"])
+def test_preflight_and_merge_share_readiness_failures(
+    repository: Path, tmp_path: Path, scenario: str
+) -> None:
+    results = []
+    for action in ("preflight", "merge"):
+        gh, env = write_fake_gh(tmp_path)
+        env["FAKE_GH_SCENARIO"] = scenario
+        extra = ("-ConfirmMerge",) if action == "merge" else ()
+        results.append(
+            run(
+                *owner_approved_args(repository, gh, action),
+                *extra,
+                cwd=repository,
+                env=env,
+            )
+        )
+    assert results[0].returncode == results[1].returncode
+    preflight_cause = combined(results[0]).split("CAUSE: ", 1)[1].splitlines()[0]
+    merge_cause = combined(results[1]).split("CAUSE: ", 1)[1].splitlines()[0]
+    assert preflight_cause == merge_cause
 
 
 @pytest.mark.parametrize(

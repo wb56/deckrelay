@@ -102,8 +102,8 @@ This section documents the existing Codex B3 workflow. It does not authorize Cop
 perform mutating Git or GitHub operations; see `.github/copilot-instructions.md`.
 
 - Prefer `scripts/Invoke-DevPr.ps1` for its supported actions: `status`, `validate`,
-  `commit`, `publish`, `gates`, `merge` and `cleanup`. Do not claim that it performs
-  unsupported work.
+  `commit`, `publish`, `gates`, `preflight`, `merge` and `cleanup`. Do not claim that it
+  performs unsupported work.
 - Preserve Git autonomy B3 and work on an unambiguous feature branch, preferably in an
   isolated worktree. Protect unrelated worktrees, branches and local changes.
 - Bind technical review and explicit owner approval separately to the PR number and full
