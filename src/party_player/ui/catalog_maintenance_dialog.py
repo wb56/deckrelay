@@ -42,6 +42,9 @@ from party_player.metadata_analysis_service import (
     TempoBatchProgress,
 )
 from party_player.ui.dialogs import ask_silent_yes_no, ask_silent_yes_no_cancel
+from party_player.ui.catalog_maintenance_filter_analysis_panel import (
+    CatalogMaintenanceFilterAnalysisPanel,
+)
 from party_player.ui.responsive_dialog import (
     apply_responsive_dialog_geometry,
     bind_dialog_escape,
@@ -290,20 +293,6 @@ def parse_bpm_filter(minimum: str, maximum: str) -> tuple[float | None, float | 
     return lower, upper
 
 
-def _labeled_filter_entry(
-    parent: Any, label: str, *, placeholder: str = ""
-) -> tuple[ctk.CTkFrame, ctk.CTkEntry]:
-    """Build a filter input whose meaning never depends on its placeholder."""
-    frame = ctk.CTkFrame(parent, fg_color="transparent")
-    frame.grid_columnconfigure(0, weight=1)
-    ctk.CTkLabel(frame, text=label, anchor="w").grid(
-        row=0, column=0, padx=2, pady=(0, 1), sticky="ew"
-    )
-    entry = ctk.CTkEntry(frame, placeholder_text=placeholder)
-    entry.grid(row=1, column=0, sticky="ew")
-    return frame, entry
-
-
 def _enable_windows_dialog_controls(dialog: Any) -> None:
     """Restore native caption controls removed from transient Tk windows."""
     if sys.platform != "win32":
@@ -390,92 +379,40 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             )
             return frame
 
-        filters = ctk.CTkFrame(self)
-        self._filter_panel = filters
-        filters.grid(row=0, column=0, padx=12, pady=(8, 6), sticky="ew")
-        find = section(filters, WORKFLOW_SECTIONS[0])
-        find.grid(row=1, column=0, sticky="ew")
-        find.grid_columnconfigure(1, weight=1)
-        self._queue = ctk.CTkOptionMenu(
-            find,
-            values=["Alle Arbeitsvorräte", *WORK_QUEUE_LABELS.values()],
-            command=lambda _v: self._apply_filter(),
+        self._filter_analysis_panel = CatalogMaintenanceFilterAnalysisPanel(
+            self,
+            title=WORKFLOW_SECTIONS[0],
+            work_queue_labels=WORK_QUEUE_LABELS,
+            field_labels=FIELD_LABELS,
+            source_labels=SOURCE_LABELS,
+            status_labels=STATUS_LABELS,
+            suggestion_labels=SUGGESTION_STATUS_LABELS,
+            apply_filter=self._apply_filter,
+            reset_filters=self._reset_filters,
         )
-        self._queue.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
-        self._search = ctk.CTkEntry(find, placeholder_text="Titel oder Interpret")
-        self._search.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        self._counts = ctk.CTkLabel(
-            find, text="Arbeitsvorräte werden gezählt …", anchor="w", justify="left", wraplength=900
-        )
-        self._counts.grid(row=2, column=0, columnspan=4, padx=5, pady=(0, 5), sticky="ew")
-        self._filter_toggle = ctk.CTkButton(
-            filters,
-            text="Weitere Filter anzeigen ▾",
-            command=self._toggle_filter_details,
-            anchor="w",
-        )
-        self._filter_toggle.grid(row=3, column=0, padx=3, pady=(2, 4), sticky="ew")
-        filter_wrapper = ctk.CTkFrame(filters, height=170)
-        self._filter_wrapper = filter_wrapper
-        filter_wrapper.grid(row=4, column=0, sticky="ew")
-        filter_wrapper.grid_propagate(False)
-        narrow = ctk.CTkScrollableFrame(filter_wrapper, height=150)
-        self._filter_details = narrow
-        self._filter_details_visible = False
-        narrow.pack(fill="both", expand=True)
-        filter_wrapper.grid_remove()
-        advanced = ctk.CTkFrame(narrow, fg_color="transparent")
-        advanced.grid(row=1, column=0, padx=3, pady=2, sticky="ew")
-        for column in range(4):
-            advanced.grid_columnconfigure(column, weight=1)
-        self._filter_field = ctk.CTkOptionMenu(
-            advanced, values=["Alle Felder", *FIELD_LABELS.values()]
-        )
-        self._filter_field.grid(row=0, column=0, padx=3, pady=2, sticky="ew")
-        self._filter_source = ctk.CTkOptionMenu(
-            advanced, values=["Alle Quellen", *SOURCE_LABELS.values()]
-        )
-        self._filter_source.grid(row=0, column=1, padx=3, pady=2, sticky="ew")
-        self._filter_status = ctk.CTkOptionMenu(
-            advanced, values=["Alle Prüfstatus", *STATUS_LABELS.values()]
-        )
-        self._filter_status.grid(row=0, column=2, padx=3, pady=2, sticky="ew")
-        self._filter_value = ctk.CTkOptionMenu(
-            advanced, values=["Wert egal", "Mit Wert", "Ohne Wert"]
-        )
-        self._filter_value.grid(row=0, column=3, padx=3, pady=2, sticky="ew")
-        self._filter_confirmed = ctk.CTkOptionMenu(
-            advanced, values=["Bestätigung egal", "Bestätigt", "Nicht bestätigt"]
-        )
-        self._filter_confirmed.grid(row=1, column=0, padx=3, pady=2, sticky="ew")
-        self._filter_conflict = ctk.CTkOptionMenu(
-            advanced, values=["Konflikt egal", "Mit Konflikt", "Ohne Konflikt"]
-        )
-        self._filter_conflict.grid(row=1, column=1, padx=3, pady=2, sticky="ew")
-        self._filter_suggestion = ctk.CTkOptionMenu(
-            advanced, values=["Vorschlag egal", *SUGGESTION_STATUS_LABELS.values()]
-        )
-        self._filter_suggestion.grid(row=1, column=2, padx=3, pady=2, sticky="ew")
-        confidence_frame, self._filter_confidence = _labeled_filter_entry(
-            advanced, "Min. Konfidenz", placeholder="0–1"
-        )
-        confidence_frame.grid(row=1, column=3, padx=3, pady=2, sticky="ew")
-        changed_from_frame, self._filter_changed_from = _labeled_filter_entry(
-            advanced, "Geändert von", placeholder="JJJJ-MM-TT"
-        )
-        changed_from_frame.grid(row=2, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
-        changed_to_frame, self._filter_changed_to = _labeled_filter_entry(
-            advanced, "Geändert bis", placeholder="JJJJ-MM-TT"
-        )
-        changed_to_frame.grid(row=2, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
-        bpm_from_frame, self._filter_bpm_from = _labeled_filter_entry(
-            advanced, "BPM von", placeholder="20–300"
-        )
-        bpm_from_frame.grid(row=3, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
-        bpm_to_frame, self._filter_bpm_to = _labeled_filter_entry(
-            advanced, "BPM bis", placeholder="20–300"
-        )
-        bpm_to_frame.grid(row=3, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
+        panel = self._filter_analysis_panel
+        self._filter_panel = panel
+        self._queue = panel.queue
+        self._search = panel.search
+        self._counts = panel.counts
+        self._filter_toggle = panel.filter_toggle
+        self._filter_toggle.configure(command=self._toggle_filter_details)
+        self._filter_wrapper = panel.filter_wrapper
+        self._filter_details = panel.filter_details
+        self._filter_field = panel.filter_field
+        self._filter_source = panel.filter_source
+        self._filter_status = panel.filter_status
+        self._filter_value = panel.filter_value
+        self._filter_confirmed = panel.filter_confirmed
+        self._filter_conflict = panel.filter_conflict
+        self._filter_suggestion = panel.filter_suggestion
+        self._filter_confidence = panel.filter_confidence
+        self._filter_changed_from = panel.filter_changed_from
+        self._filter_changed_to = panel.filter_changed_to
+        self._filter_bpm_from = panel.filter_bpm_from
+        self._filter_bpm_to = panel.filter_bpm_to
+        self._filter_actions = panel.filter_actions
+        narrow = panel.analysis_host
         self._analysis_toggle = ctk.CTkButton(
             narrow,
             text="Audioanalyse anzeigen ▾",
@@ -488,18 +425,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._analysis_panel.grid_columnconfigure(1, weight=1)
         self._build_analysis_panel(self._analysis_panel)
         self._analysis_panel.grid_remove()
-        self._filter_details.grid_remove()
         self._compact_filter_layout = False
-        self._filter_actions = ctk.CTkFrame(find, fg_color="transparent")
-        self._filter_actions.grid(row=1, column=2, columnspan=2, padx=2, pady=0, sticky="e")
-        self._filter_button = ctk.CTkButton(
-            self._filter_actions, text="Filtern", command=self._apply_filter
-        )
-        self._filter_button.pack(side="left", padx=3)
-        self._reset_filter_button = ctk.CTkButton(
-            self._filter_actions, text="Filter zurücksetzen", command=self._reset_filters
-        )
-        self._reset_filter_button.pack(side="left", padx=3)
         self.bind("<Configure>", self._on_filter_resize, add="+")
 
         results = section(self, WORKFLOW_SECTIONS[1])
@@ -759,36 +685,11 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._analysis_toggle.configure(text="Audioanalyse ausblenden ▴")
 
     def _toggle_filter_details(self) -> None:
-        visible = getattr(
-            self,
-            "_filter_details_visible",
-            self._filter_details.winfo_ismapped(),
-        )
-        self._filter_details_visible = not visible
-        if not self._filter_details_visible:
-            self._filter_wrapper.grid_remove()
-            self._filter_toggle.configure(text="Weitere Filter anzeigen ▾")
-        else:
-            self._filter_wrapper.grid()
-            self._filter_toggle.configure(text="Weitere Filter ausblenden ▴")
-        if self._compact_filter_layout:
-            self._filter_panel.configure(height=275 if self._filter_details_visible else 105)
-            self._filter_wrapper.configure(height=170)
-            self._results_panel.configure(height=300)
-        self._refresh_filter_layout()
+        self._filter_analysis_panel.toggle_filter_details(self._results_panel)
+        self._filter_details_visible = self._filter_analysis_panel._filter_details_visible
 
     def _refresh_filter_layout(self) -> None:
-        self.update_idletasks()
-        self._filter_details.update_idletasks()
-        if self._compact_filter_layout:
-            LOGGER.info(
-                "Katalogpflege compact layout heights filter_details=%s filter_wrapper=%s "
-                "results=%s selection_area=%s",
-                self._filter_details.winfo_height(),
-                self._filter_wrapper.winfo_height(),
-                self._results_panel.winfo_height(),
-                self._results_panel.winfo_reqheight(),
-            )
+        self._filter_analysis_panel.refresh_layout(self._results_panel)
 
     def _clamp_window_to_screen(self) -> None:
         self.update_idletasks()
@@ -808,24 +709,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
 
     def _on_filter_resize(self, _event: Any) -> None:
         compact = self.winfo_width() < 980
-        if compact == self._compact_filter_layout:
-            return
+        self._filter_analysis_panel.set_compact_layout(compact, self._results_panel)
         self._compact_filter_layout = compact
-        if compact:
-            self._filter_panel.grid_propagate(False)
-            self._filter_panel.configure(height=275 if self._filter_details_visible else 105)
-            self._filter_wrapper.configure(height=170)
-            self._results_panel.configure(height=300)
-            self._filter_actions.grid_configure(row=2, column=0, columnspan=2, sticky="w")
-            self._counts.grid_configure(row=3, column=0, columnspan=4)
-        else:
-            self._filter_panel.grid_propagate(True)
-            self._filter_wrapper.grid_propagate(False)
-            self._filter_wrapper.configure(height=240)
-            self._results_panel.grid_propagate(True)
-            self._filter_actions.grid_configure(row=1, column=2, columnspan=2, sticky="e")
-            self._counts.grid_configure(row=2, column=0, columnspan=4)
-        self._refresh_filter_layout()
 
     def _run_analysis_action(self, action: Callable[[], None]) -> None:
         try:
@@ -1097,16 +982,15 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             )
 
     def _apply_filter(self) -> None:
-        queue_label = self._queue.get()
+        values = self._filter_analysis_panel.read_filter_values()
+        queue_label = values.queue
         queue = next(
             (item for item, label in WORK_QUEUE_LABELS.items() if label == queue_label),
             None,
         )
-        confidence_text = self._filter_confidence.get().strip().replace(",", ".")
+        confidence_text = values.minimum_confidence.strip().replace(",", ".")
         try:
-            minimum_bpm, maximum_bpm = parse_bpm_filter(
-                self._filter_bpm_from.get(), self._filter_bpm_to.get()
-            )
+            minimum_bpm, maximum_bpm = parse_bpm_filter(values.minimum_bpm, values.maximum_bpm)
         except ValueError as error:
             self._result.configure(text=f"Fehler: {error}")
             return
@@ -1114,49 +998,35 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             work_queue=queue,
             field=(
                 None
-                if self._filter_field.get() == "Alle Felder"
-                else next(
-                    key for key, label in FIELD_LABELS.items() if label == self._filter_field.get()
-                )
+                if values.field == "Alle Felder"
+                else next(key for key, label in FIELD_LABELS.items() if label == values.field)
             ),
             source=(
                 None
-                if self._filter_source.get() == "Alle Quellen"
-                else next(
-                    key
-                    for key, label in SOURCE_LABELS.items()
-                    if label == self._filter_source.get()
-                )
+                if values.source == "Alle Quellen"
+                else next(key for key, label in SOURCE_LABELS.items() if label == values.source)
             ),
             review_status=(
                 None
-                if self._filter_status.get() == "Alle Prüfstatus"
-                else next(
-                    key
-                    for key, label in STATUS_LABELS.items()
-                    if label == self._filter_status.get()
-                )
+                if values.status == "Alle Prüfstatus"
+                else next(key for key, label in STATUS_LABELS.items() if label == values.status)
             ),
             suggestion_status=(
                 None
-                if self._filter_suggestion.get() == "Vorschlag egal"
+                if values.suggestion == "Vorschlag egal"
                 else next(
                     key
                     for key, label in SUGGESTION_STATUS_LABELS.items()
-                    if label == self._filter_suggestion.get()
+                    if label == values.suggestion
                 )
             ),
             minimum_confidence=float(confidence_text) if confidence_text else None,
-            has_value={"Mit Wert": True, "Ohne Wert": False}.get(self._filter_value.get()),
-            confirmed={"Bestätigt": True, "Nicht bestätigt": False}.get(
-                self._filter_confirmed.get()
-            ),
-            conflict={"Mit Konflikt": True, "Ohne Konflikt": False}.get(
-                self._filter_conflict.get()
-            ),
-            text=self._search.get(),
-            changed_from=self._filter_changed_from.get().strip() or None,
-            changed_to=self._filter_changed_to.get().strip() or None,
+            has_value={"Mit Wert": True, "Ohne Wert": False}.get(values.value),
+            confirmed={"Bestätigt": True, "Nicht bestätigt": False}.get(values.confirmed),
+            conflict={"Mit Konflikt": True, "Ohne Konflikt": False}.get(values.conflict),
+            text=values.search,
+            changed_from=values.changed_from.strip() or None,
+            changed_to=values.changed_to.strip() or None,
             minimum_bpm=minimum_bpm,
             maximum_bpm=maximum_bpm,
         )
@@ -1188,27 +1058,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._load_counts_and_page()
 
     def _reset_filters(self) -> None:
-        defaults = (
-            (self._queue, "Alle Arbeitsvorräte"),
-            (self._filter_field, "Alle Felder"),
-            (self._filter_source, "Alle Quellen"),
-            (self._filter_status, "Alle Prüfstatus"),
-            (self._filter_value, "Wert egal"),
-            (self._filter_confirmed, "Bestätigung egal"),
-            (self._filter_conflict, "Konflikt egal"),
-            (self._filter_suggestion, "Vorschlag egal"),
-        )
-        for widget, value in defaults:
-            widget.set(value)
-        for entry in (
-            self._search,
-            self._filter_confidence,
-            self._filter_changed_from,
-            self._filter_changed_to,
-            self._filter_bpm_from,
-            self._filter_bpm_to,
-        ):
-            entry.delete(0, "end")
+        self._filter_analysis_panel.reset_filter_inputs()
         self._filter = MaintenanceFilter()
         self._selection = SelectionDescription.for_filter(self._filter)
         self._preview = None

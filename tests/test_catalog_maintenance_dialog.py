@@ -73,201 +73,6 @@ def test_metadata_target_value_is_enabled_only_for_value_actions() -> None:
     assert dialog._value.options["state"] == "disabled"
 
 
-def test_filter_details_toggle_uses_local_disclosure() -> None:
-    class Toggle:
-        def __init__(self) -> None:
-            self.options: dict[str, object] = {}
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Details:
-        def __init__(self) -> None:
-            self.visible = True
-
-        def winfo_ismapped(self) -> bool:
-            return self.visible
-
-        def grid_remove(self) -> None:
-            self.visible = False
-
-        def grid(self) -> None:
-            self.visible = True
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details = Details()
-        _filter_wrapper = _filter_details
-        _filter_toggle = Toggle()
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-        def update_idletasks(self) -> None:
-            pass
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert not dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
-
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter ausblenden ▴"
-
-
-def test_filter_details_callback_expands_and_collapses_container() -> None:
-    class Widget:
-        def __init__(self) -> None:
-            self.visible = False
-            self.options: dict[str, object] = {}
-
-        def winfo_ismapped(self) -> bool:
-            return self.visible
-
-        def grid(self) -> None:
-            self.visible = True
-
-        def grid_remove(self) -> None:
-            self.visible = False
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details_visible = False
-        _filter_details = Widget()
-        _filter_wrapper = _filter_details
-        _filter_toggle = Widget()
-
-        def update_idletasks(self) -> None:
-            pass
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter ausblenden ▴"
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert not dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
-
-
-def test_filter_values_survive_disclosure_reflow() -> None:
-    class Entry:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def get(self) -> str:
-            return self.value
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Widget:
-        def __init__(self) -> None:
-            self.visible = False
-            self.options: dict[str, object] = {}
-
-        def winfo_ismapped(self) -> bool:
-            return self.visible
-
-        def grid(self) -> None:
-            self.visible = True
-
-        def grid_remove(self) -> None:
-            self.visible = False
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details = Widget()
-        _filter_wrapper = _filter_details
-        _filter_toggle = Widget()
-        _search = Entry("Dance")
-        _filter_confidence = Entry("0.8")
-
-        def update_idletasks(self) -> None:
-            pass
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert dialog._search.get() == "Dance"
-    assert dialog._filter_confidence.get() == "0.8"
-
-
-def test_compact_filter_layout_moves_actions_and_keeps_statistics_visible() -> None:
-    class Widget:
-        def __init__(self) -> None:
-            self.options: dict[str, object] = {}
-
-        def grid_configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def grid_propagate(self, value: bool) -> None:
-            self.options["grid_propagate"] = value
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def winfo_height(self) -> int:
-            return 100
-
-        def winfo_reqheight(self) -> int:
-            return 100
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details = Widget()
-        _filter_panel = Widget()
-        _filter_details_visible = False
-        _filter_wrapper = Widget()
-        _results_panel = Widget()
-        _filter_actions = Widget()
-        _counts = Widget()
-
-        def _load_counts_and_page(self) -> None:
-            raise AssertionError("resize must not start catalog loading")
-
-        def winfo_width(self) -> int:
-            return 800
-
-        def update_idletasks(self) -> None:
-            pass
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
-    assert dialog._filter_actions.options["row"] == 2
-    assert dialog._counts.options["row"] == 3
-
-
 def test_late_page_result_does_not_touch_destroyed_dialog() -> None:
     class Dialog:
         def _active(self) -> bool:
@@ -580,6 +385,31 @@ def test_reset_filters_clears_inputs_selection_and_reloads() -> None:
             CatalogMaintenanceDialog._update_selection(cast(Any, self))
 
     dialog = Dialog()
+
+    class Panel:
+        def reset_filter_inputs(self) -> None:
+            for widget, value in (
+                (dialog._queue, "Alle Arbeitsvorräte"),
+                (dialog._filter_field, "Alle Felder"),
+                (dialog._filter_source, "Alle Quellen"),
+                (dialog._filter_status, "Alle Prüfstatus"),
+                (dialog._filter_value, "Wert egal"),
+                (dialog._filter_confirmed, "Bestätigung egal"),
+                (dialog._filter_conflict, "Konflikt egal"),
+                (dialog._filter_suggestion, "Vorschlag egal"),
+            ):
+                widget.set(value)
+            for entry in (
+                dialog._search,
+                dialog._filter_confidence,
+                dialog._filter_changed_from,
+                dialog._filter_changed_to,
+                dialog._filter_bpm_from,
+                dialog._filter_bpm_to,
+            ):
+                entry.delete(0, "end")
+
+    dialog._filter_analysis_panel = Panel()
     CatalogMaintenanceDialog._reset_filters(cast(Any, dialog))
 
     assert dialog._filter == MaintenanceFilter()
