@@ -196,11 +196,20 @@ def test_nested_filter_and_analysis_columns_expand() -> None:
 def test_realized_wide_panel_propagates_width_without_tempo_clipping() -> None:
     root, panel = _realized_panel()
     try:
-        assert panel.winfo_width() >= 1600
-        assert panel._filter_details.winfo_width() >= panel.winfo_width() - 30
-        assert panel._analysis_host.winfo_width() >= panel._filter_details.winfo_width() - 30
+        root_width = root.winfo_width()
+        panel_width = panel.winfo_width()
+        filter_wrapper_width = panel._filter_wrapper.winfo_width()
+        filter_details_width = panel._filter_details.winfo_width()
+        analysis_host_width = panel._analysis_host.winfo_width()
+
+        assert panel_width == root_width - 24
+        assert filter_wrapper_width == panel_width
+        if root_width >= 1624:
+            assert panel_width >= 1600
+        assert filter_details_width >= panel_width - 30
+        assert analysis_host_width >= filter_details_width - 30
         tempo_right = panel._tempo_start.winfo_rootx() + panel._tempo_start.winfo_width()
-        details_right = panel._filter_details.winfo_rootx() + panel._filter_details.winfo_width()
+        details_right = panel._filter_details.winfo_rootx() + filter_details_width
         assert tempo_right <= details_right
     finally:
         root.destroy()
