@@ -54,7 +54,9 @@ class _Widget:
         return 100
 
 
-def _realized_panel() -> tuple[ctk.CTk, CatalogMaintenanceFilterAnalysisPanel]:
+def _realized_panel(
+    width: int = 1664,
+) -> tuple[ctk.CTk, CatalogMaintenanceFilterAnalysisPanel]:
     try:
         root = ctk.CTk()
     except TclError as error:
@@ -68,7 +70,7 @@ def _realized_panel() -> tuple[ctk.CTk, CatalogMaintenanceFilterAnalysisPanel]:
             "Windows-CI-Python enthaelt kein nutzbares Tcl/Tk (tk.tcl/tcl_findLibrary); "
             "reale Tk-Geometrie erfordert eine separate manuelle Windows-Abnahme"
         )
-    root.geometry("1664x900+0+0")
+    root.geometry(f"{width}x900+0+0")
     root.grid_columnconfigure(0, weight=1)
     root.update()
     panel = CatalogMaintenanceFilterAnalysisPanel(
@@ -253,6 +255,50 @@ def test_realized_wide_panel_propagates_width_without_tempo_clipping() -> None:
         tempo_right = panel._tempo_start.winfo_rootx() + panel._tempo_start.winfo_width()
         details_right = panel._filter_details.winfo_rootx() + filter_details_width
         assert tempo_right <= details_right
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("dialog_width", (979, 980, 760))
+def test_realized_tempo_controls_fit_actual_canvas_viewport(dialog_width: int) -> None:
+    root, panel = _realized_panel(dialog_width)
+    try:
+        canvas = panel._filter_details._parent_canvas
+        viewport_left = canvas.winfo_rootx()
+        viewport_right = viewport_left + canvas.winfo_width()
+        width_chain = (
+            root.winfo_width(),
+            panel.winfo_width(),
+            panel._filter_wrapper.winfo_width(),
+            canvas.winfo_width(),
+            panel._analysis_host.winfo_width(),
+            panel._analysis_panel.winfo_width(),
+        )
+        controls = {
+            "profile": panel._tempo_profile,
+            "scope": panel._tempo_scope,
+            "skip-current switch": panel._tempo_skip_current,
+            "start": panel._tempo_start,
+            "pause": panel._tempo_pause,
+            "resume": panel._tempo_resume,
+            "abort": panel._tempo_abort,
+            "resume pending": panel._tempo_pending_resume,
+            "discard pending": panel._tempo_pending_discard,
+        }
+
+        assert root.winfo_width() == dialog_width
+        assert all(width > 0 for width in width_chain)
+        assert all(outer >= inner for outer, inner in zip(width_chain, width_chain[1:]))
+        assert panel._filter_details.winfo_reqwidth() > 0
+        assert viewport_right - viewport_left == canvas.winfo_width()
+        for name, widget in controls.items():
+            left = widget.winfo_rootx()
+            right = left + widget.winfo_width()
+            assert left >= viewport_left, name
+            assert right <= viewport_right, name
+
+        switch_label = panel._tempo_skip_current._text_label
+        assert switch_label.winfo_width() >= switch_label.winfo_reqwidth()
     finally:
         root.destroy()
 
