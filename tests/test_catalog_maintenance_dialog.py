@@ -14,6 +14,9 @@ from party_player.catalog_maintenance import (
     MetadataBatchRequest,
     SelectionDescription,
 )
+from party_player.ui.catalog_maintenance_filter_analysis_panel import (
+    CatalogMaintenanceFilterAnalysisPanel,
+)
 from party_player.metadata_rules import MetadataFieldKey
 from party_player.metadata_analysis_service import TempoBatchProgress
 from party_player.track_suitability import TrackSuitabilityStatus
@@ -773,6 +776,25 @@ def test_tempo_started_paused_resumed_and_aborted_render_through_panel() -> None
         (None, {"abort": "disabled"}),
         ("Tempoanalyse wurde vollständig abgebrochen.", {}),
     ]
+
+
+def test_tempo_started_renders_through_dialogs_real_analysis_panel() -> None:
+    panel = cast(Any, object.__new__(CatalogMaintenanceFilterAnalysisPanel))
+    panel._tempo_progress = _Widget()
+    panel._tempo_start = _Widget()
+    panel._tempo_pause = _Widget()
+    panel._tempo_resume = _Widget()
+    panel._tempo_abort = _Widget()
+    dialog = cast(Any, object.__new__(CatalogMaintenanceDialog))
+    dialog._filter_analysis_panel = panel
+    dialog._active = lambda: True
+    dialog._schedule_tempo_progress = lambda: None
+
+    CatalogMaintenanceDialog._tempo_batch_started(dialog, (SimpleNamespace(run_id=17),))
+
+    assert isinstance(panel, CatalogMaintenanceFilterAnalysisPanel)
+    assert panel._tempo_progress.options["text"] == "Serielle Tempoanalyse wurde gestartet …"
+    assert panel._tempo_pause.options["state"] == "normal"
 
 
 def test_tempo_batch_progress_renders_aggregates_without_rebuilding_rows() -> None:
