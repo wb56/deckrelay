@@ -1,6 +1,9 @@
-"""Display-independent contracts for the catalog filter/analysis panel."""
+"""Contracts and realized geometry for the catalog filter/analysis panel."""
 
 from typing import Any, cast
+
+import customtkinter as ctk  # type: ignore[import-untyped]
+import pytest
 
 from party_player.ui.catalog_maintenance_filter_analysis_panel import (
     CatalogMaintenanceFilterAnalysisPanel,
@@ -48,6 +51,40 @@ class _Widget:
 
     def winfo_reqheight(self) -> int:
         return 100
+
+
+def _realized_panel() -> tuple[ctk.CTk, CatalogMaintenanceFilterAnalysisPanel]:
+    try:
+        root = ctk.CTk()
+    except Exception as error:
+        pytest.skip(f"Realisierte Tk-/CustomTkinter-Widgets nicht verfuegbar: {error}")
+    root.geometry("1664x900+0+0")
+    root.grid_columnconfigure(0, weight=1)
+    root.update()
+    panel = CatalogMaintenanceFilterAnalysisPanel(
+        root,
+        title="Katalogpflege",
+        work_queue_labels={},
+        field_labels={},
+        source_labels={},
+        status_labels={},
+        suggestion_labels={},
+        apply_filter=lambda: None,
+        reset_filters=lambda: None,
+        analysis_actions=None,
+        metadata_analysis_available=True,
+        analysis_error=lambda _error: None,
+        prepare_tempo=lambda: None,
+        pause_tempo=lambda: None,
+        resume_tempo=lambda: None,
+        abort_tempo=lambda: None,
+        resume_pending_tempo=lambda: None,
+        discard_pending_tempo=lambda: None,
+    )
+    panel.toggle_filter_details(None)
+    panel.toggle_analysis()
+    root.update()
+    return root, panel
 
 
 def _panel() -> CatalogMaintenanceFilterAnalysisPanel:
@@ -145,6 +182,28 @@ def test_analysis_disclosure_preserves_filter_values() -> None:
     assert panel.search.get() == "Dance"
     assert not panel._analysis_panel.visible
     assert panel._analysis_toggle.options["text"] == "Audioanalyse anzeigen ▾"
+
+
+def test_nested_filter_and_analysis_columns_expand() -> None:
+    root, panel = _realized_panel()
+    try:
+        assert panel._filter_details.grid_columnconfigure(0)["weight"] == 1
+        assert panel._analysis_host.grid_columnconfigure(0)["weight"] == 1
+    finally:
+        root.destroy()
+
+
+def test_realized_wide_panel_propagates_width_without_tempo_clipping() -> None:
+    root, panel = _realized_panel()
+    try:
+        assert panel.winfo_width() >= 1600
+        assert panel._filter_details.winfo_width() >= panel.winfo_width() - 30
+        assert panel._analysis_host.winfo_width() >= panel._filter_details.winfo_width() - 30
+        tempo_right = panel._tempo_start.winfo_rootx() + panel._tempo_start.winfo_width()
+        details_right = panel._filter_details.winfo_rootx() + panel._filter_details.winfo_width()
+        assert tempo_right <= details_right
+    finally:
+        root.destroy()
 
 
 def test_analysis_callback_is_forwarded_and_errors_use_supplied_handler() -> None:

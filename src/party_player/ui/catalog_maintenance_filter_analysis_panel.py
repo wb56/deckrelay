@@ -137,6 +137,7 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         self._filter_wrapper.grid_propagate(False)
         self._filter_details = ctk.CTkScrollableFrame(self._filter_wrapper, height=150)
         self._filter_details.pack(fill="both", expand=True)
+        self._filter_details.grid_columnconfigure(0, weight=1)
         self._filter_wrapper.grid_remove()
         advanced = ctk.CTkFrame(self._filter_details, fg_color="transparent")
         advanced.grid(row=1, column=0, padx=3, pady=2, sticky="ew")
@@ -190,6 +191,7 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         bpm_from.grid(row=3, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
         bpm_to.grid(row=3, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
         self._analysis_host = ctk.CTkFrame(self._filter_details, fg_color="transparent")
+        self._analysis_host.grid_columnconfigure(0, weight=1)
         self._analysis_host.grid(row=2, column=0, sticky="ew")
         self._build_analysis(
             analysis_actions,
