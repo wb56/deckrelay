@@ -59,11 +59,14 @@ def _realized_panel() -> tuple[ctk.CTk, CatalogMaintenanceFilterAnalysisPanel]:
         root = ctk.CTk()
     except TclError as error:
         message = str(error)
-        if "Can't find a usable" not in message or ".tcl" not in message:
+        missing_tcl_runtime = (
+            "Can't find a usable" in message and ".tcl" in message
+        ) or 'invalid command name "tcl_findLibrary"' in message
+        if not missing_tcl_runtime:
             raise
         pytest.skip(
-            "Python-Umgebung enthaelt kein nutzbares Tcl/Tk; reale Tk-Geometrie "
-            "erfordert eine separate manuelle Windows-Abnahme"
+            "Windows-CI-Python enthaelt kein nutzbares Tcl/Tk (tk.tcl/tcl_findLibrary); "
+            "reale Tk-Geometrie erfordert eine separate manuelle Windows-Abnahme"
         )
     root.geometry("1664x900+0+0")
     root.grid_columnconfigure(0, weight=1)
