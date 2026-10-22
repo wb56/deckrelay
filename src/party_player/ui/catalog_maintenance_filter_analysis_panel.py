@@ -453,6 +453,8 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
             results_panel.configure(height=300)
             self._filter_actions.grid_configure(row=2, column=0, columnspan=2, sticky="w")
             self._counts.grid_configure(row=3, column=0, columnspan=4)
+            self._filter_toggle.grid_configure(row=4)
+            self._filter_wrapper.grid_configure(row=5)
         else:
             self.grid_propagate(True)
             self._filter_wrapper.grid_propagate(False)
@@ -460,6 +462,8 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
             results_panel.grid_propagate(True)
             self._filter_actions.grid_configure(row=1, column=2, columnspan=2, sticky="e")
             self._counts.grid_configure(row=2, column=0, columnspan=4)
+            self._filter_toggle.grid_configure(row=3)
+            self._filter_wrapper.grid_configure(row=4)
         self.refresh_layout(results_panel)
 
     def refresh_layout(self, results_panel: Any | None) -> None:

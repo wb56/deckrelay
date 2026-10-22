@@ -1,5 +1,6 @@
 """Contracts and realized geometry for the catalog filter/analysis panel."""
 
+from tkinter import TclError
 from typing import Any, cast
 
 import customtkinter as ctk  # type: ignore[import-untyped]
@@ -56,8 +57,14 @@ class _Widget:
 def _realized_panel() -> tuple[ctk.CTk, CatalogMaintenanceFilterAnalysisPanel]:
     try:
         root = ctk.CTk()
-    except Exception as error:
-        pytest.skip(f"Realisierte Tk-/CustomTkinter-Widgets nicht verfuegbar: {error}")
+    except TclError as error:
+        message = str(error)
+        if "Can't find a usable" not in message or ".tcl" not in message:
+            raise
+        pytest.skip(
+            "Python-Umgebung enthaelt kein nutzbares Tcl/Tk; reale Tk-Geometrie "
+            "erfordert eine separate manuelle Windows-Abnahme"
+        )
     root.geometry("1664x900+0+0")
     root.grid_columnconfigure(0, weight=1)
     root.update()
@@ -104,10 +111,12 @@ def _panel() -> CatalogMaintenanceFilterAnalysisPanel:
     panel._filter_bpm_from = _Widget("100")
     panel._filter_bpm_to = _Widget("130")
     panel._filter_toggle = _Widget()
+    panel._filter_toggle.options.update(row=3, column=0, columnspan=4)
     panel._filter_wrapper = _Widget()
     panel._filter_details = _Widget()
     panel._filter_actions = _Widget()
     panel._counts = _Widget()
+    panel._counts.options.update(row=2, column=0, columnspan=4)
     panel._filter_details_visible = False
     panel._compact = False
     panel.update_idletasks = lambda: None
@@ -169,6 +178,36 @@ def test_filter_panel_disclosure_preserves_values_and_compact_layout() -> None:
     assert panel.filter_actions.options["row"] == 2
     assert panel.counts.options["row"] == 3
     assert panel.filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
+
+
+def test_filter_toggle_and_counts_use_distinct_grid_rows_at_979_and_980_pixels() -> None:
+    panel = _panel()
+    results = _Widget()
+
+    panel.set_compact_layout(True, results)
+    compact_rows = (panel.filter_toggle.options["row"], panel.counts.options["row"])
+    panel.set_compact_layout(False, results)
+    wide_rows = (panel.filter_toggle.options["row"], panel.counts.options["row"])
+
+    assert compact_rows == (4, 3)
+    assert wide_rows == (3, 2)
+
+
+def test_realized_filter_toggle_and_counts_do_not_share_grid_area() -> None:
+    root, panel = _realized_panel()
+    results = _Widget()
+    try:
+        panel.set_compact_layout(True, results)
+        root.update()
+        compact_rows = (panel.filter_toggle.grid_info()["row"], panel.counts.grid_info()["row"])
+        panel.set_compact_layout(False, results)
+        root.update()
+        wide_rows = (panel.filter_toggle.grid_info()["row"], panel.counts.grid_info()["row"])
+
+        assert compact_rows == (4, 3)
+        assert wide_rows == (3, 2)
+    finally:
+        root.destroy()
 
 
 def test_analysis_disclosure_preserves_filter_values() -> None:
