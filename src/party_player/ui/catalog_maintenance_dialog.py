@@ -426,13 +426,6 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._tempo_profile = panel.tempo_profile
         self._tempo_scope = panel.tempo_scope
         self._tempo_skip_current = panel.tempo_skip_current
-        self._tempo_start = panel.tempo_start
-        self._tempo_pause = panel.tempo_pause
-        self._tempo_resume = panel.tempo_resume
-        self._tempo_abort = panel.tempo_abort
-        self._tempo_pending_resume = panel.tempo_pending_resume
-        self._tempo_pending_discard = panel.tempo_pending_discard
-        self._tempo_progress = panel.tempo_progress
         self._compact_filter_layout = False
         self.bind("<Configure>", self._on_filter_resize, add="+")
 
@@ -604,8 +597,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
     def _prepare_tempo_batch(self) -> None:
         if self._metadata_analysis is None:
             return
-        self._tempo_start.configure(state="disabled")
-        self._tempo_progress.configure(text="Auswahl und Analysestand werden geprüft …")
+        self._filter_analysis_panel.render_tempo_state(None, start="disabled")
+        self._filter_analysis_panel.render_tempo_state("Auswahl und Analysestand werden geprüft …")
         self._task(
             lambda: self._service.repository.resolve_selection(self._selection),
             self._tempo_selection_resolved,
@@ -618,8 +611,10 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         rows = cast(tuple[tuple[int, int], ...], value)
         ids = tuple(track_id for track_id, _revision in rows)
         if not ids:
-            self._tempo_start.configure(state="normal")
-            self._tempo_progress.configure(text="Bitte mindestens einen Titel auswählen.")
+            self._filter_analysis_panel.render_tempo_state(None, start="normal")
+            self._filter_analysis_panel.render_tempo_state(
+                "Bitte mindestens einen Titel auswählen."
+            )
             return
         skip = bool(self._tempo_skip_current.get())
         scope = self._selected_tempo_scope()
@@ -659,13 +654,13 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         block_reason = analysis.block_reason(batch=True)
         if block_reason:
             text += f"\n\nStart derzeit gesperrt: {block_reason}"
-        self._tempo_progress.configure(text=text)
+        self._filter_analysis_panel.render_tempo_state(text)
         if (
             preview.planned == 0
             or bool(block_reason)
             or not ask_silent_yes_no(self, "Tempoanalyse starten?", text)
         ):
-            self._tempo_start.configure(state="normal")
+            self._filter_analysis_panel.render_tempo_state(None, start="normal")
             return
         profile = (
             MetadataAnalysisProfile.TEMPO_AND_ENERGY_EXPERIMENTAL
@@ -685,9 +680,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             return
         jobs = cast(tuple[Any, ...], value)
         self._tempo_run_ids = tuple(int(job.run_id) for job in jobs)
-        self._tempo_pause.configure(state="normal")
-        self._tempo_abort.configure(state="normal")
-        self._tempo_progress.configure(text="Serielle Tempoanalyse wurde gestartet …")
+        self._filter_analysis_panel.render_tempo_state(None, pause="normal", abort="normal")
+        self._filter_analysis_panel.render_tempo_state("Serielle Tempoanalyse wurde gestartet …")
         self._schedule_tempo_progress()
 
     def _schedule_tempo_progress(self) -> None:
@@ -716,54 +710,58 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         )
         reason = f"\nPausen-/Sperrgrund: {progress.reason}" if progress.reason else ""
         current = f"\nAktuell: {progress.current_title}" if progress.current_title else ""
-        self._tempo_progress.configure(
-            text=(
-                f"{progress.completed} / {progress.total} abgeschlossen · "
-                f"erfolgreich {progress.successful} · ohne BPM {progress.without_bpm} · "
-                f"Prüfung erforderlich {progress.review_required} · "
-                f"fehlgeschlagen {progress.failed} · übersprungen {self._tempo_skipped} · "
-                f"abgebrochen {progress.cancelled}{remaining}{current}{reason}"
-            )
+        text = (
+            f"{progress.completed} / {progress.total} abgeschlossen · "
+            f"erfolgreich {progress.successful} · ohne BPM {progress.without_bpm} · "
+            f"Prüfung erforderlich {progress.review_required} · "
+            f"fehlgeschlagen {progress.failed} · übersprungen {self._tempo_skipped} · "
+            f"abgebrochen {progress.cancelled}{remaining}{current}{reason}"
         )
         if progress.completed < progress.total:
+            self._filter_analysis_panel.render_tempo_state(text)
             self._schedule_tempo_progress()
             return
-        self._tempo_start.configure(state="normal")
-        self._tempo_pause.configure(state="disabled")
-        self._tempo_resume.configure(state="disabled")
-        self._tempo_abort.configure(state="disabled")
+        self._filter_analysis_panel.render_tempo_state(
+            text,
+            start="normal",
+            pause="disabled",
+            resume="disabled",
+            abort="disabled",
+        )
         self._load_counts_and_page()
 
     def _pause_tempo_batch(self) -> None:
         if self._metadata_analysis is None:
             return
         self._metadata_analysis.pause()
-        self._tempo_pause.configure(state="disabled")
-        self._tempo_resume.configure(state="normal")
-        self._tempo_progress.configure(text="PAUSIERT – der laufende Titel darf noch enden.")
+        self._filter_analysis_panel.render_tempo_state(None, pause="disabled", resume="normal")
+        self._filter_analysis_panel.render_tempo_state(
+            "PAUSIERT – der laufende Titel darf noch enden."
+        )
 
     def _resume_tempo_batch(self) -> None:
         if self._metadata_analysis is None:
             return
         self._metadata_analysis.resume()
-        self._tempo_pause.configure(state="normal")
-        self._tempo_resume.configure(state="disabled")
+        self._filter_analysis_panel.render_tempo_state(None, pause="normal", resume="disabled")
         self._schedule_tempo_progress()
 
     def _abort_tempo_batch(self) -> None:
         if self._metadata_analysis is None:
             return
         self._metadata_analysis.cancel_all()
-        self._tempo_abort.configure(state="disabled")
-        self._tempo_progress.configure(text="Tempoanalyse wurde vollständig abgebrochen.")
+        self._filter_analysis_panel.render_tempo_state(None, abort="disabled")
+        self._filter_analysis_panel.render_tempo_state(
+            "Tempoanalyse wurde vollständig abgebrochen."
+        )
         self._schedule_tempo_progress()
 
     def _resume_persistent_tempo(self) -> None:
         if self._metadata_analysis is None:
             return
         count = self._metadata_analysis.resume_persistent_pending()
-        self._tempo_progress.configure(
-            text=f"{count} wartende Runs wurden eingereiht; Start erfolgt kontrolliert."
+        self._filter_analysis_panel.render_tempo_state(
+            f"{count} wartende Runs wurden eingereiht; Start erfolgt kontrolliert."
         )
 
     def _discard_persistent_tempo(self) -> None:
@@ -772,9 +770,9 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         try:
             count = self._metadata_analysis.discard_persistent_pending()
         except RuntimeError as error:
-            self._tempo_progress.configure(text=str(error))
+            self._filter_analysis_panel.render_tempo_state(str(error))
             return
-        self._tempo_progress.configure(text=f"{count} wartende Runs wurden verworfen.")
+        self._filter_analysis_panel.render_tempo_state(f"{count} wartende Runs wurden verworfen.")
 
     def _task(self, work: Callable[[], object], done: Callable[[object], None]) -> None:
         self._submit(work, done, self._failed)
@@ -1214,8 +1212,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._running = False
             self._execute_button.configure(state="normal")
             self._cancel_button.configure(state="disabled")
-            if hasattr(self, "_tempo_start"):
-                self._tempo_start.configure(state="normal")
+            if hasattr(self, "_filter_analysis_panel"):
+                self._filter_analysis_panel.render_tempo_state(None, start="normal")
             if hasattr(self, "_suitability_apply_button"):
                 self._suitability_apply_button.configure(state="normal")
             self._result.configure(text=f"Fehler: {error}")

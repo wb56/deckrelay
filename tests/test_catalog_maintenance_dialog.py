@@ -661,14 +661,124 @@ def test_audio_analysis_callback_error_uses_dialog_error_path() -> None:
     assert errors == [failure]
 
 
+class _TempoPanel:
+    def __init__(self) -> None:
+        self.states: list[tuple[str | None, dict[str, str]]] = []
+
+    def render_tempo_state(self, text: str | None, **states: str) -> None:
+        self.states.append((text, states))
+
+
+def test_responsive_panel_switches_exactly_below_980_pixels() -> None:
+    calls: list[tuple[bool, object]] = []
+    results = object()
+
+    class Panel:
+        def set_compact_layout(self, compact: bool, results_panel: object) -> None:
+            calls.append((compact, results_panel))
+
+    class Dialog:
+        _filter_analysis_panel = Panel()
+        _results_panel = results
+        _compact_filter_layout = False
+        width = 979
+
+        def winfo_width(self) -> int:
+            return self.width
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+    dialog.width = 980
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+
+    assert calls == [(True, results), (False, results)]
+    assert dialog._compact_filter_layout is False
+
+
+def test_tempo_prepare_and_empty_selection_render_through_panel() -> None:
+    panel = _TempoPanel()
+
+    class Repository:
+        def resolve_selection(self, _selection: object) -> tuple[tuple[int, int], ...]:
+            return ()
+
+    class Dialog:
+        _metadata_analysis = object()
+        _filter_analysis_panel = panel
+        _service = SimpleNamespace(repository=Repository())
+        _selection = object()
+
+        def _active(self) -> bool:
+            return True
+
+        def _task(self, work: Any, done: Any) -> None:
+            done(work())
+
+        def _tempo_selection_resolved(self, value: object) -> None:
+            CatalogMaintenanceDialog._tempo_selection_resolved(cast(Any, self), value)
+
+    CatalogMaintenanceDialog._prepare_tempo_batch(cast(Any, Dialog()))
+
+    assert panel.states == [
+        (None, {"start": "disabled"}),
+        ("Auswahl und Analysestand werden geprüft …", {}),
+        (None, {"start": "normal"}),
+        ("Bitte mindestens einen Titel auswählen.", {}),
+    ]
+
+
+def test_tempo_started_paused_resumed_and_aborted_render_through_panel() -> None:
+    calls: list[str] = []
+    panel = _TempoPanel()
+
+    class Analysis:
+        def pause(self) -> None:
+            calls.append("pause")
+
+        def resume(self) -> None:
+            calls.append("resume")
+
+        def cancel_all(self) -> None:
+            calls.append("abort")
+
+    class Dialog:
+        _metadata_analysis = Analysis()
+        _filter_analysis_panel = panel
+
+        def _active(self) -> bool:
+            return True
+
+        def _schedule_tempo_progress(self) -> None:
+            calls.append("schedule")
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._tempo_batch_started(
+        cast(Any, dialog), (SimpleNamespace(run_id=17), SimpleNamespace(run_id=23))
+    )
+    CatalogMaintenanceDialog._pause_tempo_batch(cast(Any, dialog))
+    CatalogMaintenanceDialog._resume_tempo_batch(cast(Any, dialog))
+    CatalogMaintenanceDialog._abort_tempo_batch(cast(Any, dialog))
+
+    assert dialog._tempo_run_ids == (17, 23)
+    assert calls == ["schedule", "pause", "resume", "schedule", "abort", "schedule"]
+    assert panel.states == [
+        (None, {"pause": "normal", "abort": "normal"}),
+        ("Serielle Tempoanalyse wurde gestartet …", {}),
+        (None, {"pause": "disabled", "resume": "normal"}),
+        (
+            "PAUSIERT – der laufende Titel darf noch enden.",
+            {},
+        ),
+        (None, {"pause": "normal", "resume": "disabled"}),
+        (None, {"abort": "disabled"}),
+        ("Tempoanalyse wurde vollständig abgebrochen.", {}),
+    ]
+
+
 def test_tempo_batch_progress_renders_aggregates_without_rebuilding_rows() -> None:
     class Dialog:
         _tempo_skipped = 4
-        _tempo_progress = _Widget()
-        _tempo_start = _Widget()
-        _tempo_pause = _Widget()
-        _tempo_resume = _Widget()
-        _tempo_abort = _Widget()
+        _filter_analysis_panel = _TempoPanel()
         loaded = 0
 
         def _active(self) -> bool:
@@ -696,8 +806,14 @@ def test_tempo_batch_progress_renders_aggregates_without_rebuilding_rows() -> No
 
     CatalogMaintenanceDialog._tempo_progressed(cast(Any, dialog), progress)
 
-    text = str(dialog._tempo_progress.options["text"])
+    text, states = dialog._filter_analysis_panel.states[-1]
     assert "12 / 12 abgeschlossen" in text
     assert "Prüfung erforderlich 3" in text
     assert "übersprungen 4" in text
+    assert states == {
+        "start": "normal",
+        "pause": "disabled",
+        "resume": "disabled",
+        "abort": "disabled",
+    }
     assert dialog.loaded == 1

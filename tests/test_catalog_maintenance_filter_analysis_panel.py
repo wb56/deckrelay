@@ -84,6 +84,13 @@ def test_filter_panel_reads_every_input_without_normalizing_values() -> None:
 
     assert values.queue == "Fehlende BPM-Werte"
     assert values.search == "Dance"
+    assert values.field == "BPM"
+    assert values.source == "Analyse"
+    assert values.status == "Ungeprüft"
+    assert values.value == "Mit Wert"
+    assert values.confirmed == "Bestätigt"
+    assert values.conflict == "Ohne Konflikt"
+    assert values.suggestion == "Offen"
     assert values.minimum_confidence == "0,8"
     assert values.minimum_bpm == "100"
     assert values.maximum_bpm == "130"
@@ -104,7 +111,12 @@ def test_filter_panel_reset_restores_all_defaults() -> None:
     assert panel.filter_confirmed.get() == "Bestätigung egal"
     assert panel.filter_conflict.get() == "Konflikt egal"
     assert panel.filter_suggestion.get() == "Vorschlag egal"
-    assert panel.search.get() == panel.filter_bpm_from.get() == panel.filter_bpm_to.get() == ""
+    assert panel.search.get() == ""
+    assert panel.filter_confidence.get() == ""
+    assert panel.filter_changed_from.get() == ""
+    assert panel.filter_changed_to.get() == ""
+    assert panel.filter_bpm_from.get() == ""
+    assert panel.filter_bpm_to.get() == ""
 
 
 def test_filter_panel_disclosure_preserves_values_and_compact_layout() -> None:

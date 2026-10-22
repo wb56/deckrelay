@@ -366,14 +366,15 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
 
     def render_tempo_state(
         self,
-        text: str,
+        text: str | None,
         *,
         start: ButtonState | None = None,
         pause: ButtonState | None = None,
         resume: ButtonState | None = None,
         abort: ButtonState | None = None,
     ) -> None:
-        self._tempo_progress.configure(text=text)
+        if text is not None:
+            self._tempo_progress.configure(text=text)
         for widget, state in (
             (self._tempo_start, start),
             (self._tempo_pause, pause),
