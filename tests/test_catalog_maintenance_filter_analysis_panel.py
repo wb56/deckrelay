@@ -65,7 +65,10 @@ class _Widget:
 
 
 def _realized_panel(
-    width: int = 1664, *, callbacks: dict[str, Any] | None = None
+    width: int = 1664,
+    *,
+    callbacks: dict[str, Any] | None = None,
+    open_analysis: bool = True,
 ) -> tuple[ctk.CTk, CatalogMaintenanceFilterAnalysisPanel]:
     try:
         root = ctk.CTk()
@@ -105,7 +108,8 @@ def _realized_panel(
         discard_pending_tempo=supplied.get("pending_discard", lambda: None),
     )
     panel.toggle_filter_details(None)
-    panel.toggle_analysis()
+    if open_analysis:
+        panel.toggle_analysis()
     root.update()
     return root, panel
 
@@ -117,6 +121,14 @@ def _buttons_below(widget: Any) -> list[ctk.CTkButton]:
             descendants.append(child)
         descendants.extend(_buttons_below(child))
     return descendants
+
+
+def _is_inside_vertical_viewport(widget: Any, canvas: Any) -> bool:
+    viewport_top = canvas.winfo_rooty()
+    viewport_bottom = viewport_top + canvas.winfo_height()
+    widget_top = widget.winfo_rooty()
+    widget_bottom = widget_top + widget.winfo_height()
+    return widget_top >= viewport_top and widget_bottom <= viewport_bottom
 
 
 def _panel() -> CatalogMaintenanceFilterAnalysisPanel:
@@ -144,9 +156,12 @@ def _panel() -> CatalogMaintenanceFilterAnalysisPanel:
     panel._counts.options.update(row=2, column=0, columnspan=4)
     panel._filter_details_visible = False
     panel._compact = False
+    panel._analysis_scroll_after_id = None
     panel.update_idletasks = lambda: None
     panel.configure = lambda **_options: None
     panel.grid_propagate = lambda _value: None
+    panel.after_idle = lambda _callback: "after-id"
+    panel.after_cancel = lambda _after_id: None
     return panel
 
 
@@ -352,6 +367,45 @@ def test_realized_analysis_action_groups_use_uniform_button_grid() -> None:
                 for left, button, right in zip(left_edges, group, left_edges[1:])
             ]
             assert not gaps or max(gaps) - min(gaps) <= 1
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("dialog_width", (760, 979, 980))
+def test_opening_analysis_scrolls_first_cue_row_into_actual_viewport(
+    dialog_width: int,
+) -> None:
+    root, panel = _realized_panel(dialog_width, open_analysis=False)
+    try:
+        canvas = panel._filter_details._parent_canvas
+        canvas.yview_moveto(0.0)
+        root.update()
+
+        panel.analysis_toggle.invoke()
+        root.update()
+        buttons = {button.cget("text"): button for button in _buttons_below(panel.analysis_panel)}
+        cue_row = buttons["Neue/veraltete Cues"]
+
+        assert panel.analysis_toggle.cget("text") == "Audioanalyse ausblenden ▴"
+        assert panel.analysis_panel.winfo_ismapped()
+        assert _is_inside_vertical_viewport(cue_row, canvas)
+        assert canvas.xview() == (0.0, 1.0)
+
+        canvas.yview_moveto(1.0)
+        root.update()
+        assert _is_inside_vertical_viewport(panel.tempo_pending_discard, canvas)
+
+        scroll_position_before_close = canvas.yview()
+        panel.analysis_toggle.invoke()
+        root.update()
+        closed_scroll_position = canvas.yview()
+        assert closed_scroll_position == scroll_position_before_close
+        panel.analysis_toggle.invoke()
+        root.update()
+
+        assert canvas.yview() != closed_scroll_position
+        assert _is_inside_vertical_viewport(cue_row, canvas)
+        assert canvas.xview() == (0.0, 1.0)
     finally:
         root.destroy()
 

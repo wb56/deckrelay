@@ -3,6 +3,7 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import logging
+from tkinter import TclError
 from typing import Any, Literal, Protocol
 
 import customtkinter as ctk  # type: ignore[import-untyped]
@@ -109,6 +110,7 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         self.grid(row=0, column=0, padx=12, pady=(8, 6), sticky="ew")
         self._compact = False
         self._filter_details_visible = False
+        self._analysis_scroll_after_id: str | None = None
 
         self._queue = ctk.CTkOptionMenu(
             self,
@@ -266,6 +268,8 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
             )
             controls = ctk.CTkFrame(panel, fg_color="transparent")
             controls.grid(row=row, column=1, padx=3, pady=3, sticky="w")
+            if row == 0:
+                self._cue_action_row = controls
             for text, command, danger in (
                 (first_text, first, False),
                 (all_text, all_action, False),
@@ -402,11 +406,68 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
 
     def toggle_analysis(self) -> None:
         if self._analysis_panel.winfo_ismapped():
+            self._cancel_pending_analysis_scroll()
             self._analysis_panel.grid_remove()
             self._analysis_toggle.configure(text="Audioanalyse anzeigen ▾")
         else:
             self._analysis_panel.grid()
             self._analysis_toggle.configure(text="Audioanalyse ausblenden ▴")
+            self._schedule_analysis_scroll()
+
+    def _schedule_analysis_scroll(self) -> None:
+        self._cancel_pending_analysis_scroll()
+        self._analysis_scroll_after_id = self.after_idle(self._scroll_cue_row_into_view)
+
+    def _cancel_pending_analysis_scroll(self) -> None:
+        after_id = self._analysis_scroll_after_id
+        self._analysis_scroll_after_id = None
+        if after_id is None:
+            return
+        try:
+            self.after_cancel(after_id)
+        except TclError:
+            pass
+
+    def _scroll_cue_row_into_view(self) -> None:
+        self._analysis_scroll_after_id = None
+        try:
+            if not self.winfo_exists() or not self._analysis_panel.winfo_ismapped():
+                return
+            self.update_idletasks()
+            canvas = self._analysis_canvas()
+            viewport_height = canvas.winfo_height()
+            scroll_region = canvas.bbox("all")
+            if viewport_height <= 1 or scroll_region is None:
+                return
+
+            viewport_top = canvas.winfo_rooty()
+            viewport_bottom = viewport_top + viewport_height
+            row_top = self._cue_action_row.winfo_rooty()
+            row_bottom = row_top + self._cue_action_row.winfo_height()
+            offset = 0
+            if row_top < viewport_top:
+                offset = row_top - viewport_top
+            elif row_bottom > viewport_bottom:
+                offset = row_bottom - viewport_bottom
+            if offset == 0:
+                return
+
+            region_top = float(scroll_region[1])
+            region_bottom = float(scroll_region[3])
+            region_height = region_bottom - region_top
+            maximum_top = max(region_top, region_bottom - viewport_height)
+            target_top = min(
+                max(float(canvas.canvasy(0)) + offset, region_top),
+                maximum_top,
+            )
+            if region_height > 0:
+                canvas.yview_moveto((target_top - region_top) / region_height)
+        except TclError:
+            return
+
+    def _analysis_canvas(self) -> Any:
+        """Return the canvas owned by CustomTkinter's vertical scroll frame."""
+        return self._filter_details._parent_canvas
 
     @staticmethod
     def run_analysis_action(
