@@ -431,9 +431,9 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
     def _scroll_cue_row_into_view(self) -> None:
         self._analysis_scroll_after_id = None
         try:
+            self.update_idletasks()
             if not self.winfo_exists() or not self._analysis_panel.winfo_ismapped():
                 return
-            self.update_idletasks()
             canvas = self._analysis_canvas()
             viewport_height = canvas.winfo_height()
             scroll_region = canvas.bbox("all")
