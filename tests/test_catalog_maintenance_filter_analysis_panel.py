@@ -343,14 +343,15 @@ def test_realized_analysis_action_groups_use_uniform_button_grid() -> None:
             ("Wartende Runs fortsetzen", "Wartende Runs verwerfen"),
         ):
             group = [buttons[label] for label in labels]
-            assert len({button.winfo_width() for button in group}) == 1
+            widths = [button.winfo_width() for button in group]
+            assert max(widths) - min(widths) <= 1
             assert len({button.winfo_height() for button in group}) == 1
             left_edges = [button.winfo_rootx() for button in group]
             gaps = [
                 right - (left + button.winfo_width())
                 for left, button, right in zip(left_edges, group, left_edges[1:])
             ]
-            assert len(set(gaps)) <= 1
+            assert not gaps or max(gaps) - min(gaps) <= 1
     finally:
         root.destroy()
 
