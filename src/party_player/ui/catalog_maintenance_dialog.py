@@ -42,6 +42,9 @@ from party_player.metadata_analysis_service import (
     TempoBatchProgress,
 )
 from party_player.ui.dialogs import ask_silent_yes_no, ask_silent_yes_no_cancel
+from party_player.ui.catalog_maintenance_filter_analysis_panel import (
+    CatalogMaintenanceFilterAnalysisPanel,
+)
 from party_player.ui.responsive_dialog import (
     apply_responsive_dialog_geometry,
     bind_dialog_escape,
@@ -55,6 +58,8 @@ Submit = Callable[
     [Callable[[], object], Callable[[object], None], Callable[[Exception], None]], bool
 ]
 LOGGER = logging.getLogger(__name__)
+_RESULTS_BASE_MINIMUM = 190
+_RESULTS_CONSTRAINED_MINIMUM = 80
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,20 +295,6 @@ def parse_bpm_filter(minimum: str, maximum: str) -> tuple[float | None, float | 
     return lower, upper
 
 
-def _labeled_filter_entry(
-    parent: Any, label: str, *, placeholder: str = ""
-) -> tuple[ctk.CTkFrame, ctk.CTkEntry]:
-    """Build a filter input whose meaning never depends on its placeholder."""
-    frame = ctk.CTkFrame(parent, fg_color="transparent")
-    frame.grid_columnconfigure(0, weight=1)
-    ctk.CTkLabel(frame, text=label, anchor="w").grid(
-        row=0, column=0, padx=2, pady=(0, 1), sticky="ew"
-    )
-    entry = ctk.CTkEntry(frame, placeholder_text=placeholder)
-    entry.grid(row=1, column=0, sticky="ew")
-    return frame, entry
-
-
 def _enable_windows_dialog_controls(dialog: Any) -> None:
     """Restore native caption controls removed from transient Tk windows."""
     if sys.platform != "win32":
@@ -354,6 +345,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._tempo_run_ids: tuple[int, ...] = ()
         self._tempo_poll_after: str | None = None
         self._tempo_skipped = 0
+        self._layout_after_id: str | None = None
+        self._layout_running = False
         self.title("Katalogpflege")
         apply_responsive_dialog_geometry(
             self,
@@ -390,126 +383,64 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             )
             return frame
 
-        filters = ctk.CTkFrame(self)
-        self._filter_panel = filters
-        filters.grid(row=0, column=0, padx=12, pady=(8, 6), sticky="ew")
-        find = section(filters, WORKFLOW_SECTIONS[0])
-        find.grid(row=1, column=0, sticky="ew")
-        find.grid_columnconfigure(1, weight=1)
-        self._queue = ctk.CTkOptionMenu(
-            find,
-            values=["Alle Arbeitsvorräte", *WORK_QUEUE_LABELS.values()],
-            command=lambda _v: self._apply_filter(),
+        self._filter_analysis_panel = CatalogMaintenanceFilterAnalysisPanel(
+            self,
+            title=WORKFLOW_SECTIONS[0],
+            work_queue_labels=WORK_QUEUE_LABELS,
+            field_labels=FIELD_LABELS,
+            source_labels=SOURCE_LABELS,
+            status_labels=STATUS_LABELS,
+            suggestion_labels=SUGGESTION_STATUS_LABELS,
+            apply_filter=self._apply_filter,
+            reset_filters=self._reset_filters,
+            analysis_actions=self._analysis_actions,
+            metadata_analysis_available=self._metadata_analysis is not None,
+            analysis_error=self._failed,
+            prepare_tempo=self._prepare_tempo_batch,
+            pause_tempo=self._pause_tempo_batch,
+            resume_tempo=self._resume_tempo_batch,
+            abort_tempo=self._abort_tempo_batch,
+            resume_pending_tempo=self._resume_persistent_tempo,
+            discard_pending_tempo=self._discard_persistent_tempo,
+            layout_changed=self._request_height_layout,
         )
-        self._queue.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
-        self._search = ctk.CTkEntry(find, placeholder_text="Titel oder Interpret")
-        self._search.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        self._counts = ctk.CTkLabel(
-            find, text="Arbeitsvorräte werden gezählt …", anchor="w", justify="left", wraplength=900
-        )
-        self._counts.grid(row=2, column=0, columnspan=4, padx=5, pady=(0, 5), sticky="ew")
-        self._filter_toggle = ctk.CTkButton(
-            filters,
-            text="Weitere Filter anzeigen ▾",
-            command=self._toggle_filter_details,
-            anchor="w",
-        )
-        self._filter_toggle.grid(row=3, column=0, padx=3, pady=(2, 4), sticky="ew")
-        filter_wrapper = ctk.CTkFrame(filters, height=170)
-        self._filter_wrapper = filter_wrapper
-        filter_wrapper.grid(row=4, column=0, sticky="ew")
-        filter_wrapper.grid_propagate(False)
-        narrow = ctk.CTkScrollableFrame(filter_wrapper, height=150)
-        self._filter_details = narrow
-        self._filter_details_visible = False
-        narrow.pack(fill="both", expand=True)
-        filter_wrapper.grid_remove()
-        advanced = ctk.CTkFrame(narrow, fg_color="transparent")
-        advanced.grid(row=1, column=0, padx=3, pady=2, sticky="ew")
-        for column in range(4):
-            advanced.grid_columnconfigure(column, weight=1)
-        self._filter_field = ctk.CTkOptionMenu(
-            advanced, values=["Alle Felder", *FIELD_LABELS.values()]
-        )
-        self._filter_field.grid(row=0, column=0, padx=3, pady=2, sticky="ew")
-        self._filter_source = ctk.CTkOptionMenu(
-            advanced, values=["Alle Quellen", *SOURCE_LABELS.values()]
-        )
-        self._filter_source.grid(row=0, column=1, padx=3, pady=2, sticky="ew")
-        self._filter_status = ctk.CTkOptionMenu(
-            advanced, values=["Alle Prüfstatus", *STATUS_LABELS.values()]
-        )
-        self._filter_status.grid(row=0, column=2, padx=3, pady=2, sticky="ew")
-        self._filter_value = ctk.CTkOptionMenu(
-            advanced, values=["Wert egal", "Mit Wert", "Ohne Wert"]
-        )
-        self._filter_value.grid(row=0, column=3, padx=3, pady=2, sticky="ew")
-        self._filter_confirmed = ctk.CTkOptionMenu(
-            advanced, values=["Bestätigung egal", "Bestätigt", "Nicht bestätigt"]
-        )
-        self._filter_confirmed.grid(row=1, column=0, padx=3, pady=2, sticky="ew")
-        self._filter_conflict = ctk.CTkOptionMenu(
-            advanced, values=["Konflikt egal", "Mit Konflikt", "Ohne Konflikt"]
-        )
-        self._filter_conflict.grid(row=1, column=1, padx=3, pady=2, sticky="ew")
-        self._filter_suggestion = ctk.CTkOptionMenu(
-            advanced, values=["Vorschlag egal", *SUGGESTION_STATUS_LABELS.values()]
-        )
-        self._filter_suggestion.grid(row=1, column=2, padx=3, pady=2, sticky="ew")
-        confidence_frame, self._filter_confidence = _labeled_filter_entry(
-            advanced, "Min. Konfidenz", placeholder="0–1"
-        )
-        confidence_frame.grid(row=1, column=3, padx=3, pady=2, sticky="ew")
-        changed_from_frame, self._filter_changed_from = _labeled_filter_entry(
-            advanced, "Geändert von", placeholder="JJJJ-MM-TT"
-        )
-        changed_from_frame.grid(row=2, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
-        changed_to_frame, self._filter_changed_to = _labeled_filter_entry(
-            advanced, "Geändert bis", placeholder="JJJJ-MM-TT"
-        )
-        changed_to_frame.grid(row=2, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
-        bpm_from_frame, self._filter_bpm_from = _labeled_filter_entry(
-            advanced, "BPM von", placeholder="20–300"
-        )
-        bpm_from_frame.grid(row=3, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
-        bpm_to_frame, self._filter_bpm_to = _labeled_filter_entry(
-            advanced, "BPM bis", placeholder="20–300"
-        )
-        bpm_to_frame.grid(row=3, column=2, columnspan=2, padx=3, pady=2, sticky="ew")
-        self._analysis_toggle = ctk.CTkButton(
-            narrow,
-            text="Audioanalyse anzeigen ▾",
-            command=self._toggle_analysis_panel,
-            anchor="w",
-        )
-        self._analysis_toggle.grid(row=2, column=0, padx=3, pady=(5, 2), sticky="ew")
-        self._analysis_panel = ctk.CTkFrame(narrow)
-        self._analysis_panel.grid(row=3, column=0, padx=3, pady=3, sticky="ew")
-        self._analysis_panel.grid_columnconfigure(1, weight=1)
-        self._build_analysis_panel(self._analysis_panel)
-        self._analysis_panel.grid_remove()
-        self._filter_details.grid_remove()
+        panel = self._filter_analysis_panel
+        self._filter_panel = panel
+        self._queue = panel.queue
+        self._search = panel.search
+        self._counts = panel.counts
+        self._filter_toggle = panel.filter_toggle
+        self._filter_toggle.configure(command=self._toggle_filter_details)
+        self._filter_wrapper = panel.filter_wrapper
+        self._filter_details = panel.filter_details
+        self._filter_field = panel.filter_field
+        self._filter_source = panel.filter_source
+        self._filter_status = panel.filter_status
+        self._filter_value = panel.filter_value
+        self._filter_confirmed = panel.filter_confirmed
+        self._filter_conflict = panel.filter_conflict
+        self._filter_suggestion = panel.filter_suggestion
+        self._filter_confidence = panel.filter_confidence
+        self._filter_changed_from = panel.filter_changed_from
+        self._filter_changed_to = panel.filter_changed_to
+        self._filter_bpm_from = panel.filter_bpm_from
+        self._filter_bpm_to = panel.filter_bpm_to
+        self._filter_actions = panel.filter_actions
+        self._analysis_toggle = panel.analysis_toggle
+        self._analysis_panel = panel.analysis_panel
+        self._tempo_profile = panel.tempo_profile
+        self._tempo_scope = panel.tempo_scope
+        self._tempo_skip_current = panel.tempo_skip_current
         self._compact_filter_layout = False
-        self._filter_actions = ctk.CTkFrame(find, fg_color="transparent")
-        self._filter_actions.grid(row=1, column=2, columnspan=2, padx=2, pady=0, sticky="e")
-        self._filter_button = ctk.CTkButton(
-            self._filter_actions, text="Filtern", command=self._apply_filter
-        )
-        self._filter_button.pack(side="left", padx=3)
-        self._reset_filter_button = ctk.CTkButton(
-            self._filter_actions, text="Filter zurücksetzen", command=self._reset_filters
-        )
-        self._reset_filter_button.pack(side="left", padx=3)
         self.bind("<Configure>", self._on_filter_resize, add="+")
 
         results = section(self, WORKFLOW_SECTIONS[1])
         self._results_panel = results
         results.grid(row=1, column=0, padx=12, pady=6, sticky="nsew")
-        results.configure(height=300)
-        results.grid_propagate(True)
         results.grid_columnconfigure(0, weight=1)
-        results.grid_rowconfigure(1, weight=1, minsize=190)
+        results.grid_rowconfigure(1, weight=1)
         body = ctk.CTkScrollableFrame(results, height=190)
+        self._results_body = body
         body.grid(row=1, column=0, padx=4, pady=4, sticky="nsew")
         body.grid_columnconfigure(0, weight=1)
         self._rows = ctk.CTkFrame(body)
@@ -624,171 +555,24 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._result = ctk.CTkLabel(checks, text="", justify="left", anchor="w", wraplength=900)
         self._result.grid(row=2, column=0, columnspan=4, padx=6, pady=(3, 5), sticky="ew")
         footer = ctk.CTkFrame(self, fg_color="transparent")
+        self._footer = footer
         footer.grid(row=4, column=0, padx=12, pady=(0, 2), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
         ctk.CTkButton(footer, text="Schließen", command=self._close).grid(
             row=0, column=1, padx=6, pady=2, sticky="e"
         )
         self._action_changed()
-
-    def _build_analysis_panel(self, panel: Any) -> None:
-        actions = self._analysis_actions
-        definitions = (
-            (
-                "Cues",
-                "Neue/veraltete Cues",
-                actions.analyze_cues_outdated if actions else None,
-                "Alle Cues neu",
-                actions.analyze_cues_all if actions else None,
-                "Cue-Analyse abbrechen",
-                actions.cancel_cues if actions else None,
-            ),
-            (
-                "Lautheit",
-                "Neue/veraltete Lautheit",
-                actions.analyze_loudness_outdated if actions else None,
-                "Alle Lautheiten neu",
-                actions.analyze_loudness_all if actions else None,
-                "Lautheit abbrechen",
-                actions.cancel_loudness if actions else None,
-            ),
-        )
-        for row, definition in enumerate(definitions):
-            label, first_text, first, all_text, all_action, cancel_text, cancel = definition
-            ctk.CTkLabel(panel, text=label, width=75, anchor="w").grid(
-                row=row, column=0, padx=6, pady=3, sticky="w"
-            )
-            controls = ctk.CTkFrame(panel, fg_color="transparent")
-            controls.grid(row=row, column=1, padx=3, pady=3, sticky="w")
-            for text, command, danger in (
-                (first_text, first, False),
-                (all_text, all_action, False),
-                (cancel_text, cancel, True),
-            ):
-                ctk.CTkButton(
-                    controls,
-                    text=text,
-                    command=(
-                        (lambda selected=command: self._run_analysis_action(selected))
-                        if command is not None
-                        else None
-                    ),
-                    state="normal" if command is not None else "disabled",
-                    fg_color="#7d3030" if danger else None,
-                ).pack(side="left", padx=3)
-        ctk.CTkLabel(panel, text="Tempo", width=75, anchor="w").grid(
-            row=2, column=0, padx=6, pady=3, sticky="w"
-        )
-        bpm = ctk.CTkFrame(panel, fg_color="transparent")
-        bpm.grid(row=2, column=1, padx=3, pady=3, sticky="ew")
-        self._tempo_profile = ctk.CTkOptionMenu(
-            bpm, values=("Tempo", "Tempo und experimentelle Energie"), width=230
-        )
-        self._tempo_profile.pack(side="left", padx=3)
-        self._tempo_scope = ctk.CTkOptionMenu(
-            bpm,
-            values=("Vollständige Aufnahme", "Wirksame Katalog-Cue-Bereiche"),
-            width=245,
-        )
-        self._tempo_scope.pack(side="left", padx=3)
-        self._tempo_skip_current = ctk.CTkSwitch(bpm, text="Aktuelle Ergebnisse überspringen")
-        self._tempo_skip_current.select()
-        self._tempo_skip_current.pack(side="left", padx=6)
-        self._tempo_start = ctk.CTkButton(
-            bpm,
-            text="Auswahl analysieren …",
-            command=self._prepare_tempo_batch,
-            state="normal" if self._metadata_analysis is not None else "disabled",
-        )
-        self._tempo_start.pack(side="left", padx=3)
-        tempo_controls = ctk.CTkFrame(panel, fg_color="transparent")
-        tempo_controls.grid(row=3, column=1, padx=3, pady=3, sticky="w")
-        self._tempo_pause = ctk.CTkButton(
-            tempo_controls,
-            text="Pause",
-            state="disabled",
-            command=self._pause_tempo_batch,
-        )
-        self._tempo_pause.pack(side="left", padx=3)
-        self._tempo_resume = ctk.CTkButton(
-            tempo_controls,
-            text="Fortsetzen",
-            state="disabled",
-            command=self._resume_tempo_batch,
-        )
-        self._tempo_resume.pack(side="left", padx=3)
-        self._tempo_abort = ctk.CTkButton(
-            tempo_controls,
-            text="Gesamten Auftrag abbrechen",
-            state="disabled",
-            fg_color="#7d3030",
-            command=self._abort_tempo_batch,
-        )
-        self._tempo_abort.pack(side="left", padx=3)
-        self._tempo_pending_resume = ctk.CTkButton(
-            tempo_controls,
-            text="Wartende Runs fortsetzen",
-            command=self._resume_persistent_tempo,
-            state="normal" if self._metadata_analysis is not None else "disabled",
-        )
-        self._tempo_pending_resume.pack(side="left", padx=3)
-        self._tempo_pending_discard = ctk.CTkButton(
-            tempo_controls,
-            text="Wartende Runs verwerfen",
-            fg_color="#6b5b2a",
-            command=self._discard_persistent_tempo,
-            state="normal" if self._metadata_analysis is not None else "disabled",
-        )
-        self._tempo_pending_discard.pack(side="left", padx=3)
-        self._tempo_progress = ctk.CTkLabel(
-            panel,
-            text="Tempoanalyse startet nur nach ausdrücklicher Bedienung. Ergebnisse bleiben Vorschläge.",
-            text_color="#9fb3c8",
-            anchor="w",
-            justify="left",
-            wraplength=760,
-        )
-        self._tempo_progress.grid(row=4, column=0, columnspan=2, padx=6, pady=(2, 6), sticky="ew")
+        self._request_height_layout()
 
     def _toggle_analysis_panel(self) -> None:
-        if self._analysis_panel.winfo_ismapped():
-            self._analysis_panel.grid_remove()
-            self._analysis_toggle.configure(text="Audioanalyse anzeigen ▾")
-        else:
-            self._analysis_panel.grid()
-            self._analysis_toggle.configure(text="Audioanalyse ausblenden ▴")
+        self._filter_analysis_panel.toggle_analysis()
 
     def _toggle_filter_details(self) -> None:
-        visible = getattr(
-            self,
-            "_filter_details_visible",
-            self._filter_details.winfo_ismapped(),
-        )
-        self._filter_details_visible = not visible
-        if not self._filter_details_visible:
-            self._filter_wrapper.grid_remove()
-            self._filter_toggle.configure(text="Weitere Filter anzeigen ▾")
-        else:
-            self._filter_wrapper.grid()
-            self._filter_toggle.configure(text="Weitere Filter ausblenden ▴")
-        if self._compact_filter_layout:
-            self._filter_panel.configure(height=275 if self._filter_details_visible else 105)
-            self._filter_wrapper.configure(height=170)
-            self._results_panel.configure(height=300)
-        self._refresh_filter_layout()
+        self._filter_analysis_panel.toggle_filter_details(self._results_panel)
+        self._filter_details_visible = self._filter_analysis_panel._filter_details_visible
 
     def _refresh_filter_layout(self) -> None:
-        self.update_idletasks()
-        self._filter_details.update_idletasks()
-        if self._compact_filter_layout:
-            LOGGER.info(
-                "Katalogpflege compact layout heights filter_details=%s filter_wrapper=%s "
-                "results=%s selection_area=%s",
-                self._filter_details.winfo_height(),
-                self._filter_wrapper.winfo_height(),
-                self._results_panel.winfo_height(),
-                self._results_panel.winfo_reqheight(),
-            )
+        self._filter_analysis_panel.refresh_layout(self._results_panel)
 
     def _clamp_window_to_screen(self) -> None:
         self.update_idletasks()
@@ -808,36 +592,66 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
 
     def _on_filter_resize(self, _event: Any) -> None:
         compact = self.winfo_width() < 980
-        if compact == self._compact_filter_layout:
-            return
+        self._filter_analysis_panel.set_compact_layout(compact, self._results_panel)
         self._compact_filter_layout = compact
-        if compact:
-            self._filter_panel.grid_propagate(False)
-            self._filter_panel.configure(height=275 if self._filter_details_visible else 105)
-            self._filter_wrapper.configure(height=170)
-            self._results_panel.configure(height=300)
-            self._filter_actions.grid_configure(row=2, column=0, columnspan=2, sticky="w")
-            self._counts.grid_configure(row=3, column=0, columnspan=4)
-        else:
-            self._filter_panel.grid_propagate(True)
-            self._filter_wrapper.grid_propagate(False)
-            self._filter_wrapper.configure(height=240)
-            self._results_panel.grid_propagate(True)
-            self._filter_actions.grid_configure(row=1, column=2, columnspan=2, sticky="e")
-            self._counts.grid_configure(row=2, column=0, columnspan=4)
-        self._refresh_filter_layout()
+        self._request_height_layout()
+
+    def _request_height_layout(self) -> None:
+        if self._closed or self._layout_running or self._layout_after_id is not None:
+            return
+        try:
+            self._layout_after_id = self.after_idle(self._apply_height_layout)
+        except TclError:
+            self._layout_after_id = None
+
+    def _apply_height_layout(self) -> None:
+        self._layout_after_id = None
+        if not self._active():
+            return
+        self._layout_running = True
+        try:
+            self.update_idletasks()
+            client_height = self.winfo_height()
+            fixed_height = sum(self.grid_bbox(0, row, 0, row)[3] for row in (2, 3, 4))
+            combined_height = max(1, client_height - fixed_height)
+            results_row_height = self._results_panel.grid_bbox(0, 1, 0, 1)[3]
+            results_chrome = max(
+                0,
+                self._results_panel.winfo_height()
+                - max(results_row_height, self._results_body.winfo_height()),
+            )
+            panel_minimum, panel_preferred = self._filter_analysis_panel.height_request()
+            list_minimum = min(
+                _RESULTS_BASE_MINIMUM,
+                max(
+                    _RESULTS_CONSTRAINED_MINIMUM,
+                    combined_height - results_chrome - panel_minimum,
+                ),
+            )
+            results_minimum = results_chrome + list_minimum
+            panel_limit = max(panel_minimum, combined_height - results_minimum)
+            panel_height = min(panel_preferred, panel_limit)
+            results_height = max(1, combined_height - panel_height)
+
+            self.grid_rowconfigure(0, weight=0, minsize=panel_height)
+            self.grid_rowconfigure(1, weight=1, minsize=min(results_minimum, results_height))
+            self._filter_analysis_panel.apply_allocated_height(panel_height)
+            self._filter_analysis_panel.finish_layout_update()
+        except TclError:
+            return
+        finally:
+            self._layout_running = False
 
     def _run_analysis_action(self, action: Callable[[], None]) -> None:
-        try:
-            action()
-        except Exception as error:
-            self._failed(error)
+        CatalogMaintenanceFilterAnalysisPanel.run_analysis_action(
+            action, lambda error: self._failed(error)
+        )
 
     def _prepare_tempo_batch(self) -> None:
         if self._metadata_analysis is None:
             return
-        self._tempo_start.configure(state="disabled")
-        self._tempo_progress.configure(text="Auswahl und Analysestand werden geprüft …")
+        self._filter_analysis_panel.render_tempo_state(None, start="disabled")
+        self._filter_analysis_panel.render_tempo_state("Auswahl und Analysestand werden geprüft …")
         self._task(
             lambda: self._service.repository.resolve_selection(self._selection),
             self._tempo_selection_resolved,
@@ -850,8 +664,10 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         rows = cast(tuple[tuple[int, int], ...], value)
         ids = tuple(track_id for track_id, _revision in rows)
         if not ids:
-            self._tempo_start.configure(state="normal")
-            self._tempo_progress.configure(text="Bitte mindestens einen Titel auswählen.")
+            self._filter_analysis_panel.render_tempo_state(None, start="normal")
+            self._filter_analysis_panel.render_tempo_state(
+                "Bitte mindestens einen Titel auswählen."
+            )
             return
         skip = bool(self._tempo_skip_current.get())
         scope = self._selected_tempo_scope()
@@ -891,13 +707,13 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         block_reason = analysis.block_reason(batch=True)
         if block_reason:
             text += f"\n\nStart derzeit gesperrt: {block_reason}"
-        self._tempo_progress.configure(text=text)
+        self._filter_analysis_panel.render_tempo_state(text)
         if (
             preview.planned == 0
             or bool(block_reason)
             or not ask_silent_yes_no(self, "Tempoanalyse starten?", text)
         ):
-            self._tempo_start.configure(state="normal")
+            self._filter_analysis_panel.render_tempo_state(None, start="normal")
             return
         profile = (
             MetadataAnalysisProfile.TEMPO_AND_ENERGY_EXPERIMENTAL
@@ -917,9 +733,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             return
         jobs = cast(tuple[Any, ...], value)
         self._tempo_run_ids = tuple(int(job.run_id) for job in jobs)
-        self._tempo_pause.configure(state="normal")
-        self._tempo_abort.configure(state="normal")
-        self._tempo_progress.configure(text="Serielle Tempoanalyse wurde gestartet …")
+        self._filter_analysis_panel.render_tempo_state(None, pause="normal", abort="normal")
+        self._filter_analysis_panel.render_tempo_state("Serielle Tempoanalyse wurde gestartet …")
         self._schedule_tempo_progress()
 
     def _schedule_tempo_progress(self) -> None:
@@ -948,54 +763,58 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         )
         reason = f"\nPausen-/Sperrgrund: {progress.reason}" if progress.reason else ""
         current = f"\nAktuell: {progress.current_title}" if progress.current_title else ""
-        self._tempo_progress.configure(
-            text=(
-                f"{progress.completed} / {progress.total} abgeschlossen · "
-                f"erfolgreich {progress.successful} · ohne BPM {progress.without_bpm} · "
-                f"Prüfung erforderlich {progress.review_required} · "
-                f"fehlgeschlagen {progress.failed} · übersprungen {self._tempo_skipped} · "
-                f"abgebrochen {progress.cancelled}{remaining}{current}{reason}"
-            )
+        text = (
+            f"{progress.completed} / {progress.total} abgeschlossen · "
+            f"erfolgreich {progress.successful} · ohne BPM {progress.without_bpm} · "
+            f"Prüfung erforderlich {progress.review_required} · "
+            f"fehlgeschlagen {progress.failed} · übersprungen {self._tempo_skipped} · "
+            f"abgebrochen {progress.cancelled}{remaining}{current}{reason}"
         )
         if progress.completed < progress.total:
+            self._filter_analysis_panel.render_tempo_state(text)
             self._schedule_tempo_progress()
             return
-        self._tempo_start.configure(state="normal")
-        self._tempo_pause.configure(state="disabled")
-        self._tempo_resume.configure(state="disabled")
-        self._tempo_abort.configure(state="disabled")
+        self._filter_analysis_panel.render_tempo_state(
+            text,
+            start="normal",
+            pause="disabled",
+            resume="disabled",
+            abort="disabled",
+        )
         self._load_counts_and_page()
 
     def _pause_tempo_batch(self) -> None:
         if self._metadata_analysis is None:
             return
         self._metadata_analysis.pause()
-        self._tempo_pause.configure(state="disabled")
-        self._tempo_resume.configure(state="normal")
-        self._tempo_progress.configure(text="PAUSIERT – der laufende Titel darf noch enden.")
+        self._filter_analysis_panel.render_tempo_state(None, pause="disabled", resume="normal")
+        self._filter_analysis_panel.render_tempo_state(
+            "PAUSIERT – der laufende Titel darf noch enden."
+        )
 
     def _resume_tempo_batch(self) -> None:
         if self._metadata_analysis is None:
             return
         self._metadata_analysis.resume()
-        self._tempo_pause.configure(state="normal")
-        self._tempo_resume.configure(state="disabled")
+        self._filter_analysis_panel.render_tempo_state(None, pause="normal", resume="disabled")
         self._schedule_tempo_progress()
 
     def _abort_tempo_batch(self) -> None:
         if self._metadata_analysis is None:
             return
         self._metadata_analysis.cancel_all()
-        self._tempo_abort.configure(state="disabled")
-        self._tempo_progress.configure(text="Tempoanalyse wurde vollständig abgebrochen.")
+        self._filter_analysis_panel.render_tempo_state(None, abort="disabled")
+        self._filter_analysis_panel.render_tempo_state(
+            "Tempoanalyse wurde vollständig abgebrochen."
+        )
         self._schedule_tempo_progress()
 
     def _resume_persistent_tempo(self) -> None:
         if self._metadata_analysis is None:
             return
         count = self._metadata_analysis.resume_persistent_pending()
-        self._tempo_progress.configure(
-            text=f"{count} wartende Runs wurden eingereiht; Start erfolgt kontrolliert."
+        self._filter_analysis_panel.render_tempo_state(
+            f"{count} wartende Runs wurden eingereiht; Start erfolgt kontrolliert."
         )
 
     def _discard_persistent_tempo(self) -> None:
@@ -1004,9 +823,9 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         try:
             count = self._metadata_analysis.discard_persistent_pending()
         except RuntimeError as error:
-            self._tempo_progress.configure(text=str(error))
+            self._filter_analysis_panel.render_tempo_state(str(error))
             return
-        self._tempo_progress.configure(text=f"{count} wartende Runs wurden verworfen.")
+        self._filter_analysis_panel.render_tempo_state(f"{count} wartende Runs wurden verworfen.")
 
     def _task(self, work: Callable[[], object], done: Callable[[object], None]) -> None:
         self._submit(work, done, self._failed)
@@ -1097,16 +916,15 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             )
 
     def _apply_filter(self) -> None:
-        queue_label = self._queue.get()
+        values = self._filter_analysis_panel.read_filter_values()
+        queue_label = values.queue
         queue = next(
             (item for item, label in WORK_QUEUE_LABELS.items() if label == queue_label),
             None,
         )
-        confidence_text = self._filter_confidence.get().strip().replace(",", ".")
+        confidence_text = values.minimum_confidence.strip().replace(",", ".")
         try:
-            minimum_bpm, maximum_bpm = parse_bpm_filter(
-                self._filter_bpm_from.get(), self._filter_bpm_to.get()
-            )
+            minimum_bpm, maximum_bpm = parse_bpm_filter(values.minimum_bpm, values.maximum_bpm)
         except ValueError as error:
             self._result.configure(text=f"Fehler: {error}")
             return
@@ -1114,49 +932,35 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             work_queue=queue,
             field=(
                 None
-                if self._filter_field.get() == "Alle Felder"
-                else next(
-                    key for key, label in FIELD_LABELS.items() if label == self._filter_field.get()
-                )
+                if values.field == "Alle Felder"
+                else next(key for key, label in FIELD_LABELS.items() if label == values.field)
             ),
             source=(
                 None
-                if self._filter_source.get() == "Alle Quellen"
-                else next(
-                    key
-                    for key, label in SOURCE_LABELS.items()
-                    if label == self._filter_source.get()
-                )
+                if values.source == "Alle Quellen"
+                else next(key for key, label in SOURCE_LABELS.items() if label == values.source)
             ),
             review_status=(
                 None
-                if self._filter_status.get() == "Alle Prüfstatus"
-                else next(
-                    key
-                    for key, label in STATUS_LABELS.items()
-                    if label == self._filter_status.get()
-                )
+                if values.status == "Alle Prüfstatus"
+                else next(key for key, label in STATUS_LABELS.items() if label == values.status)
             ),
             suggestion_status=(
                 None
-                if self._filter_suggestion.get() == "Vorschlag egal"
+                if values.suggestion == "Vorschlag egal"
                 else next(
                     key
                     for key, label in SUGGESTION_STATUS_LABELS.items()
-                    if label == self._filter_suggestion.get()
+                    if label == values.suggestion
                 )
             ),
             minimum_confidence=float(confidence_text) if confidence_text else None,
-            has_value={"Mit Wert": True, "Ohne Wert": False}.get(self._filter_value.get()),
-            confirmed={"Bestätigt": True, "Nicht bestätigt": False}.get(
-                self._filter_confirmed.get()
-            ),
-            conflict={"Mit Konflikt": True, "Ohne Konflikt": False}.get(
-                self._filter_conflict.get()
-            ),
-            text=self._search.get(),
-            changed_from=self._filter_changed_from.get().strip() or None,
-            changed_to=self._filter_changed_to.get().strip() or None,
+            has_value={"Mit Wert": True, "Ohne Wert": False}.get(values.value),
+            confirmed={"Bestätigt": True, "Nicht bestätigt": False}.get(values.confirmed),
+            conflict={"Mit Konflikt": True, "Ohne Konflikt": False}.get(values.conflict),
+            text=values.search,
+            changed_from=values.changed_from.strip() or None,
+            changed_to=values.changed_to.strip() or None,
             minimum_bpm=minimum_bpm,
             maximum_bpm=maximum_bpm,
         )
@@ -1188,27 +992,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._load_counts_and_page()
 
     def _reset_filters(self) -> None:
-        defaults = (
-            (self._queue, "Alle Arbeitsvorräte"),
-            (self._filter_field, "Alle Felder"),
-            (self._filter_source, "Alle Quellen"),
-            (self._filter_status, "Alle Prüfstatus"),
-            (self._filter_value, "Wert egal"),
-            (self._filter_confirmed, "Bestätigung egal"),
-            (self._filter_conflict, "Konflikt egal"),
-            (self._filter_suggestion, "Vorschlag egal"),
-        )
-        for widget, value in defaults:
-            widget.set(value)
-        for entry in (
-            self._search,
-            self._filter_confidence,
-            self._filter_changed_from,
-            self._filter_changed_to,
-            self._filter_bpm_from,
-            self._filter_bpm_to,
-        ):
-            entry.delete(0, "end")
+        self._filter_analysis_panel.reset_filter_inputs()
         self._filter = MaintenanceFilter()
         self._selection = SelectionDescription.for_filter(self._filter)
         self._preview = None
@@ -1481,8 +1265,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             self._running = False
             self._execute_button.configure(state="normal")
             self._cancel_button.configure(state="disabled")
-            if hasattr(self, "_tempo_start"):
-                self._tempo_start.configure(state="normal")
+            if hasattr(self, "_filter_analysis_panel"):
+                self._filter_analysis_panel.render_tempo_state(None, start="normal")
             if hasattr(self, "_suitability_apply_button"):
                 self._suitability_apply_button.configure(state="normal")
             self._result.configure(text=f"Fehler: {error}")
@@ -1516,6 +1300,16 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             except Exception:
                 pass
             self._tempo_poll_after = None
+        layout_after = getattr(self, "_layout_after_id", None)
+        if layout_after is not None:
+            try:
+                self.after_cancel(layout_after)
+            except Exception:
+                pass
+            self._layout_after_id = None
+        panel = getattr(self, "_filter_analysis_panel", None)
+        if panel is not None:
+            panel._cancel_pending_analysis_scroll()
         self._closed = True
         release_dialog(self)
         self.destroy()

@@ -1,8 +1,10 @@
 """Display-independent lifecycle tests for the catalog-maintenance dialog."""
 
+from tkinter import TclError
 from types import SimpleNamespace
 from typing import Any, cast
 
+import customtkinter as ctk  # type: ignore[import-untyped]
 import pytest
 
 from party_player.catalog_maintenance import (
@@ -13,6 +15,9 @@ from party_player.catalog_maintenance import (
     MaintenanceFilter,
     MetadataBatchRequest,
     SelectionDescription,
+)
+from party_player.ui.catalog_maintenance_filter_analysis_panel import (
+    CatalogMaintenanceFilterAnalysisPanel,
 )
 from party_player.metadata_rules import MetadataFieldKey
 from party_player.metadata_analysis_service import TempoBatchProgress
@@ -73,201 +78,6 @@ def test_metadata_target_value_is_enabled_only_for_value_actions() -> None:
     assert dialog._value.options["state"] == "disabled"
 
 
-def test_filter_details_toggle_uses_local_disclosure() -> None:
-    class Toggle:
-        def __init__(self) -> None:
-            self.options: dict[str, object] = {}
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Details:
-        def __init__(self) -> None:
-            self.visible = True
-
-        def winfo_ismapped(self) -> bool:
-            return self.visible
-
-        def grid_remove(self) -> None:
-            self.visible = False
-
-        def grid(self) -> None:
-            self.visible = True
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details = Details()
-        _filter_wrapper = _filter_details
-        _filter_toggle = Toggle()
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-        def update_idletasks(self) -> None:
-            pass
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert not dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
-
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter ausblenden ▴"
-
-
-def test_filter_details_callback_expands_and_collapses_container() -> None:
-    class Widget:
-        def __init__(self) -> None:
-            self.visible = False
-            self.options: dict[str, object] = {}
-
-        def winfo_ismapped(self) -> bool:
-            return self.visible
-
-        def grid(self) -> None:
-            self.visible = True
-
-        def grid_remove(self) -> None:
-            self.visible = False
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details_visible = False
-        _filter_details = Widget()
-        _filter_wrapper = _filter_details
-        _filter_toggle = Widget()
-
-        def update_idletasks(self) -> None:
-            pass
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter ausblenden ▴"
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert not dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
-
-
-def test_filter_values_survive_disclosure_reflow() -> None:
-    class Entry:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def get(self) -> str:
-            return self.value
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Widget:
-        def __init__(self) -> None:
-            self.visible = False
-            self.options: dict[str, object] = {}
-
-        def winfo_ismapped(self) -> bool:
-            return self.visible
-
-        def grid(self) -> None:
-            self.visible = True
-
-        def grid_remove(self) -> None:
-            self.visible = False
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details = Widget()
-        _filter_wrapper = _filter_details
-        _filter_toggle = Widget()
-        _search = Entry("Dance")
-        _filter_confidence = Entry("0.8")
-
-        def update_idletasks(self) -> None:
-            pass
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert dialog._search.get() == "Dance"
-    assert dialog._filter_confidence.get() == "0.8"
-
-
-def test_compact_filter_layout_moves_actions_and_keeps_statistics_visible() -> None:
-    class Widget:
-        def __init__(self) -> None:
-            self.options: dict[str, object] = {}
-
-        def grid_configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def grid_propagate(self, value: bool) -> None:
-            self.options["grid_propagate"] = value
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def winfo_height(self) -> int:
-            return 100
-
-        def winfo_reqheight(self) -> int:
-            return 100
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details = Widget()
-        _filter_panel = Widget()
-        _filter_details_visible = False
-        _filter_wrapper = Widget()
-        _results_panel = Widget()
-        _filter_actions = Widget()
-        _counts = Widget()
-
-        def _load_counts_and_page(self) -> None:
-            raise AssertionError("resize must not start catalog loading")
-
-        def winfo_width(self) -> int:
-            return 800
-
-        def update_idletasks(self) -> None:
-            pass
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
-    assert dialog._filter_actions.options["row"] == 2
-    assert dialog._counts.options["row"] == 3
-
-
 def test_late_page_result_does_not_touch_destroyed_dialog() -> None:
     class Dialog:
         def _active(self) -> bool:
@@ -286,11 +96,20 @@ def test_close_is_idempotent_and_releases_dialog(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         "party_player.ui.catalog_maintenance_dialog.release_dialog", released.append
     )
+    cancelled_callbacks: list[str] = []
 
     class Dialog:
         _closed = False
         _cancel_event = Event()
+        _layout_after_id = "layout-id"
         destroyed = 0
+        cancelled = cancelled_callbacks
+        _filter_analysis_panel = SimpleNamespace(
+            _cancel_pending_analysis_scroll=lambda: cancelled_callbacks.append("analysis")
+        )
+
+        def after_cancel(self, after_id: str) -> None:
+            self.cancelled.append(after_id)
 
         def destroy(self) -> None:
             self.destroyed += 1
@@ -303,6 +122,8 @@ def test_close_is_idempotent_and_releases_dialog(monkeypatch: Any) -> None:
     assert dialog.destroyed == 1
     assert dialog._cancel_event.is_set()
     assert dialog._load_generation == 1
+    assert dialog.cancelled == ["layout-id", "analysis"]
+    assert dialog._layout_after_id is None
 
 
 def _preview(key: MetadataFieldKey, selected: int = 3) -> BatchPreview:
@@ -580,6 +401,31 @@ def test_reset_filters_clears_inputs_selection_and_reloads() -> None:
             CatalogMaintenanceDialog._update_selection(cast(Any, self))
 
     dialog = Dialog()
+
+    class Panel:
+        def reset_filter_inputs(self) -> None:
+            for widget, value in (
+                (dialog._queue, "Alle Arbeitsvorräte"),
+                (dialog._filter_field, "Alle Felder"),
+                (dialog._filter_source, "Alle Quellen"),
+                (dialog._filter_status, "Alle Prüfstatus"),
+                (dialog._filter_value, "Wert egal"),
+                (dialog._filter_confirmed, "Bestätigung egal"),
+                (dialog._filter_conflict, "Konflikt egal"),
+                (dialog._filter_suggestion, "Vorschlag egal"),
+            ):
+                widget.set(value)
+            for entry in (
+                dialog._search,
+                dialog._filter_confidence,
+                dialog._filter_changed_from,
+                dialog._filter_changed_to,
+                dialog._filter_bpm_from,
+                dialog._filter_bpm_to,
+            ):
+                entry.delete(0, "end")
+
+    dialog._filter_analysis_panel = Panel()
     CatalogMaintenanceDialog._reset_filters(cast(Any, dialog))
 
     assert dialog._filter == MaintenanceFilter()
@@ -831,14 +677,241 @@ def test_audio_analysis_callback_error_uses_dialog_error_path() -> None:
     assert errors == [failure]
 
 
+class _TempoPanel:
+    def __init__(self) -> None:
+        self.states: list[tuple[str | None, dict[str, str]]] = []
+
+    def render_tempo_state(self, text: str | None, **states: str) -> None:
+        self.states.append((text, states))
+
+
+def test_responsive_panel_switches_exactly_below_980_pixels() -> None:
+    calls: list[tuple[bool, object]] = []
+    results = object()
+
+    class Panel:
+        def set_compact_layout(self, compact: bool, results_panel: object) -> None:
+            calls.append((compact, results_panel))
+
+    class Dialog:
+        _filter_analysis_panel = Panel()
+        _results_panel = results
+        _compact_filter_layout = False
+        _closed = False
+        _layout_running = False
+        _layout_after_id = None
+        width = 979
+
+        def winfo_width(self) -> int:
+            return self.width
+
+        def _request_height_layout(self) -> None:
+            pass
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+    dialog.width = 980
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+
+    assert calls == [(True, results), (False, results)]
+    assert dialog._compact_filter_layout is False
+
+
+def _realized_layout_dialog(width: int, height: int) -> tuple[ctk.CTk, CatalogMaintenanceDialog]:
+    try:
+        root = ctk.CTk()
+    except TclError as error:
+        message = str(error)
+        missing_tcl_runtime = (
+            "Can't find a usable" in message and ".tcl" in message
+        ) or 'invalid command name "tcl_findLibrary"' in message
+        if not missing_tcl_runtime:
+            raise
+        pytest.skip(
+            "Windows-CI-Python enthaelt kein nutzbares Tcl/Tk (tk.tcl/tcl_findLibrary); "
+            "reale Tk-Geometrie erfordert eine separate manuelle Windows-Abnahme"
+        )
+    root.geometry("1200x900+0+0")
+    root.update()
+    dialog = CatalogMaintenanceDialog(
+        root,
+        cast(Any, SimpleNamespace()),
+        lambda _work, _done, _failed: False,
+        lambda _track_id: None,
+    )
+    dialog.geometry(f"{width}x{height}+0+0")
+    dialog.update()
+    return root, dialog
+
+
+@pytest.mark.parametrize("width", (760, 979, 980))
+@pytest.mark.parametrize("height", (620, 820))
+def test_realized_dialog_distributes_height_for_layout_states(width: int, height: int) -> None:
+    root, dialog = _realized_layout_dialog(width, height)
+    try:
+        state_a = (
+            dialog._filter_analysis_panel.winfo_height(),
+            dialog._results_body.winfo_height(),
+        )
+        dialog._filter_toggle.invoke()
+        dialog.update()
+        state_b = (
+            dialog._filter_analysis_panel.winfo_height(),
+            dialog._results_body.winfo_height(),
+        )
+        dialog._analysis_toggle.invoke()
+        dialog.update()
+        state_c = (
+            dialog._filter_analysis_panel.winfo_height(),
+            dialog._results_body.winfo_height(),
+        )
+
+        assert state_a[0] < state_b[0] < state_c[0]
+        assert state_a[1] > state_b[1] > state_c[1]
+        assert state_c[1] >= 80
+        if height >= 820:
+            assert state_c[1] >= 190
+        assert dialog._filter_analysis_panel.winfo_width() <= dialog.winfo_width()
+        assert dialog._results_panel.winfo_width() <= dialog.winfo_width()
+        assert dialog._footer.winfo_rooty() + dialog._footer.winfo_height() <= (
+            dialog.winfo_rooty() + dialog.winfo_height()
+        )
+    finally:
+        dialog._close()
+        root.destroy()
+
+
+def test_layout_state_cycles_restore_list_height_selection_and_scroll() -> None:
+    root, dialog = _realized_layout_dialog(980, 820)
+    try:
+        dialog._selection = SelectionDescription.for_filter(dialog._filter).select(17)
+        dialog._results_body._parent_canvas.yview_moveto(0.5)
+        dialog.update()
+        initial_height = dialog._results_body.winfo_height()
+        initial_scroll = dialog._results_body._parent_canvas.yview()
+
+        for _cycle in range(2):
+            dialog._filter_toggle.invoke()
+            dialog.update()
+            dialog._analysis_toggle.invoke()
+            dialog.update()
+            dialog._analysis_toggle.invoke()
+            dialog.update()
+            dialog._filter_toggle.invoke()
+            dialog.update()
+
+        assert abs(dialog._results_body.winfo_height() - initial_height) <= 1
+        assert dialog._selection.included_ids == frozenset({17})
+        assert dialog._results_body._parent_canvas.yview() == initial_scroll
+        assert dialog._layout_after_id is None
+    finally:
+        dialog._close()
+        root.destroy()
+
+
+def test_tempo_prepare_and_empty_selection_render_through_panel() -> None:
+    panel = _TempoPanel()
+
+    class Repository:
+        def resolve_selection(self, _selection: object) -> tuple[tuple[int, int], ...]:
+            return ()
+
+    class Dialog:
+        _metadata_analysis = object()
+        _filter_analysis_panel = panel
+        _service = SimpleNamespace(repository=Repository())
+        _selection = object()
+
+        def _active(self) -> bool:
+            return True
+
+        def _task(self, work: Any, done: Any) -> None:
+            done(work())
+
+        def _tempo_selection_resolved(self, value: object) -> None:
+            CatalogMaintenanceDialog._tempo_selection_resolved(cast(Any, self), value)
+
+    CatalogMaintenanceDialog._prepare_tempo_batch(cast(Any, Dialog()))
+
+    assert panel.states == [
+        (None, {"start": "disabled"}),
+        ("Auswahl und Analysestand werden geprüft …", {}),
+        (None, {"start": "normal"}),
+        ("Bitte mindestens einen Titel auswählen.", {}),
+    ]
+
+
+def test_tempo_started_paused_resumed_and_aborted_render_through_panel() -> None:
+    calls: list[str] = []
+    panel = _TempoPanel()
+
+    class Analysis:
+        def pause(self) -> None:
+            calls.append("pause")
+
+        def resume(self) -> None:
+            calls.append("resume")
+
+        def cancel_all(self) -> None:
+            calls.append("abort")
+
+    class Dialog:
+        _metadata_analysis = Analysis()
+        _filter_analysis_panel = panel
+
+        def _active(self) -> bool:
+            return True
+
+        def _schedule_tempo_progress(self) -> None:
+            calls.append("schedule")
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._tempo_batch_started(
+        cast(Any, dialog), (SimpleNamespace(run_id=17), SimpleNamespace(run_id=23))
+    )
+    CatalogMaintenanceDialog._pause_tempo_batch(cast(Any, dialog))
+    CatalogMaintenanceDialog._resume_tempo_batch(cast(Any, dialog))
+    CatalogMaintenanceDialog._abort_tempo_batch(cast(Any, dialog))
+
+    assert dialog._tempo_run_ids == (17, 23)
+    assert calls == ["schedule", "pause", "resume", "schedule", "abort", "schedule"]
+    assert panel.states == [
+        (None, {"pause": "normal", "abort": "normal"}),
+        ("Serielle Tempoanalyse wurde gestartet …", {}),
+        (None, {"pause": "disabled", "resume": "normal"}),
+        (
+            "PAUSIERT – der laufende Titel darf noch enden.",
+            {},
+        ),
+        (None, {"pause": "normal", "resume": "disabled"}),
+        (None, {"abort": "disabled"}),
+        ("Tempoanalyse wurde vollständig abgebrochen.", {}),
+    ]
+
+
+def test_tempo_started_renders_through_dialogs_real_analysis_panel() -> None:
+    panel = cast(Any, object.__new__(CatalogMaintenanceFilterAnalysisPanel))
+    panel._tempo_progress = _Widget()
+    panel._tempo_start = _Widget()
+    panel._tempo_pause = _Widget()
+    panel._tempo_resume = _Widget()
+    panel._tempo_abort = _Widget()
+    dialog = cast(Any, object.__new__(CatalogMaintenanceDialog))
+    dialog._filter_analysis_panel = panel
+    dialog._active = lambda: True
+    dialog._schedule_tempo_progress = lambda: None
+
+    CatalogMaintenanceDialog._tempo_batch_started(dialog, (SimpleNamespace(run_id=17),))
+
+    assert isinstance(panel, CatalogMaintenanceFilterAnalysisPanel)
+    assert panel._tempo_progress.options["text"] == "Serielle Tempoanalyse wurde gestartet …"
+    assert panel._tempo_pause.options["state"] == "normal"
+
+
 def test_tempo_batch_progress_renders_aggregates_without_rebuilding_rows() -> None:
     class Dialog:
         _tempo_skipped = 4
-        _tempo_progress = _Widget()
-        _tempo_start = _Widget()
-        _tempo_pause = _Widget()
-        _tempo_resume = _Widget()
-        _tempo_abort = _Widget()
+        _filter_analysis_panel = _TempoPanel()
         loaded = 0
 
         def _active(self) -> bool:
@@ -866,8 +939,14 @@ def test_tempo_batch_progress_renders_aggregates_without_rebuilding_rows() -> No
 
     CatalogMaintenanceDialog._tempo_progressed(cast(Any, dialog), progress)
 
-    text = str(dialog._tempo_progress.options["text"])
+    text, states = dialog._filter_analysis_panel.states[-1]
     assert "12 / 12 abgeschlossen" in text
     assert "Prüfung erforderlich 3" in text
     assert "übersprungen 4" in text
+    assert states == {
+        "start": "normal",
+        "pause": "disabled",
+        "resume": "disabled",
+        "abort": "disabled",
+    }
     assert dialog.loaded == 1
