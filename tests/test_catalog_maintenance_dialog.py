@@ -1,8 +1,10 @@
 """Display-independent lifecycle tests for the catalog-maintenance dialog."""
 
+from tkinter import TclError
 from types import SimpleNamespace
 from typing import Any, cast
 
+import customtkinter as ctk  # type: ignore[import-untyped]
 import pytest
 
 from party_player.catalog_maintenance import (
@@ -94,11 +96,20 @@ def test_close_is_idempotent_and_releases_dialog(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         "party_player.ui.catalog_maintenance_dialog.release_dialog", released.append
     )
+    cancelled_callbacks: list[str] = []
 
     class Dialog:
         _closed = False
         _cancel_event = Event()
+        _layout_after_id = "layout-id"
         destroyed = 0
+        cancelled = cancelled_callbacks
+        _filter_analysis_panel = SimpleNamespace(
+            _cancel_pending_analysis_scroll=lambda: cancelled_callbacks.append("analysis")
+        )
+
+        def after_cancel(self, after_id: str) -> None:
+            self.cancelled.append(after_id)
 
         def destroy(self) -> None:
             self.destroyed += 1
@@ -111,6 +122,8 @@ def test_close_is_idempotent_and_releases_dialog(monkeypatch: Any) -> None:
     assert dialog.destroyed == 1
     assert dialog._cancel_event.is_set()
     assert dialog._load_generation == 1
+    assert dialog.cancelled == ["layout-id", "analysis"]
+    assert dialog._layout_after_id is None
 
 
 def _preview(key: MetadataFieldKey, selected: int = 3) -> BatchPreview:
@@ -684,10 +697,16 @@ def test_responsive_panel_switches_exactly_below_980_pixels() -> None:
         _filter_analysis_panel = Panel()
         _results_panel = results
         _compact_filter_layout = False
+        _closed = False
+        _layout_running = False
+        _layout_after_id = None
         width = 979
 
         def winfo_width(self) -> int:
             return self.width
+
+        def _request_height_layout(self) -> None:
+            pass
 
     dialog = Dialog()
     CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
@@ -696,6 +715,98 @@ def test_responsive_panel_switches_exactly_below_980_pixels() -> None:
 
     assert calls == [(True, results), (False, results)]
     assert dialog._compact_filter_layout is False
+
+
+def _realized_layout_dialog(width: int, height: int) -> tuple[ctk.CTk, CatalogMaintenanceDialog]:
+    try:
+        root = ctk.CTk()
+    except TclError as error:
+        message = str(error)
+        missing_tcl_runtime = (
+            "Can't find a usable" in message and ".tcl" in message
+        ) or 'invalid command name "tcl_findLibrary"' in message
+        if not missing_tcl_runtime:
+            raise
+        pytest.skip(
+            "Windows-CI-Python enthaelt kein nutzbares Tcl/Tk (tk.tcl/tcl_findLibrary); "
+            "reale Tk-Geometrie erfordert eine separate manuelle Windows-Abnahme"
+        )
+    root.geometry("1200x900+0+0")
+    root.update()
+    dialog = CatalogMaintenanceDialog(
+        root,
+        cast(Any, SimpleNamespace()),
+        lambda _work, _done, _failed: False,
+        lambda _track_id: None,
+    )
+    dialog.geometry(f"{width}x{height}+0+0")
+    dialog.update()
+    return root, dialog
+
+
+@pytest.mark.parametrize("width", (760, 979, 980))
+@pytest.mark.parametrize("height", (620, 820))
+def test_realized_dialog_distributes_height_for_layout_states(width: int, height: int) -> None:
+    root, dialog = _realized_layout_dialog(width, height)
+    try:
+        state_a = (
+            dialog._filter_analysis_panel.winfo_height(),
+            dialog._results_body.winfo_height(),
+        )
+        dialog._filter_toggle.invoke()
+        dialog.update()
+        state_b = (
+            dialog._filter_analysis_panel.winfo_height(),
+            dialog._results_body.winfo_height(),
+        )
+        dialog._analysis_toggle.invoke()
+        dialog.update()
+        state_c = (
+            dialog._filter_analysis_panel.winfo_height(),
+            dialog._results_body.winfo_height(),
+        )
+
+        assert state_a[0] < state_b[0] < state_c[0]
+        assert state_a[1] > state_b[1] > state_c[1]
+        assert state_c[1] >= 80
+        if height >= 820:
+            assert state_c[1] >= 190
+        assert dialog._filter_analysis_panel.winfo_width() <= dialog.winfo_width()
+        assert dialog._results_panel.winfo_width() <= dialog.winfo_width()
+        assert dialog._footer.winfo_rooty() + dialog._footer.winfo_height() <= (
+            dialog.winfo_rooty() + dialog.winfo_height()
+        )
+    finally:
+        dialog._close()
+        root.destroy()
+
+
+def test_layout_state_cycles_restore_list_height_selection_and_scroll() -> None:
+    root, dialog = _realized_layout_dialog(980, 820)
+    try:
+        dialog._selection = SelectionDescription.for_filter(dialog._filter).select(17)
+        dialog._results_body._parent_canvas.yview_moveto(0.5)
+        dialog.update()
+        initial_height = dialog._results_body.winfo_height()
+        initial_scroll = dialog._results_body._parent_canvas.yview()
+
+        for _cycle in range(2):
+            dialog._filter_toggle.invoke()
+            dialog.update()
+            dialog._analysis_toggle.invoke()
+            dialog.update()
+            dialog._analysis_toggle.invoke()
+            dialog.update()
+            dialog._filter_toggle.invoke()
+            dialog.update()
+
+        assert abs(dialog._results_body.winfo_height() - initial_height) <= 1
+        assert dialog._selection.included_ids == frozenset({17})
+        assert dialog._results_body._parent_canvas.yview() == initial_scroll
+        assert dialog._layout_after_id is None
+    finally:
+        dialog._close()
+        root.destroy()
 
 
 def test_tempo_prepare_and_empty_selection_render_through_panel() -> None:

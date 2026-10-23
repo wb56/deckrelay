@@ -101,6 +101,7 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         abort_tempo: Callable[[], None],
         resume_pending_tempo: Callable[[], None],
         discard_pending_tempo: Callable[[], None],
+        layout_changed: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.grid_columnconfigure(0, weight=1)
@@ -111,6 +112,8 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         self._compact = False
         self._filter_details_visible = False
         self._analysis_scroll_after_id: str | None = None
+        self._layout_changed = layout_changed
+        self._analysis_scroll_requested = False
 
         self._queue = ctk.CTkOptionMenu(
             self,
@@ -407,12 +410,25 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
     def toggle_analysis(self) -> None:
         if self._analysis_panel.winfo_ismapped():
             self._cancel_pending_analysis_scroll()
+            self._analysis_scroll_requested = False
             self._analysis_panel.grid_remove()
             self._analysis_toggle.configure(text="Audioanalyse anzeigen ▾")
         else:
             self._analysis_panel.grid()
             self._analysis_toggle.configure(text="Audioanalyse ausblenden ▴")
-            self._schedule_analysis_scroll()
+            self._analysis_scroll_requested = True
+        layout_changed = getattr(self, "_layout_changed", None)
+        if layout_changed is None:
+            self.finish_layout_update()
+        else:
+            layout_changed()
+
+    def finish_layout_update(self) -> None:
+        """Run work that depends on the dialog's final allocated height."""
+        if not getattr(self, "_analysis_scroll_requested", False):
+            return
+        self._analysis_scroll_requested = False
+        self._schedule_analysis_scroll()
 
     def _schedule_analysis_scroll(self) -> None:
         self._cancel_pending_analysis_scroll()
@@ -547,36 +563,53 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         else:
             self._filter_wrapper.grid_remove()
             self._filter_toggle.configure(text="Weitere Filter anzeigen ▾")
-        if self._compact:
-            self.configure(height=275 if self._filter_details_visible else 105)
-            self._filter_wrapper.configure(height=170)
-            if results_panel is not None:
-                results_panel.configure(height=300)
         self.refresh_layout(results_panel)
+        layout_changed = getattr(self, "_layout_changed", None)
+        if layout_changed is not None:
+            layout_changed()
 
     def set_compact_layout(self, compact: bool, results_panel: Any) -> None:
         if compact == self._compact:
             return
         self._compact = compact
         if compact:
-            self.grid_propagate(False)
-            self.configure(height=275 if self._filter_details_visible else 105)
-            self._filter_wrapper.configure(height=170)
-            results_panel.configure(height=300)
             self._filter_actions.grid_configure(row=2, column=0, columnspan=2, sticky="w")
             self._counts.grid_configure(row=3, column=0, columnspan=4)
             self._filter_toggle.grid_configure(row=4)
             self._filter_wrapper.grid_configure(row=5)
         else:
-            self.grid_propagate(True)
-            self._filter_wrapper.grid_propagate(False)
-            self._filter_wrapper.configure(height=240)
-            results_panel.grid_propagate(True)
             self._filter_actions.grid_configure(row=1, column=2, columnspan=2, sticky="e")
             self._counts.grid_configure(row=2, column=0, columnspan=4)
             self._filter_toggle.grid_configure(row=3)
             self._filter_wrapper.grid_configure(row=4)
         self.refresh_layout(results_panel)
+
+    def height_request(self) -> tuple[int, int]:
+        """Return the current minimum and preferred panel heights."""
+        self.update_idletasks()
+        wrapper_row = 5 if self._compact else 4
+        chrome_height = self.grid_bbox(0, 0, 3, wrapper_row - 1)[3]
+        if not self._filter_details_visible:
+            return chrome_height, chrome_height
+        canvas = self._analysis_canvas()
+        scroll_region = canvas.bbox("all")
+        content_height = 1 if scroll_region is None else max(1, int(scroll_region[3]))
+        minimum_viewport = max(72, self._analysis_toggle.winfo_reqheight() + 18)
+        if self._analysis_panel.winfo_ismapped():
+            minimum_viewport += self._cue_action_row.winfo_reqheight() + 12
+        minimum_viewport = min(content_height, minimum_viewport)
+        return chrome_height + minimum_viewport, chrome_height + content_height
+
+    def apply_allocated_height(self, height: int) -> None:
+        """Apply the dialog-owned height to this panel and its local viewport."""
+        self.grid_propagate(False)
+        self.configure(height=max(1, height))
+        if not self._filter_details_visible:
+            return
+        wrapper_row = 5 if self._compact else 4
+        chrome_height = self.grid_bbox(0, 0, 3, wrapper_row - 1)[3]
+        self._filter_wrapper.grid_propagate(False)
+        self._filter_wrapper.configure(height=max(1, height - chrome_height))
 
     def refresh_layout(self, results_panel: Any | None) -> None:
         self.update_idletasks()

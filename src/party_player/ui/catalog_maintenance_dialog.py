@@ -58,6 +58,8 @@ Submit = Callable[
     [Callable[[], object], Callable[[object], None], Callable[[Exception], None]], bool
 ]
 LOGGER = logging.getLogger(__name__)
+_RESULTS_BASE_MINIMUM = 190
+_RESULTS_CONSTRAINED_MINIMUM = 80
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +345,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._tempo_run_ids: tuple[int, ...] = ()
         self._tempo_poll_after: str | None = None
         self._tempo_skipped = 0
+        self._layout_after_id: str | None = None
+        self._layout_running = False
         self.title("Katalogpflege")
         apply_responsive_dialog_geometry(
             self,
@@ -398,6 +402,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             abort_tempo=self._abort_tempo_batch,
             resume_pending_tempo=self._resume_persistent_tempo,
             discard_pending_tempo=self._discard_persistent_tempo,
+            layout_changed=self._request_height_layout,
         )
         panel = self._filter_analysis_panel
         self._filter_panel = panel
@@ -432,11 +437,10 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         results = section(self, WORKFLOW_SECTIONS[1])
         self._results_panel = results
         results.grid(row=1, column=0, padx=12, pady=6, sticky="nsew")
-        results.configure(height=300)
-        results.grid_propagate(True)
         results.grid_columnconfigure(0, weight=1)
-        results.grid_rowconfigure(1, weight=1, minsize=190)
+        results.grid_rowconfigure(1, weight=1)
         body = ctk.CTkScrollableFrame(results, height=190)
+        self._results_body = body
         body.grid(row=1, column=0, padx=4, pady=4, sticky="nsew")
         body.grid_columnconfigure(0, weight=1)
         self._rows = ctk.CTkFrame(body)
@@ -551,12 +555,14 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._result = ctk.CTkLabel(checks, text="", justify="left", anchor="w", wraplength=900)
         self._result.grid(row=2, column=0, columnspan=4, padx=6, pady=(3, 5), sticky="ew")
         footer = ctk.CTkFrame(self, fg_color="transparent")
+        self._footer = footer
         footer.grid(row=4, column=0, padx=12, pady=(0, 2), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
         ctk.CTkButton(footer, text="Schließen", command=self._close).grid(
             row=0, column=1, padx=6, pady=2, sticky="e"
         )
         self._action_changed()
+        self._request_height_layout()
 
     def _toggle_analysis_panel(self) -> None:
         self._filter_analysis_panel.toggle_analysis()
@@ -588,6 +594,53 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         compact = self.winfo_width() < 980
         self._filter_analysis_panel.set_compact_layout(compact, self._results_panel)
         self._compact_filter_layout = compact
+        self._request_height_layout()
+
+    def _request_height_layout(self) -> None:
+        if self._closed or self._layout_running or self._layout_after_id is not None:
+            return
+        try:
+            self._layout_after_id = self.after_idle(self._apply_height_layout)
+        except TclError:
+            self._layout_after_id = None
+
+    def _apply_height_layout(self) -> None:
+        self._layout_after_id = None
+        if not self._active():
+            return
+        self._layout_running = True
+        try:
+            self.update_idletasks()
+            client_height = self.winfo_height()
+            fixed_height = sum(self.grid_bbox(0, row, 0, row)[3] for row in (2, 3, 4))
+            combined_height = max(1, client_height - fixed_height)
+            results_row_height = self._results_panel.grid_bbox(0, 1, 0, 1)[3]
+            results_chrome = max(
+                0,
+                self._results_panel.winfo_height()
+                - max(results_row_height, self._results_body.winfo_height()),
+            )
+            panel_minimum, panel_preferred = self._filter_analysis_panel.height_request()
+            list_minimum = min(
+                _RESULTS_BASE_MINIMUM,
+                max(
+                    _RESULTS_CONSTRAINED_MINIMUM,
+                    combined_height - results_chrome - panel_minimum,
+                ),
+            )
+            results_minimum = results_chrome + list_minimum
+            panel_limit = max(panel_minimum, combined_height - results_minimum)
+            panel_height = min(panel_preferred, panel_limit)
+            results_height = max(1, combined_height - panel_height)
+
+            self.grid_rowconfigure(0, weight=0, minsize=panel_height)
+            self.grid_rowconfigure(1, weight=1, minsize=min(results_minimum, results_height))
+            self._filter_analysis_panel.apply_allocated_height(panel_height)
+            self._filter_analysis_panel.finish_layout_update()
+        except TclError:
+            return
+        finally:
+            self._layout_running = False
 
     def _run_analysis_action(self, action: Callable[[], None]) -> None:
         CatalogMaintenanceFilterAnalysisPanel.run_analysis_action(
@@ -1247,6 +1300,16 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             except Exception:
                 pass
             self._tempo_poll_after = None
+        layout_after = getattr(self, "_layout_after_id", None)
+        if layout_after is not None:
+            try:
+                self.after_cancel(layout_after)
+            except Exception:
+                pass
+            self._layout_after_id = None
+        panel = getattr(self, "_filter_analysis_panel", None)
+        if panel is not None:
+            panel._cancel_pending_analysis_scroll()
         self._closed = True
         release_dialog(self)
         self.destroy()
