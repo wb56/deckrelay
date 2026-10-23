@@ -320,24 +320,31 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         self._tempo_start.grid(row=1, column=1, padx=3, pady=2, sticky="ew")
         controls = ctk.CTkFrame(panel, fg_color="transparent")
         controls.grid(row=3, column=1, padx=3, pady=3, sticky="ew")
-        for column in range(6):
-            controls.grid_columnconfigure(column, weight=1, uniform="tempo-actions")
+        controls.grid_columnconfigure(0, weight=1)
+        active_controls = ctk.CTkFrame(controls, fg_color="transparent")
+        active_controls.grid(row=0, column=0, sticky="ew")
+        pending_controls = ctk.CTkFrame(controls, fg_color="transparent")
+        pending_controls.grid(row=1, column=0, sticky="ew")
+        for column in range(3):
+            active_controls.grid_columnconfigure(column, weight=1, uniform="tempo-active")
+        for column in range(2):
+            pending_controls.grid_columnconfigure(column, weight=1, uniform="tempo-pending")
         self._tempo_pause = ctk.CTkButton(
-            controls,
+            active_controls,
             text="Pause",
             state="disabled",
             command=pause_tempo,
             height=_ANALYSIS_BUTTON_HEIGHT,
         )
         self._tempo_resume = ctk.CTkButton(
-            controls,
+            active_controls,
             text="Fortsetzen",
             state="disabled",
             command=resume_tempo,
             height=_ANALYSIS_BUTTON_HEIGHT,
         )
         self._tempo_abort = ctk.CTkButton(
-            controls,
+            active_controls,
             text="Gesamten Auftrag abbrechen",
             state="disabled",
             fg_color="#7d3030",
@@ -345,31 +352,39 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
             height=_ANALYSIS_BUTTON_HEIGHT,
         )
         self._tempo_pending_resume = ctk.CTkButton(
-            controls,
+            pending_controls,
             text="Wartende Runs fortsetzen",
             command=resume_pending_tempo,
             state=available,
             height=_ANALYSIS_BUTTON_HEIGHT,
         )
         self._tempo_pending_discard = ctk.CTkButton(
-            controls,
+            pending_controls,
             text="Wartende Runs verwerfen",
             fg_color="#6b5b2a",
             command=discard_pending_tempo,
             state=available,
             height=_ANALYSIS_BUTTON_HEIGHT,
         )
-        for button, row, column, columnspan in (
-            (self._tempo_pause, 0, 0, 2),
-            (self._tempo_resume, 0, 2, 2),
-            (self._tempo_abort, 0, 4, 2),
-            (self._tempo_pending_resume, 1, 0, 3),
-            (self._tempo_pending_discard, 1, 3, 3),
+        for button, column in (
+            (self._tempo_pause, 0),
+            (self._tempo_resume, 1),
+            (self._tempo_abort, 2),
         ):
             button.grid(
-                row=row,
+                row=0,
                 column=column,
-                columnspan=columnspan,
+                padx=_ANALYSIS_CONTROL_PAD,
+                pady=2,
+                sticky="ew",
+            )
+        for button, column in (
+            (self._tempo_pending_resume, 0),
+            (self._tempo_pending_discard, 1),
+        ):
+            button.grid(
+                row=0,
+                column=column,
                 padx=_ANALYSIS_CONTROL_PAD,
                 pady=2,
                 sticky="ew",
