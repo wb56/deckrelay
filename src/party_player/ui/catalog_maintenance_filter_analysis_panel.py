@@ -10,6 +10,8 @@ import customtkinter as ctk  # type: ignore[import-untyped]
 
 LOGGER = logging.getLogger(__name__)
 ButtonState = Literal["normal", "disabled"]
+_ANALYSIS_BUTTON_HEIGHT = 32
+_ANALYSIS_CONTROL_PAD = 3
 
 
 class AnalysisActions(Protocol):
@@ -278,37 +280,61 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
                     command=callback,
                     state="normal" if command is not None else "disabled",
                     fg_color="#7d3030" if danger else None,
-                ).pack(side="left", padx=3)
+                    height=_ANALYSIS_BUTTON_HEIGHT,
+                ).grid(
+                    row=0,
+                    column=controls.grid_size()[0],
+                    padx=_ANALYSIS_CONTROL_PAD,
+                    sticky="ew",
+                )
+            for column in range(3):
+                controls.grid_columnconfigure(column, weight=1, uniform="analysis-actions")
+            controls.grid_configure(sticky="ew")
         ctk.CTkLabel(panel, text="Tempo", width=75, anchor="w").grid(
             row=2, column=0, padx=6, pady=3, sticky="w"
         )
         bpm = ctk.CTkFrame(panel, fg_color="transparent")
         bpm.grid(row=2, column=1, padx=3, pady=3, sticky="ew")
+        for column in range(2):
+            bpm.grid_columnconfigure(column, weight=1, uniform="tempo-setup")
         self._tempo_profile = ctk.CTkOptionMenu(
-            bpm, values=("Tempo", "Tempo und experimentelle Energie"), width=230
+            bpm, values=("Tempo", "Tempo und experimentelle Energie")
         )
-        self._tempo_profile.grid(row=0, column=0, padx=3, pady=2, sticky="w")
+        self._tempo_profile.grid(row=0, column=0, padx=3, pady=2, sticky="ew")
         self._tempo_scope = ctk.CTkOptionMenu(
             bpm,
             values=("Vollständige Aufnahme", "Wirksame Katalog-Cue-Bereiche"),
-            width=245,
         )
-        self._tempo_scope.grid(row=0, column=1, padx=3, pady=2, sticky="w")
+        self._tempo_scope.grid(row=0, column=1, padx=3, pady=2, sticky="ew")
         self._tempo_skip_current = ctk.CTkSwitch(bpm, text="Aktuelle Ergebnisse überspringen")
         self._tempo_skip_current.select()
         self._tempo_skip_current.grid(row=1, column=0, padx=6, pady=2, sticky="w")
         available = "normal" if metadata_analysis_available else "disabled"
         self._tempo_start = ctk.CTkButton(
-            bpm, text="Auswahl analysieren …", command=prepare_tempo, state=available
+            bpm,
+            text="Auswahl analysieren …",
+            command=prepare_tempo,
+            state=available,
+            height=_ANALYSIS_BUTTON_HEIGHT,
         )
-        self._tempo_start.grid(row=1, column=1, padx=3, pady=2, sticky="w")
+        self._tempo_start.grid(row=1, column=1, padx=3, pady=2, sticky="ew")
         controls = ctk.CTkFrame(panel, fg_color="transparent")
-        controls.grid(row=3, column=1, padx=3, pady=3, sticky="w")
+        controls.grid(row=3, column=1, padx=3, pady=3, sticky="ew")
+        for column in range(6):
+            controls.grid_columnconfigure(column, weight=1, uniform="tempo-actions")
         self._tempo_pause = ctk.CTkButton(
-            controls, text="Pause", state="disabled", command=pause_tempo
+            controls,
+            text="Pause",
+            state="disabled",
+            command=pause_tempo,
+            height=_ANALYSIS_BUTTON_HEIGHT,
         )
         self._tempo_resume = ctk.CTkButton(
-            controls, text="Fortsetzen", state="disabled", command=resume_tempo
+            controls,
+            text="Fortsetzen",
+            state="disabled",
+            command=resume_tempo,
+            height=_ANALYSIS_BUTTON_HEIGHT,
         )
         self._tempo_abort = ctk.CTkButton(
             controls,
@@ -316,12 +342,14 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
             state="disabled",
             fg_color="#7d3030",
             command=abort_tempo,
+            height=_ANALYSIS_BUTTON_HEIGHT,
         )
         self._tempo_pending_resume = ctk.CTkButton(
             controls,
             text="Wartende Runs fortsetzen",
             command=resume_pending_tempo,
             state=available,
+            height=_ANALYSIS_BUTTON_HEIGHT,
         )
         self._tempo_pending_discard = ctk.CTkButton(
             controls,
@@ -329,15 +357,23 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
             fg_color="#6b5b2a",
             command=discard_pending_tempo,
             state=available,
+            height=_ANALYSIS_BUTTON_HEIGHT,
         )
-        for button, row, column in (
-            (self._tempo_pause, 0, 0),
-            (self._tempo_resume, 0, 1),
-            (self._tempo_abort, 0, 2),
-            (self._tempo_pending_resume, 1, 0),
-            (self._tempo_pending_discard, 1, 1),
+        for button, row, column, columnspan in (
+            (self._tempo_pause, 0, 0, 2),
+            (self._tempo_resume, 0, 2, 2),
+            (self._tempo_abort, 0, 4, 2),
+            (self._tempo_pending_resume, 1, 0, 3),
+            (self._tempo_pending_discard, 1, 3, 3),
         ):
-            button.grid(row=row, column=column, padx=3, pady=2, sticky="w")
+            button.grid(
+                row=row,
+                column=column,
+                columnspan=columnspan,
+                padx=_ANALYSIS_CONTROL_PAD,
+                pady=2,
+                sticky="ew",
+            )
         self._tempo_progress = ctk.CTkLabel(
             panel,
             text="Tempoanalyse startet nur nach ausdrücklicher Bedienung. Ergebnisse bleiben Vorschläge.",

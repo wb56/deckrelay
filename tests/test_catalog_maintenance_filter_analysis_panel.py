@@ -11,6 +11,16 @@ from party_player.ui.catalog_maintenance_filter_analysis_panel import (
 )
 
 
+EXPECTED_ANALYSIS_BUTTON_LABELS = {
+    "Neue/veraltete Cues",
+    "Alle Cues neu",
+    "Cue-Analyse abbrechen",
+    "Neue/veraltete Lautheit",
+    "Alle Lautheiten neu",
+    "Lautheit abbrechen",
+}
+
+
 class _Widget:
     def __init__(self, value: str = "") -> None:
         self.value = value
@@ -55,7 +65,7 @@ class _Widget:
 
 
 def _realized_panel(
-    width: int = 1664,
+    width: int = 1664, *, callbacks: dict[str, Any] | None = None
 ) -> tuple[ctk.CTk, CatalogMaintenanceFilterAnalysisPanel]:
     try:
         root = ctk.CTk()
@@ -73,6 +83,7 @@ def _realized_panel(
     root.geometry(f"{width}x900+0+0")
     root.grid_columnconfigure(0, weight=1)
     root.update()
+    supplied = callbacks or {}
     panel = CatalogMaintenanceFilterAnalysisPanel(
         root,
         title="Katalogpflege",
@@ -86,17 +97,26 @@ def _realized_panel(
         analysis_actions=None,
         metadata_analysis_available=True,
         analysis_error=lambda _error: None,
-        prepare_tempo=lambda: None,
-        pause_tempo=lambda: None,
-        resume_tempo=lambda: None,
-        abort_tempo=lambda: None,
-        resume_pending_tempo=lambda: None,
-        discard_pending_tempo=lambda: None,
+        prepare_tempo=supplied.get("start", lambda: None),
+        pause_tempo=supplied.get("pause", lambda: None),
+        resume_tempo=supplied.get("resume", lambda: None),
+        abort_tempo=supplied.get("abort", lambda: None),
+        resume_pending_tempo=supplied.get("pending_resume", lambda: None),
+        discard_pending_tempo=supplied.get("pending_discard", lambda: None),
     )
     panel.toggle_filter_details(None)
     panel.toggle_analysis()
     root.update()
     return root, panel
+
+
+def _buttons_below(widget: Any) -> list[ctk.CTkButton]:
+    descendants: list[ctk.CTkButton] = []
+    for child in widget.winfo_children():
+        if isinstance(child, ctk.CTkButton):
+            descendants.append(child)
+        descendants.extend(_buttons_below(child))
+    return descendants
 
 
 def _panel() -> CatalogMaintenanceFilterAnalysisPanel:
@@ -299,6 +319,63 @@ def test_realized_tempo_controls_fit_actual_canvas_viewport(dialog_width: int) -
 
         switch_label = panel._tempo_skip_current._text_label
         assert switch_label.winfo_width() >= switch_label.winfo_reqwidth()
+        for button in _buttons_below(panel.analysis_panel):
+            text_label = button._text_label
+            assert text_label.winfo_width() >= text_label.winfo_reqwidth(), button.cget("text")
+    finally:
+        root.destroy()
+
+
+def test_realized_analysis_action_groups_use_uniform_button_grid() -> None:
+    root, panel = _realized_panel(980)
+    try:
+        buttons = {button.cget("text"): button for button in _buttons_below(panel.analysis_panel)}
+        assert EXPECTED_ANALYSIS_BUTTON_LABELS <= buttons.keys()
+
+        for labels in (
+            ("Neue/veraltete Cues", "Alle Cues neu", "Cue-Analyse abbrechen"),
+            (
+                "Neue/veraltete Lautheit",
+                "Alle Lautheiten neu",
+                "Lautheit abbrechen",
+            ),
+            ("Pause", "Fortsetzen", "Gesamten Auftrag abbrechen"),
+            ("Wartende Runs fortsetzen", "Wartende Runs verwerfen"),
+        ):
+            group = [buttons[label] for label in labels]
+            assert len({button.winfo_width() for button in group}) == 1
+            assert len({button.winfo_height() for button in group}) == 1
+            left_edges = [button.winfo_rootx() for button in group]
+            gaps = [
+                right - (left + button.winfo_width())
+                for left, button, right in zip(left_edges, group, left_edges[1:])
+            ]
+            assert len(set(gaps)) <= 1
+    finally:
+        root.destroy()
+
+
+def test_tempo_button_callbacks_labels_and_initial_states_are_preserved() -> None:
+    calls: list[str] = []
+    callbacks = {
+        name: (lambda current=name: calls.append(current))
+        for name in ("start", "pause", "resume", "abort", "pending_resume", "pending_discard")
+    }
+    root, panel = _realized_panel(callbacks=callbacks)
+    try:
+        expected = {
+            panel.tempo_start: ("Auswahl analysieren …", "normal", "start"),
+            panel.tempo_pause: ("Pause", "disabled", "pause"),
+            panel.tempo_resume: ("Fortsetzen", "disabled", "resume"),
+            panel.tempo_abort: ("Gesamten Auftrag abbrechen", "disabled", "abort"),
+            panel.tempo_pending_resume: ("Wartende Runs fortsetzen", "normal", "pending_resume"),
+            panel.tempo_pending_discard: ("Wartende Runs verwerfen", "normal", "pending_discard"),
+        }
+        for button, (label, state, callback_name) in expected.items():
+            assert button.cget("text") == label
+            assert button.cget("state") == state
+            button.cget("command")()
+            assert calls[-1] == callback_name
     finally:
         root.destroy()
 
