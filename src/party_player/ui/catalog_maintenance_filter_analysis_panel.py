@@ -11,6 +11,7 @@ import customtkinter as ctk  # type: ignore[import-untyped]
 
 LOGGER = logging.getLogger(__name__)
 ButtonState = Literal["normal", "disabled"]
+FILTER_ANALYSIS_PANEL_VERTICAL_PADDING = (8, 6)
 _ANALYSIS_BUTTON_HEIGHT = 32
 _ANALYSIS_CONTROL_PAD = 3
 
@@ -108,7 +109,13 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         ctk.CTkLabel(self, text=title, anchor="w").grid(
             row=0, column=0, padx=8, pady=(6, 3), sticky="ew"
         )
-        self.grid(row=0, column=0, padx=12, pady=(8, 6), sticky="ew")
+        self.grid(
+            row=0,
+            column=0,
+            padx=12,
+            pady=FILTER_ANALYSIS_PANEL_VERTICAL_PADDING,
+            sticky="ew",
+        )
         self._compact = False
         self._filter_details_visible = False
         self._allocated_height: int | None = None

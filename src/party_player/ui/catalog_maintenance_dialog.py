@@ -44,6 +44,7 @@ from party_player.metadata_analysis_service import (
 from party_player.ui.dialogs import ask_silent_yes_no, ask_silent_yes_no_cancel
 from party_player.ui.catalog_maintenance_filter_analysis_panel import (
     CatalogMaintenanceFilterAnalysisPanel,
+    FILTER_ANALYSIS_PANEL_VERTICAL_PADDING,
 )
 from party_player.ui.responsive_dialog import (
     apply_responsive_dialog_geometry,
@@ -626,7 +627,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         try:
             client_height = self.winfo_height()
             fixed_height = sum(self.grid_bbox(0, row, 0, row)[3] for row in (2, 3, 4))
-            combined_height = max(1, client_height - fixed_height)
+            filter_panel_padding = sum(FILTER_ANALYSIS_PANEL_VERTICAL_PADDING)
+            combined_height = max(1, client_height - fixed_height - filter_panel_padding)
             results_row_height = self._results_panel.grid_bbox(0, 1, 0, 1)[3]
             results_chrome = max(
                 0,

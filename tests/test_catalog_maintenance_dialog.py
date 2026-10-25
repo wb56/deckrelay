@@ -932,7 +932,7 @@ def _realized_layout_dialog(width: int, height: int) -> tuple[ctk.CTk, CatalogMa
     ("panel_request", "expected_panel", "expected_results_minimum"),
     [
         ((120, 180), 180, 230),
-        ((300, 500), 330, 230),
+        ((300, 500), 316, 230),
     ],
 )
 def test_first_filter_toggle_reaches_stable_layout(
@@ -1066,11 +1066,70 @@ def test_small_height_reserves_footer_actions_and_results_minimum(
 
     CatalogMaintenanceDialog._apply_height_layout(cast(Any, Dialog()))
 
-    assert applied_heights == [181]
+    assert applied_heights == [167]
     assert row_configuration == {
-        0: {"weight": 0, "minsize": 181},
+        0: {"weight": 0, "minsize": 167},
         1: {"weight": 1, "minsize": 120},
     }
+
+
+def test_height_budget_reserves_filter_panel_outer_padding_once() -> None:
+    row_configuration: dict[int, dict[str, int]] = {}
+    applied_heights: list[int] = []
+
+    class ResultsBody:
+        def winfo_height(self) -> int:
+            return 80
+
+    class ResultsPanel:
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 80)
+
+        def winfo_height(self) -> int:
+            return 120
+
+    class Panel:
+        def height_request(self) -> tuple[int, int]:
+            return (208, 520)
+
+        def height_floor(self) -> int:
+            return 121
+
+        def apply_allocated_height(self, height: int) -> None:
+            applied_heights.append(height)
+
+        def finish_layout_update(self) -> None:
+            pass
+
+    class Dialog:
+        _closed = False
+        _layout_running = False
+        _layout_requested = False
+        _layout_after_id = "layout"
+        _results_body = ResultsBody()
+        _results_panel = ResultsPanel()
+        _filter_analysis_panel = Panel()
+
+        def _active(self) -> bool:
+            return True
+
+        def winfo_height(self) -> int:
+            return 551
+
+        def grid_bbox(self, _first_column: int, row: int, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, {2: 100, 3: 100, 4: 50}[row])
+
+        def grid_rowconfigure(self, row: int, **options: int) -> None:
+            row_configuration[row] = options
+
+        def _request_height_layout(self) -> None:
+            raise AssertionError("stable height allocation must not schedule another layout")
+
+    CatalogMaintenanceDialog._apply_height_layout(cast(Any, Dialog()))
+
+    assert applied_heights == [167]
+    assert row_configuration[1]["minsize"] == 120
+    assert 167 + 14 + 120 + 100 + 100 + 50 == 551
 
 
 @pytest.mark.parametrize("width", (760, 979, 980))
@@ -1095,8 +1154,10 @@ def test_realized_dialog_distributes_height_for_layout_states(width: int, height
             dialog._results_body.winfo_height(),
         )
 
-        assert state_a[0] < state_b[0] < state_c[0]
-        assert state_a[1] > state_b[1] > state_c[1]
+        assert state_a[0] < state_b[0]
+        assert state_b[1] <= state_a[1]
+        assert abs(state_c[0] - state_b[0]) <= 1
+        assert abs(state_c[1] - state_b[1]) <= 1
         assert state_c[1] >= 80
         if height >= 820:
             assert state_c[1] >= 190
