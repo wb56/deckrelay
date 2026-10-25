@@ -347,6 +347,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._tempo_skipped = 0
         self._layout_after_id: str | None = None
         self._layout_running = False
+        self._layout_requested = False
+        self._filter_layout_size: tuple[int, int] | None = None
         self.title("Katalogpflege")
         apply_responsive_dialog_geometry(
             self,
@@ -591,13 +593,24 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         )
 
     def _on_filter_resize(self, _event: Any) -> None:
+        layout_size = (self.winfo_width(), self.winfo_height())
         compact = self.winfo_width() < 980
+        layout_changed = (
+            layout_size != self._filter_layout_size or compact != self._compact_filter_layout
+        )
+        self._filter_layout_size = layout_size
         self._filter_analysis_panel.set_compact_layout(compact, self._results_panel)
         self._compact_filter_layout = compact
-        self._request_height_layout()
+        if layout_changed:
+            self._request_height_layout()
 
     def _request_height_layout(self) -> None:
-        if self._closed or self._layout_running or self._layout_after_id is not None:
+        if self._closed:
+            return
+        if self._layout_running:
+            self._layout_requested = True
+            return
+        if self._layout_after_id is not None:
             return
         try:
             self._layout_after_id = self.after_idle(self._apply_height_layout)
@@ -606,11 +619,11 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
 
     def _apply_height_layout(self) -> None:
         self._layout_after_id = None
-        if not self._active():
+        if not self._active() or not hasattr(self, "_results_body"):
             return
         self._layout_running = True
+        self._layout_requested = False
         try:
-            self.update_idletasks()
             client_height = self.winfo_height()
             fixed_height = sum(self.grid_bbox(0, row, 0, row)[3] for row in (2, 3, 4))
             combined_height = max(1, client_height - fixed_height)
@@ -621,6 +634,9 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
                 - max(results_row_height, self._results_body.winfo_height()),
             )
             panel_minimum, panel_preferred = self._filter_analysis_panel.height_request()
+            panel_floor = getattr(
+                self._filter_analysis_panel, "height_floor", lambda: panel_minimum
+            )()
             list_minimum = min(
                 _RESULTS_BASE_MINIMUM,
                 max(
@@ -629,7 +645,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
                 ),
             )
             results_minimum = results_chrome + list_minimum
-            panel_limit = max(panel_minimum, combined_height - results_minimum)
+            panel_limit = max(panel_floor, combined_height - results_minimum)
             panel_height = min(panel_preferred, panel_limit)
             results_height = max(1, combined_height - panel_height)
 
@@ -641,6 +657,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             return
         finally:
             self._layout_running = False
+            if self._layout_requested:
+                self._request_height_layout()
 
     def _run_analysis_action(self, action: Callable[[], None]) -> None:
         CatalogMaintenanceFilterAnalysisPanel.run_analysis_action(
@@ -1307,6 +1325,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             except Exception:
                 pass
             self._layout_after_id = None
+        self._layout_requested = False
         panel = getattr(self, "_filter_analysis_panel", None)
         if panel is not None:
             panel._cancel_pending_analysis_scroll()

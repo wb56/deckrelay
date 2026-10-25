@@ -111,6 +111,8 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         self.grid(row=0, column=0, padx=12, pady=(8, 6), sticky="ew")
         self._compact = False
         self._filter_details_visible = False
+        self._allocated_height: int | None = None
+        self._allocated_wrapper_height: int | None = None
         self._analysis_scroll_after_id: str | None = None
         self._layout_changed = layout_changed
         self._analysis_scroll_requested = False
@@ -586,7 +588,6 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
 
     def height_request(self) -> tuple[int, int]:
         """Return the current minimum and preferred panel heights."""
-        self.update_idletasks()
         wrapper_row = 5 if self._compact else 4
         chrome_height = self.grid_bbox(0, 0, 3, wrapper_row - 1)[3]
         if not self._filter_details_visible:
@@ -595,25 +596,33 @@ class CatalogMaintenanceFilterAnalysisPanel(ctk.CTkFrame):  # type: ignore[misc]
         scroll_region = canvas.bbox("all")
         content_height = 1 if scroll_region is None else max(1, int(scroll_region[3]))
         minimum_viewport = max(72, self._analysis_toggle.winfo_reqheight() + 18)
-        if self._analysis_panel.winfo_ismapped():
-            minimum_viewport += self._cue_action_row.winfo_reqheight() + 12
         minimum_viewport = min(content_height, minimum_viewport)
         return chrome_height + minimum_viewport, chrome_height + content_height
 
+    def height_floor(self) -> int:
+        """Return the non-scrollable chrome plus a minimal content viewport."""
+        wrapper_row = 5 if self._compact else 4
+        chrome_height = int(self.grid_bbox(0, 0, 3, wrapper_row - 1)[3])
+        return chrome_height + int(self._filter_details_visible)
+
     def apply_allocated_height(self, height: int) -> None:
         """Apply the dialog-owned height to this panel and its local viewport."""
-        self.grid_propagate(False)
-        self.configure(height=max(1, height))
+        panel_height = max(1, height)
+        if panel_height != getattr(self, "_allocated_height", None):
+            self.grid_propagate(False)
+            self.configure(height=panel_height)
+            self._allocated_height = panel_height
         if not self._filter_details_visible:
             return
         wrapper_row = 5 if self._compact else 4
         chrome_height = self.grid_bbox(0, 0, 3, wrapper_row - 1)[3]
-        self._filter_wrapper.grid_propagate(False)
-        self._filter_wrapper.configure(height=max(1, height - chrome_height))
+        wrapper_height = max(1, height - chrome_height)
+        if wrapper_height != getattr(self, "_allocated_wrapper_height", None):
+            self._filter_wrapper.pack_propagate(False)
+            self._filter_wrapper.configure(height=wrapper_height)
+            self._allocated_wrapper_height = wrapper_height
 
     def refresh_layout(self, results_panel: Any | None) -> None:
-        self.update_idletasks()
-        self._filter_details.update_idletasks()
         if self._compact and results_panel is not None:
             LOGGER.info(
                 "Katalogpflege compact layout heights filter_details=%s filter_wrapper=%s "

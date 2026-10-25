@@ -1,6 +1,7 @@
 """Contracts and realized geometry for the catalog filter/analysis panel."""
 
 from tkinter import TclError
+from types import SimpleNamespace
 from typing import Any, cast
 
 import customtkinter as ctk  # type: ignore[import-untyped]
@@ -44,6 +45,9 @@ class _Widget:
 
     def grid_propagate(self, value: bool) -> None:
         self.options["grid_propagate"] = value
+
+    def pack_propagate(self, value: bool) -> None:
+        self.options["pack_propagate"] = value
 
     def grid(self) -> None:
         self.visible = True
@@ -218,6 +222,140 @@ def test_filter_panel_disclosure_preserves_values_and_compact_layout() -> None:
     assert panel.filter_actions.options["row"] == 2
     assert panel.counts.options["row"] == 3
     assert panel.filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
+
+
+def test_filter_toggle_does_not_process_tk_idle_work_synchronously() -> None:
+    panel = _panel()
+    panel.update_idletasks = lambda: (_ for _ in ()).throw(
+        AssertionError("filter toggle must not process Tk idle work")
+    )
+    panel._filter_details.update_idletasks = lambda: (_ for _ in ()).throw(
+        AssertionError("filter details must not process Tk idle work")
+    )
+
+    panel.toggle_filter_details(_Widget())
+
+    assert panel._filter_details_visible is True
+
+
+def test_filter_toggle_always_requests_layout_without_resize() -> None:
+    panel = _panel()
+    requests: list[None] = []
+    panel._layout_changed = lambda: requests.append(None)
+
+    panel.toggle_filter_details(_Widget())
+    panel.toggle_filter_details(_Widget())
+
+    assert requests == [None, None]
+    assert panel._filter_details_visible is False
+
+
+@pytest.mark.parametrize(
+    ("compact", "analysis_visible", "content_height", "expected"),
+    [
+        (False, False, 400, (208, 520)),
+        (False, True, 400, (208, 520)),
+        (True, False, 60, (180, 180)),
+    ],
+)
+def test_height_request_uses_chrome_content_and_disclosure_state(
+    compact: bool,
+    analysis_visible: bool,
+    content_height: int,
+    expected: tuple[int, int],
+) -> None:
+    panel = _panel()
+    panel._compact = compact
+    panel._filter_details_visible = True
+    panel._analysis_toggle = _Widget()
+    panel._analysis_toggle.winfo_reqheight = lambda: 70
+    panel._analysis_panel = _Widget()
+    panel._analysis_panel.visible = analysis_visible
+    panel._cue_action_row = _Widget()
+    panel._cue_action_row.winfo_reqheight = lambda: 100
+    panel.grid_bbox = lambda *_args: (0, 0, 100, 120)
+    panel._analysis_canvas = lambda: cast(
+        Any, SimpleNamespace(bbox=lambda _tag: (0, 0, 100, content_height))
+    )
+
+    assert panel.height_request() == expected
+
+
+def test_height_floor_keeps_chrome_visible_and_leaves_filter_content_scrollable() -> None:
+    panel = _panel()
+    panel._filter_details_visible = True
+    panel.grid_bbox = lambda *_args: (0, 0, 100, 120)
+
+    assert panel.height_floor() == 121
+
+
+def test_apply_allocated_height_sizes_panel_and_filter_viewport() -> None:
+    panel = _panel()
+    configured: list[int] = []
+    panel._filter_details_visible = True
+    panel.grid_bbox = lambda *_args: (0, 0, 100, 120)
+    panel.configure = lambda **options: configured.append(cast(int, options["height"]))
+
+    panel.apply_allocated_height(330)
+
+    assert configured == [330]
+    assert panel._filter_wrapper.options == {"pack_propagate": False, "height": 210}
+
+
+def test_apply_allocated_height_does_not_repeat_identical_widget_configuration() -> None:
+    panel = _panel()
+    panel._filter_details_visible = True
+    panel.grid_bbox = lambda *_args: (0, 0, 100, 120)
+    panel_configurations: list[int] = []
+    wrapper_configurations: list[int] = []
+    panel.configure = lambda **options: panel_configurations.append(cast(int, options["height"]))
+    panel._filter_wrapper.configure = lambda **options: wrapper_configurations.append(
+        cast(int, options["height"])
+    )
+
+    panel.apply_allocated_height(330)
+    panel.apply_allocated_height(330)
+
+    assert panel_configurations == [330]
+    assert wrapper_configurations == [210]
+
+
+def test_realized_small_filter_viewport_keeps_analysis_disclosure_reachable() -> None:
+    root, panel = _realized_panel(open_analysis=False)
+    try:
+        allocated_height = panel.height_floor() + 89
+        panel.apply_allocated_height(allocated_height)
+        root.update()
+        canvas = panel._analysis_canvas()
+        wrapper_height = panel.filter_wrapper.winfo_height()
+        canvas_height = canvas.winfo_height()
+        scroll_region = canvas.bbox("all")
+
+        assert abs(wrapper_height - 90) <= 1
+        assert 1 < canvas_height <= wrapper_height
+        assert scroll_region is not None
+        disclosure_bottom = (
+            panel.analysis_toggle.winfo_rooty()
+            - panel.filter_details.winfo_rooty()
+            + panel.analysis_toggle.winfo_height()
+        )
+        assert disclosure_bottom <= scroll_region[3]
+
+        canvas.yview_moveto(1.0)
+        root.update()
+        assert _is_inside_vertical_viewport(panel.analysis_toggle, canvas)
+
+        panel.apply_allocated_height(allocated_height + 80)
+        root.update()
+        panel.apply_allocated_height(allocated_height)
+        root.update()
+        canvas.yview_moveto(1.0)
+        root.update()
+
+        assert abs(panel.filter_wrapper.winfo_height() - 90) <= 1
+        assert _is_inside_vertical_viewport(panel.analysis_toggle, canvas)
+    finally:
+        root.destroy()
 
 
 def test_filter_toggle_and_counts_use_distinct_grid_rows_at_979_and_980_pixels() -> None:
