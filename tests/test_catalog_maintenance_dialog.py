@@ -1,8 +1,10 @@
 """Display-independent lifecycle tests for the catalog-maintenance dialog."""
 
+from tkinter import TclError
 from types import SimpleNamespace
 from typing import Any, cast
 
+import customtkinter as ctk  # type: ignore[import-untyped]
 import pytest
 
 from party_player.catalog_maintenance import (
@@ -13,6 +15,9 @@ from party_player.catalog_maintenance import (
     MaintenanceFilter,
     MetadataBatchRequest,
     SelectionDescription,
+)
+from party_player.ui.catalog_maintenance_filter_analysis_panel import (
+    CatalogMaintenanceFilterAnalysisPanel,
 )
 from party_player.metadata_rules import MetadataFieldKey
 from party_player.metadata_analysis_service import TempoBatchProgress
@@ -73,201 +78,6 @@ def test_metadata_target_value_is_enabled_only_for_value_actions() -> None:
     assert dialog._value.options["state"] == "disabled"
 
 
-def test_filter_details_toggle_uses_local_disclosure() -> None:
-    class Toggle:
-        def __init__(self) -> None:
-            self.options: dict[str, object] = {}
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Details:
-        def __init__(self) -> None:
-            self.visible = True
-
-        def winfo_ismapped(self) -> bool:
-            return self.visible
-
-        def grid_remove(self) -> None:
-            self.visible = False
-
-        def grid(self) -> None:
-            self.visible = True
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details = Details()
-        _filter_wrapper = _filter_details
-        _filter_toggle = Toggle()
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-        def update_idletasks(self) -> None:
-            pass
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert not dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
-
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter ausblenden ▴"
-
-
-def test_filter_details_callback_expands_and_collapses_container() -> None:
-    class Widget:
-        def __init__(self) -> None:
-            self.visible = False
-            self.options: dict[str, object] = {}
-
-        def winfo_ismapped(self) -> bool:
-            return self.visible
-
-        def grid(self) -> None:
-            self.visible = True
-
-        def grid_remove(self) -> None:
-            self.visible = False
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details_visible = False
-        _filter_details = Widget()
-        _filter_wrapper = _filter_details
-        _filter_toggle = Widget()
-
-        def update_idletasks(self) -> None:
-            pass
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter ausblenden ▴"
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert not dialog._filter_details.visible
-    assert dialog._filter_toggle.options["text"] == "Weitere Filter anzeigen ▾"
-
-
-def test_filter_values_survive_disclosure_reflow() -> None:
-    class Entry:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def get(self) -> str:
-            return self.value
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Widget:
-        def __init__(self) -> None:
-            self.visible = False
-            self.options: dict[str, object] = {}
-
-        def winfo_ismapped(self) -> bool:
-            return self.visible
-
-        def grid(self) -> None:
-            self.visible = True
-
-        def grid_remove(self) -> None:
-            self.visible = False
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details = Widget()
-        _filter_wrapper = _filter_details
-        _filter_toggle = Widget()
-        _search = Entry("Dance")
-        _filter_confidence = Entry("0.8")
-
-        def update_idletasks(self) -> None:
-            pass
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
-    assert dialog._search.get() == "Dance"
-    assert dialog._filter_confidence.get() == "0.8"
-
-
-def test_compact_filter_layout_moves_actions_and_keeps_statistics_visible() -> None:
-    class Widget:
-        def __init__(self) -> None:
-            self.options: dict[str, object] = {}
-
-        def grid_configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def grid_propagate(self, value: bool) -> None:
-            self.options["grid_propagate"] = value
-
-        def configure(self, **options: object) -> None:
-            self.options.update(options)
-
-        def winfo_height(self) -> int:
-            return 100
-
-        def winfo_reqheight(self) -> int:
-            return 100
-
-        def update_idletasks(self) -> None:
-            pass
-
-    class Dialog:
-        _compact_filter_layout = False
-        _filter_details = Widget()
-        _filter_panel = Widget()
-        _filter_details_visible = False
-        _filter_wrapper = Widget()
-        _results_panel = Widget()
-        _filter_actions = Widget()
-        _counts = Widget()
-
-        def _load_counts_and_page(self) -> None:
-            raise AssertionError("resize must not start catalog loading")
-
-        def winfo_width(self) -> int:
-            return 800
-
-        def update_idletasks(self) -> None:
-            pass
-
-        def _refresh_filter_layout(self) -> None:
-            CatalogMaintenanceDialog._refresh_filter_layout(cast(Any, self))
-
-    dialog = Dialog()
-    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
-    assert dialog._filter_actions.options["row"] == 2
-    assert dialog._counts.options["row"] == 3
-
-
 def test_late_page_result_does_not_touch_destroyed_dialog() -> None:
     class Dialog:
         def _active(self) -> bool:
@@ -286,11 +96,20 @@ def test_close_is_idempotent_and_releases_dialog(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         "party_player.ui.catalog_maintenance_dialog.release_dialog", released.append
     )
+    cancelled_callbacks: list[str] = []
 
     class Dialog:
         _closed = False
         _cancel_event = Event()
+        _layout_after_id = "layout-id"
         destroyed = 0
+        cancelled = cancelled_callbacks
+        _filter_analysis_panel = SimpleNamespace(
+            _cancel_pending_analysis_scroll=lambda: cancelled_callbacks.append("analysis")
+        )
+
+        def after_cancel(self, after_id: str) -> None:
+            self.cancelled.append(after_id)
 
         def destroy(self) -> None:
             self.destroyed += 1
@@ -303,6 +122,8 @@ def test_close_is_idempotent_and_releases_dialog(monkeypatch: Any) -> None:
     assert dialog.destroyed == 1
     assert dialog._cancel_event.is_set()
     assert dialog._load_generation == 1
+    assert dialog.cancelled == ["layout-id", "analysis"]
+    assert dialog._layout_after_id is None
 
 
 def _preview(key: MetadataFieldKey, selected: int = 3) -> BatchPreview:
@@ -580,6 +401,31 @@ def test_reset_filters_clears_inputs_selection_and_reloads() -> None:
             CatalogMaintenanceDialog._update_selection(cast(Any, self))
 
     dialog = Dialog()
+
+    class Panel:
+        def reset_filter_inputs(self) -> None:
+            for widget, value in (
+                (dialog._queue, "Alle Arbeitsvorräte"),
+                (dialog._filter_field, "Alle Felder"),
+                (dialog._filter_source, "Alle Quellen"),
+                (dialog._filter_status, "Alle Prüfstatus"),
+                (dialog._filter_value, "Wert egal"),
+                (dialog._filter_confirmed, "Bestätigung egal"),
+                (dialog._filter_conflict, "Konflikt egal"),
+                (dialog._filter_suggestion, "Vorschlag egal"),
+            ):
+                widget.set(value)
+            for entry in (
+                dialog._search,
+                dialog._filter_confidence,
+                dialog._filter_changed_from,
+                dialog._filter_changed_to,
+                dialog._filter_bpm_from,
+                dialog._filter_bpm_to,
+            ):
+                entry.delete(0, "end")
+
+    dialog._filter_analysis_panel = Panel()
     CatalogMaintenanceDialog._reset_filters(cast(Any, dialog))
 
     assert dialog._filter == MaintenanceFilter()
@@ -831,14 +677,789 @@ def test_audio_analysis_callback_error_uses_dialog_error_path() -> None:
     assert errors == [failure]
 
 
+class _TempoPanel:
+    def __init__(self) -> None:
+        self.states: list[tuple[str | None, dict[str, str]]] = []
+
+    def render_tempo_state(self, text: str | None, **states: str) -> None:
+        self.states.append((text, states))
+
+
+def test_responsive_panel_switches_exactly_below_980_pixels() -> None:
+    calls: list[tuple[bool, object]] = []
+    results = object()
+
+    class Panel:
+        def set_compact_layout(self, compact: bool, results_panel: object) -> None:
+            calls.append((compact, results_panel))
+
+    class Dialog:
+        _filter_analysis_panel = Panel()
+        _results_panel = results
+        _compact_filter_layout = False
+        _closed = False
+        _layout_running = False
+        _layout_after_id = None
+        _filter_layout_size: tuple[int, int] | None = None
+        width = 979
+        height = 760
+
+        def winfo_width(self) -> int:
+            return self.width
+
+        def winfo_height(self) -> int:
+            return self.height
+
+        def _request_height_layout(self) -> None:
+            pass
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+    dialog.width = 980
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+
+    assert calls == [(True, results), (False, results)]
+    assert dialog._compact_filter_layout is False
+
+
+def test_filter_resize_ignores_unchanged_client_size_but_tracks_real_resize() -> None:
+    requests: list[None] = []
+
+    class Panel:
+        def set_compact_layout(self, _compact: bool, _results_panel: object) -> None:
+            pass
+
+    class Dialog:
+        _filter_analysis_panel = Panel()
+        _results_panel = object()
+        _compact_filter_layout = False
+        _filter_layout_size: tuple[int, int] | None = None
+        width = 1000
+        height = 760
+
+        def winfo_width(self) -> int:
+            return self.width
+
+        def winfo_height(self) -> int:
+            return self.height
+
+        def _request_height_layout(self) -> None:
+            requests.append(None)
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+    dialog.height = 761
+    CatalogMaintenanceDialog._on_filter_resize(cast(Any, dialog), object())
+
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("pending", (False, True))
+def test_filter_toggle_remains_explicit_while_layout_is_running_or_pending(
+    pending: bool,
+) -> None:
+    callbacks: list[object] = []
+    panel = cast(Any, object.__new__(CatalogMaintenanceFilterAnalysisPanel))
+    panel._filter_details_visible = False
+    panel._filter_wrapper = SimpleNamespace(grid=lambda: None, grid_remove=lambda: None)
+    panel._filter_toggle = SimpleNamespace(configure=lambda **_options: None)
+    panel.refresh_layout = lambda _results: None
+
+    class Dialog:
+        _closed = False
+        _layout_running = not pending
+        _layout_requested = False
+        _layout_after_id = "pending" if pending else None
+        _results_panel = object()
+        _filter_analysis_panel = panel
+        _request_height_layout = CatalogMaintenanceDialog._request_height_layout
+
+        def after_idle(self, callback: object) -> str:
+            callbacks.append(callback)
+            return "layout"
+
+    dialog = Dialog()
+    panel._layout_changed = dialog._request_height_layout
+
+    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
+    CatalogMaintenanceDialog._toggle_filter_details(cast(Any, dialog))
+
+    assert panel._filter_details_visible is False
+    assert dialog._layout_requested is (not pending)
+    assert callbacks == []
+
+
+def test_height_layout_waits_until_results_body_is_initialized() -> None:
+    scheduled: list[object] = []
+
+    class Dialog:
+        _closed = False
+        _layout_running = False
+        _layout_after_id = "initial-layout"
+        _request_height_layout = CatalogMaintenanceDialog._request_height_layout
+        _apply_height_layout = CatalogMaintenanceDialog._apply_height_layout
+
+        def _active(self) -> bool:
+            return True
+
+        def after_idle(self, callback: object) -> str:
+            scheduled.append(callback)
+            return "completed-layout"
+
+        def update_idletasks(self) -> None:
+            raise AssertionError("layout callbacks must not process nested Tk idle work")
+
+    dialog = Dialog()
+
+    CatalogMaintenanceDialog._apply_height_layout(cast(Any, dialog))
+
+    assert dialog._layout_after_id is None
+    assert dialog._layout_running is False
+    dialog._results_body = object()
+    dialog._request_height_layout()
+    assert scheduled == [dialog._apply_height_layout]
+
+
+def test_height_budget_uses_main_viewport_instead_of_compressed_grid_rows() -> None:
+    row_configuration: dict[int, dict[str, int]] = {}
+    applied_heights: list[int] = []
+
+    class MainViewport:
+        def winfo_height(self) -> int:
+            return 500
+
+    class ResultsPanel:
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 190)
+
+        def winfo_height(self) -> int:
+            return 230
+
+    class ResultsBody:
+        def winfo_height(self) -> int:
+            return 190
+
+    class Panel:
+        def height_request(self) -> tuple[int, int]:
+            return (120, 180)
+
+        def height_floor(self) -> int:
+            return 120
+
+        def apply_allocated_height(self, height: int) -> None:
+            applied_heights.append(height)
+
+        def finish_layout_update(self) -> None:
+            pass
+
+    class Dialog:
+        _closed = False
+        _layout_running = False
+        _layout_requested = False
+        _layout_after_id = "layout"
+        _main_content = MainViewport()
+        _results_panel = ResultsPanel()
+        _results_body = ResultsBody()
+        _filter_analysis_panel = Panel()
+
+        def _active(self) -> bool:
+            return True
+
+        def _configure_content_row(self, row: int, **options: int) -> None:
+            row_configuration[row] = options
+
+        def _request_height_layout(self) -> None:
+            raise AssertionError("stable height allocation must not schedule another layout")
+
+    CatalogMaintenanceDialog._apply_height_layout(cast(Any, Dialog()))
+
+    assert applied_heights == [180]
+    assert row_configuration == {
+        0: {"weight": 0, "minsize": 180},
+        1: {"weight": 1, "minsize": 230},
+    }
+
+
+@pytest.mark.parametrize(
+    ("view", "units", "expected"),
+    [
+        ((0.2, 0.7), -3, "inner"),
+        ((0.2, 0.7), 3, "inner"),
+        ((0.0, 0.5), -3, "outer"),
+        ((0.0, 0.5), 3, "inner"),
+        ((0.5, 1.0), -3, "inner"),
+        ((0.5, 1.0), 3, "outer"),
+        ((0.0, 1.0), -3, "outer"),
+        ((0.0, 1.0), 3, "outer"),
+    ],
+)
+def test_nested_mousewheel_scrolls_inner_until_directional_boundary(
+    view: tuple[float, float], units: int, expected: str
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class Canvas:
+        def __init__(self, name: str, current_view: tuple[float, float]) -> None:
+            self.name = name
+            self.current_view = current_view
+
+        def yview(self) -> tuple[float, float]:
+            return self.current_view
+
+        def yview_scroll(self, amount: int, _kind: str) -> None:
+            calls.append((self.name, amount))
+
+    inner = Canvas("inner", view)
+    outer = Canvas("outer", (0.0, 0.8))
+
+    CatalogMaintenanceDialog._scroll_nested_canvas(cast(Any, inner), cast(Any, outer), units)
+
+    assert calls == [(expected, units)]
+
+
+def test_height_layout_coalesces_request_without_recursive_idle_processing() -> None:
+    callbacks: list[object] = []
+    applied_heights: list[int] = []
+
+    class ResultsBody:
+        def winfo_height(self) -> int:
+            return 190
+
+    class ResultsPanel:
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 190)
+
+        def winfo_height(self) -> int:
+            return 230
+
+    class FilterPanel:
+        requested_during_layout = False
+        dialog: Any = None
+
+        def height_request(self) -> tuple[int, int]:
+            if not self.requested_during_layout:
+                self.requested_during_layout = True
+                self.dialog._request_height_layout()
+            return (120, 180)
+
+        def apply_allocated_height(self, height: int) -> None:
+            applied_heights.append(height)
+
+        def finish_layout_update(self) -> None:
+            pass
+
+    panel = FilterPanel()
+
+    class Dialog:
+        _closed = False
+        _layout_running = False
+        _layout_after_id: str | None = None
+        _results_body = ResultsBody()
+        _results_panel = ResultsPanel()
+        _filter_analysis_panel = panel
+        _request_height_layout = CatalogMaintenanceDialog._request_height_layout
+        _apply_height_layout = CatalogMaintenanceDialog._apply_height_layout
+        callback_depth = 0
+        maximum_callback_depth = 0
+
+        def _active(self) -> bool:
+            return True
+
+        def after_idle(self, callback: object) -> str:
+            callbacks.append(callback)
+            return f"layout-{len(callbacks)}"
+
+        def update_idletasks(self) -> None:
+            raise AssertionError("layout callbacks must not process nested Tk idle work")
+
+        def winfo_height(self) -> int:
+            return 620
+
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 60)
+
+        def grid_rowconfigure(self, *_args: int, **_kwargs: int) -> None:
+            pass
+
+    dialog = Dialog()
+    panel.dialog = dialog
+    dialog._request_height_layout()
+
+    while callbacks:
+        callback = callbacks.pop(0)
+        dialog.callback_depth += 1
+        dialog.maximum_callback_depth = max(dialog.maximum_callback_depth, dialog.callback_depth)
+        callback()
+        dialog.callback_depth -= 1
+
+    assert len(applied_heights) == 2
+    assert dialog.maximum_callback_depth == 1
+    assert dialog._layout_after_id is None
+
+
+def _realized_layout_dialog(width: int, height: int) -> tuple[ctk.CTk, CatalogMaintenanceDialog]:
+    try:
+        root = ctk.CTk()
+    except TclError as error:
+        message = str(error)
+        missing_tcl_runtime = (
+            "Can't find a usable" in message and ".tcl" in message
+        ) or 'invalid command name "tcl_findLibrary"' in message
+        if not missing_tcl_runtime:
+            raise
+        pytest.skip(
+            "Windows-CI-Python enthaelt kein nutzbares Tcl/Tk (tk.tcl/tcl_findLibrary); "
+            "reale Tk-Geometrie erfordert eine separate manuelle Windows-Abnahme"
+        )
+    root.geometry("1200x900+0+0")
+    root.update()
+    dialog = CatalogMaintenanceDialog(
+        root,
+        cast(Any, SimpleNamespace()),
+        lambda _work, _done, _failed: False,
+        lambda _track_id: None,
+    )
+    dialog.geometry(f"{width}x{height}+0+0")
+    dialog.update()
+    return root, dialog
+
+
+@pytest.mark.parametrize(
+    ("panel_request", "expected_panel", "expected_results_minimum"),
+    [
+        ((120, 180), 180, 230),
+        ((300, 500), 316, 230),
+    ],
+)
+def test_first_filter_toggle_reaches_stable_layout(
+    panel_request: tuple[int, int],
+    expected_panel: int,
+    expected_results_minimum: int,
+) -> None:
+    """Exercise dialog-owned height distribution without realizing Tk widgets."""
+    callbacks: list[object] = []
+    row_configuration: dict[int, dict[str, int]] = {}
+    applied_heights: list[int] = []
+
+    class Geometry:
+        def __init__(self, height: int) -> None:
+            self.height = height
+
+        def winfo_height(self) -> int:
+            return self.height
+
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, self.height - 40)
+
+    class Panel:
+        def height_request(self) -> tuple[int, int]:
+            return panel_request
+
+        def apply_allocated_height(self, height: int) -> None:
+            applied_heights.append(height)
+
+        def finish_layout_update(self) -> None:
+            pass
+
+    class Dialog:
+        _closed = False
+        _layout_running = False
+        _layout_requested = False
+        _layout_after_id: str | None = None
+        _results_body = Geometry(190)
+        _results_panel = Geometry(230)
+        _filter_analysis_panel = Panel()
+        _request_height_layout = CatalogMaintenanceDialog._request_height_layout
+        _apply_height_layout = CatalogMaintenanceDialog._apply_height_layout
+
+        def _active(self) -> bool:
+            return True
+
+        def after_idle(self, callback: object) -> str:
+            callbacks.append(callback)
+            return "height-layout"
+
+        def winfo_height(self) -> int:
+            return 620
+
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 20)
+
+        def grid_rowconfigure(self, row: int, **options: int) -> None:
+            row_configuration[row] = options
+
+    dialog = Dialog()
+    dialog._request_height_layout()
+    assert len(callbacks) == 1
+
+    cast(Any, callbacks.pop())()
+
+    assert applied_heights == [expected_panel]
+    assert row_configuration == {
+        0: {"weight": 0, "minsize": expected_panel},
+        1: {"weight": 1, "minsize": expected_results_minimum},
+    }
+    assert expected_results_minimum - 40 >= 190
+    assert dialog._layout_after_id is None
+    assert dialog._layout_running is False
+    assert dialog._layout_requested is False
+
+
+@pytest.mark.parametrize("panel_request", ((208, 520), (320, 520)))
+def test_small_height_reserves_footer_actions_and_results_minimum(
+    panel_request: tuple[int, int],
+) -> None:
+    row_configuration: dict[int, dict[str, int]] = {}
+    applied_heights: list[int] = []
+
+    class ResultsBody:
+        def winfo_height(self) -> int:
+            return 80
+
+    class ResultsPanel:
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 80)
+
+        def winfo_height(self) -> int:
+            return 120
+
+    class Panel:
+        def height_request(self) -> tuple[int, int]:
+            return panel_request
+
+        def height_floor(self) -> int:
+            return 121
+
+        def apply_allocated_height(self, height: int) -> None:
+            applied_heights.append(height)
+
+        def finish_layout_update(self) -> None:
+            pass
+
+    class Dialog:
+        _closed = False
+        _layout_running = False
+        _layout_requested = False
+        _layout_after_id = "layout"
+        _results_body = ResultsBody()
+        _results_panel = ResultsPanel()
+        _filter_analysis_panel = Panel()
+
+        def _active(self) -> bool:
+            return True
+
+        def winfo_height(self) -> int:
+            return 551
+
+        def grid_bbox(self, _first_column: int, row: int, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, {2: 100, 3: 100, 4: 50}[row])
+
+        def grid_rowconfigure(self, row: int, **options: int) -> None:
+            row_configuration[row] = options
+
+        def _request_height_layout(self) -> None:
+            raise AssertionError("stable height allocation must not schedule another layout")
+
+    CatalogMaintenanceDialog._apply_height_layout(cast(Any, Dialog()))
+
+    assert applied_heights == [167]
+    assert row_configuration == {
+        0: {"weight": 0, "minsize": 167},
+        1: {"weight": 1, "minsize": 120},
+    }
+
+
+def test_height_budget_reserves_filter_panel_outer_padding_once() -> None:
+    row_configuration: dict[int, dict[str, int]] = {}
+    applied_heights: list[int] = []
+
+    class ResultsBody:
+        def winfo_height(self) -> int:
+            return 80
+
+    class ResultsPanel:
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 80)
+
+        def winfo_height(self) -> int:
+            return 120
+
+    class Panel:
+        def height_request(self) -> tuple[int, int]:
+            return (208, 520)
+
+        def height_floor(self) -> int:
+            return 121
+
+        def apply_allocated_height(self, height: int) -> None:
+            applied_heights.append(height)
+
+        def finish_layout_update(self) -> None:
+            pass
+
+    class Dialog:
+        _closed = False
+        _layout_running = False
+        _layout_requested = False
+        _layout_after_id = "layout"
+        _results_body = ResultsBody()
+        _results_panel = ResultsPanel()
+        _filter_analysis_panel = Panel()
+
+        def _active(self) -> bool:
+            return True
+
+        def winfo_height(self) -> int:
+            return 551
+
+        def grid_bbox(self, _first_column: int, row: int, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, {2: 100, 3: 100, 4: 50}[row])
+
+        def grid_rowconfigure(self, row: int, **options: int) -> None:
+            row_configuration[row] = options
+
+        def _request_height_layout(self) -> None:
+            raise AssertionError("stable height allocation must not schedule another layout")
+
+    CatalogMaintenanceDialog._apply_height_layout(cast(Any, Dialog()))
+
+    assert applied_heights == [167]
+    assert row_configuration[1]["minsize"] == 120
+    assert 167 + 14 + 120 + 100 + 100 + 50 == 551
+
+
+@pytest.mark.parametrize("width", (760, 979, 980))
+@pytest.mark.parametrize("height", (620, 820))
+def test_realized_dialog_distributes_height_for_layout_states(width: int, height: int) -> None:
+    root, dialog = _realized_layout_dialog(width, height)
+    try:
+        state_a = (
+            dialog._filter_analysis_panel.winfo_height(),
+            dialog._results_body.winfo_height(),
+        )
+        dialog._filter_toggle.invoke()
+        dialog.update()
+        state_b = (
+            dialog._filter_analysis_panel.winfo_height(),
+            dialog._results_body.winfo_height(),
+        )
+        dialog._analysis_toggle.invoke()
+        dialog.update()
+        state_c = (
+            dialog._filter_analysis_panel.winfo_height(),
+            dialog._results_body.winfo_height(),
+        )
+
+        assert state_a[0] < state_b[0]
+        assert state_b[1] <= state_a[1]
+        assert abs(state_c[0] - state_b[0]) <= 1
+        assert abs(state_c[1] - state_b[1]) <= 1
+        assert state_c[1] >= 80
+        if height >= 820:
+            assert state_c[1] >= 190
+        assert dialog._filter_analysis_panel.winfo_width() <= dialog.winfo_width()
+        assert dialog._results_panel.winfo_width() <= dialog.winfo_width()
+        assert dialog._footer.winfo_rooty() + dialog._footer.winfo_height() <= (
+            dialog.winfo_rooty() + dialog.winfo_height()
+        )
+    finally:
+        dialog._close()
+        root.destroy()
+
+
+def test_layout_state_cycles_restore_list_height_selection_and_scroll() -> None:
+    """Prove state restoration; realized pixel geometry remains GUI acceptance."""
+    callbacks: list[object] = []
+    result_heights: list[int] = []
+    panel_heights: list[int] = []
+
+    class ResultsBody:
+        def winfo_height(self) -> int:
+            return 190
+
+    class ResultsPanel:
+        def winfo_height(self) -> int:
+            return 230
+
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 190)
+
+    class Panel:
+        filter_visible = False
+        analysis_visible = False
+
+        def height_request(self) -> tuple[int, int]:
+            if self.analysis_visible:
+                return (260, 260)
+            if self.filter_visible:
+                return (180, 180)
+            return (120, 120)
+
+        def apply_allocated_height(self, height: int) -> None:
+            panel_heights.append(height)
+
+        def finish_layout_update(self) -> None:
+            pass
+
+    panel = Panel()
+
+    class Dialog:
+        _closed = False
+        _layout_running = False
+        _layout_requested = False
+        _layout_after_id: str | None = None
+        _results_body = ResultsBody()
+        _results_panel = ResultsPanel()
+        _filter_analysis_panel = panel
+        _request_height_layout = CatalogMaintenanceDialog._request_height_layout
+        _apply_height_layout = CatalogMaintenanceDialog._apply_height_layout
+        _selection = SelectionDescription.for_filter(MaintenanceFilter()).select(17)
+        scroll_position = (0.5, 0.75)
+
+        def _active(self) -> bool:
+            return True
+
+        def after_idle(self, callback: object) -> str:
+            callbacks.append(callback)
+            return f"height-layout-{len(callbacks)}"
+
+        def winfo_height(self) -> int:
+            return 620
+
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 20)
+
+        def grid_rowconfigure(self, row: int, **options: int) -> None:
+            if row == 1:
+                result_heights.append(options["minsize"])
+
+    dialog = Dialog()
+
+    def apply_state(*, filter_visible: bool, analysis_visible: bool) -> None:
+        panel.filter_visible = filter_visible
+        panel.analysis_visible = analysis_visible
+        dialog._request_height_layout()
+        assert len(callbacks) == 1
+        cast(Any, callbacks.pop())()
+
+    for _cycle in range(2):
+        apply_state(filter_visible=False, analysis_visible=False)
+        apply_state(filter_visible=True, analysis_visible=False)
+        apply_state(filter_visible=True, analysis_visible=True)
+        apply_state(filter_visible=True, analysis_visible=False)
+        apply_state(filter_visible=False, analysis_visible=False)
+
+    assert result_heights == [230, 230, 230, 230, 230] * 2
+    assert panel_heights == [120, 180, 260, 180, 120] * 2
+    assert dialog._selection.included_ids == frozenset({17})
+    assert dialog.scroll_position == (0.5, 0.75)
+    assert dialog._layout_after_id is None
+
+
+def test_tempo_prepare_and_empty_selection_render_through_panel() -> None:
+    panel = _TempoPanel()
+
+    class Repository:
+        def resolve_selection(self, _selection: object) -> tuple[tuple[int, int], ...]:
+            return ()
+
+    class Dialog:
+        _metadata_analysis = object()
+        _filter_analysis_panel = panel
+        _service = SimpleNamespace(repository=Repository())
+        _selection = object()
+
+        def _active(self) -> bool:
+            return True
+
+        def _task(self, work: Any, done: Any) -> None:
+            done(work())
+
+        def _tempo_selection_resolved(self, value: object) -> None:
+            CatalogMaintenanceDialog._tempo_selection_resolved(cast(Any, self), value)
+
+    CatalogMaintenanceDialog._prepare_tempo_batch(cast(Any, Dialog()))
+
+    assert panel.states == [
+        (None, {"start": "disabled"}),
+        ("Auswahl und Analysestand werden geprüft …", {}),
+        (None, {"start": "normal"}),
+        ("Bitte mindestens einen Titel auswählen.", {}),
+    ]
+
+
+def test_tempo_started_paused_resumed_and_aborted_render_through_panel() -> None:
+    calls: list[str] = []
+    panel = _TempoPanel()
+
+    class Analysis:
+        def pause(self) -> None:
+            calls.append("pause")
+
+        def resume(self) -> None:
+            calls.append("resume")
+
+        def cancel_all(self) -> None:
+            calls.append("abort")
+
+    class Dialog:
+        _metadata_analysis = Analysis()
+        _filter_analysis_panel = panel
+
+        def _active(self) -> bool:
+            return True
+
+        def _schedule_tempo_progress(self) -> None:
+            calls.append("schedule")
+
+    dialog = Dialog()
+    CatalogMaintenanceDialog._tempo_batch_started(
+        cast(Any, dialog), (SimpleNamespace(run_id=17), SimpleNamespace(run_id=23))
+    )
+    CatalogMaintenanceDialog._pause_tempo_batch(cast(Any, dialog))
+    CatalogMaintenanceDialog._resume_tempo_batch(cast(Any, dialog))
+    CatalogMaintenanceDialog._abort_tempo_batch(cast(Any, dialog))
+
+    assert dialog._tempo_run_ids == (17, 23)
+    assert calls == ["schedule", "pause", "resume", "schedule", "abort", "schedule"]
+    assert panel.states == [
+        (None, {"pause": "normal", "abort": "normal"}),
+        ("Serielle Tempoanalyse wurde gestartet …", {}),
+        (None, {"pause": "disabled", "resume": "normal"}),
+        (
+            "PAUSIERT – der laufende Titel darf noch enden.",
+            {},
+        ),
+        (None, {"pause": "normal", "resume": "disabled"}),
+        (None, {"abort": "disabled"}),
+        ("Tempoanalyse wurde vollständig abgebrochen.", {}),
+    ]
+
+
+def test_tempo_started_renders_through_dialogs_real_analysis_panel() -> None:
+    panel = cast(Any, object.__new__(CatalogMaintenanceFilterAnalysisPanel))
+    panel._tempo_progress = _Widget()
+    panel._tempo_start = _Widget()
+    panel._tempo_pause = _Widget()
+    panel._tempo_resume = _Widget()
+    panel._tempo_abort = _Widget()
+    dialog = cast(Any, object.__new__(CatalogMaintenanceDialog))
+    dialog._filter_analysis_panel = panel
+    dialog._active = lambda: True
+    dialog._schedule_tempo_progress = lambda: None
+
+    CatalogMaintenanceDialog._tempo_batch_started(dialog, (SimpleNamespace(run_id=17),))
+
+    assert isinstance(panel, CatalogMaintenanceFilterAnalysisPanel)
+    assert panel._tempo_progress.options["text"] == "Serielle Tempoanalyse wurde gestartet …"
+    assert panel._tempo_pause.options["state"] == "normal"
+
+
 def test_tempo_batch_progress_renders_aggregates_without_rebuilding_rows() -> None:
     class Dialog:
         _tempo_skipped = 4
-        _tempo_progress = _Widget()
-        _tempo_start = _Widget()
-        _tempo_pause = _Widget()
-        _tempo_resume = _Widget()
-        _tempo_abort = _Widget()
+        _filter_analysis_panel = _TempoPanel()
         loaded = 0
 
         def _active(self) -> bool:
@@ -866,8 +1487,14 @@ def test_tempo_batch_progress_renders_aggregates_without_rebuilding_rows() -> No
 
     CatalogMaintenanceDialog._tempo_progressed(cast(Any, dialog), progress)
 
-    text = str(dialog._tempo_progress.options["text"])
+    text, states = dialog._filter_analysis_panel.states[-1]
     assert "12 / 12 abgeschlossen" in text
     assert "Prüfung erforderlich 3" in text
     assert "übersprungen 4" in text
+    assert states == {
+        "start": "normal",
+        "pause": "disabled",
+        "resume": "disabled",
+        "abort": "disabled",
+    }
     assert dialog.loaded == 1
