@@ -91,6 +91,26 @@ names in rules.
 - Do not rerun the full local suite merely to duplicate an equivalent successful CI
   gate.
 
+### T3.5
+
+- After successful T3 and before owner approval, every regular code PR requires an
+  independent GitHub Copilot review when Copilot is available.
+- Copilot must use Ask mode and remain read-only. It reviews the complete PR diff
+  against the actual PR base independently of Codex, covering architecture,
+  correctness, error handling, regressions, tests, security, data integrity and
+  maintainability where relevant.
+- Bind the report to the PR number, full current head SHA and verified base SHA. Use the
+  central T3.5 result states and report fields without omission. BLOCKER or MAJOR
+  findings block approval, and an incomplete review does not pass.
+- Codex fixes findings; Copilot does not implement changes in T3.5. Every new PR head
+  requires fresh T3 and T3.5 evidence.
+- If Copilot is unavailable, record `SKIPPED_COPILOT_UNAVAILABLE`, the cause and the
+  time. Only an explicit, documented owner exception for that PR and full head SHA may
+  permit the workflow to continue. Codex cannot substitute for the review or approve
+  the exception, and available Copilot may not be bypassed voluntarily.
+- T3.5 does not replace CI, T4, formal GitHub reviews or required manual GUI, audio or
+  hardware acceptance.
+
 ### T4
 
 - After integration or a push to `main`, the `Windows quality gates` workflow is the
@@ -106,9 +126,11 @@ perform mutating Git or GitHub operations; see `.github/copilot-instructions.md`
   performs unsupported work.
 - Preserve Git autonomy B3 and work on an unambiguous feature branch, preferably in an
   isolated worktree. Protect unrelated worktrees, branches and local changes.
-- Bind technical review and explicit owner approval separately to the PR number and full
-  current head SHA. Recheck both after every head change; neither replaces formal GitHub
-  review requirements.
+- Bind the T3.5 report, technical attestation and explicit owner approval separately to
+  the PR number and full current head SHA, and bind T3.5 additionally to the verified
+  base SHA. A technical attestation is allowed only after a verified `REVIEW_PASS`
+  report or an explicitly approved Copilot-unavailability exception. Recheck all
+  evidence after every head change; none replaces formal GitHub review requirements.
 - Merge only after all required security and quality gates succeed. After merge, verify
   the main-integrity gate for the merge commit.
 - The script's `cleanup` action deletes only an eligible local `feature/*` branch and

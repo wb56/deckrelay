@@ -101,11 +101,43 @@ ignorierte Sicherheitslog unter `logs/dev-pr/` bleibt zulässig. Fehlende, laufe
 unklare oder widersprüchliche Voraussetzungen führen fail-closed zu `BLOCKED`; eindeutig
 fehlgeschlagene Quality Gates führen weiterhin zu `FAIL`.
 
-Die Zustandsfolge ist `lokal -> validiert -> committed -> published -> gates passed ->
-reviewed -> owner-approved -> mergeable -> merged -> main gate -> cleanup`. Technische
-Review, Eigentümerfreigabe, Merge und Cleanup sind getrennte Schritte. Wiederholte
+Die Zustandsfolge ist `lokal -> validiert -> committed -> published -> T3 gates passed ->
+T3.5 reviewed -> technical-reviewed -> owner-approved -> mergeable -> merged -> main
+gate -> cleanup`. T3.5-Bericht, technische Attestierung, Eigentümerfreigabe, Merge und
+Cleanup sind getrennte Schritte. Wiederholte
 Leseaktionen sind sicher; `commit` meldet ohne Änderungen `NOOP`, `publish` erkennt einen
 vorhandenen offenen PR und `cleanup` meldet bei einem bereits fehlenden Branch `NOOP`.
+
+Nach erfolgreichem T3 muss GitHub Copilot jeden regulären Code-PR im Ask-Modus und
+schreibgeschützt unabhängig prüfen. Gegenstand ist der vollständige PR-Diff gegen die
+tatsächliche PR-Basis; der Bericht wird an PR-Nummer, vollständigen aktuellen Head-SHA
+und geprüften Base-SHA gebunden. Er verwendet dieses kompakte Format:
+
+```text
+STATUS: REVIEW_PASS|REVIEW_BLOCKED|REVIEW_INCOMPLETE|SKIPPED_COPILOT_UNAVAILABLE
+PR: <nr>
+HEAD_SHA: <40-stelliger-head-sha>
+BASE_SHA: <40-stelliger-base-sha>
+REVIEW_TOOL: GitHub Copilot
+FINDINGS: <kompakte Befunde oder none>
+BLOCKER_COUNT: <n>
+MAJOR_COUNT: <n>
+MINOR_COUNT: <n>
+RESIDUAL_RISKS: <kurz oder none>
+RECOMMENDATION: <kurz>
+```
+
+BLOCKER- oder MAJOR-Befunde ergeben `REVIEW_BLOCKED`; eine unvollständige Prüfung ergibt
+`REVIEW_INCOMPLETE`. Codex behebt Befunde, Copilot programmiert in T3.5 nicht. Ein neuer
+PR-Head macht T3 und T3.5 für den neuen SHA erneut erforderlich.
+
+Ist Copilot nicht verfügbar, enthält der Bericht `SKIPPED_COPILOT_UNAVAILABLE` sowie
+Ursache und Zeitpunkt der Nichtverfügbarkeit im Feld `FINDINGS`. Dies ist keine
+automatische Ausnahme. Nur
+eine ausdrückliche, dokumentierte Eigentümerentscheidung für den konkreten PR und
+vollständigen Head-SHA darf den weiteren Freigabeprozess erlauben; andernfalls bleibt
+der Merge blockiert. Codex darf weder die unabhängige Review ersetzen noch diese
+Ausnahme genehmigen. Ein verfügbares Copilot darf nicht freiwillig umgangen werden.
 
 `REVIEW-REQUIRED` ist der Standard und erlaubt dem Skript keinen Merge. Für
 `OWNER-APPROVED` gelten zusätzlich getrennte technische und eigentümerseitige
@@ -124,8 +156,10 @@ stabilen Labels und speichern den SHA getrennt in den PR-Attestierungen:
   Label-Ereignis desselben Eigentümers;
 - erfolgreiche Quality Gates, erfüllte Branch-Protection und eindeutige Mergefähigkeit.
 
-Die technische Attestierung bestätigt nur, dass ein unabhängiger technischer Bericht für
-den genannten SHA geprüft wurde; sie ist ausdrücklich keine GitHub-Approval. Die
+Die technische Attestierung darf erst erfolgen, nachdem für denselben PR und Head-SHA
+ein vollständiger T3.5-Bericht mit `REVIEW_PASS` und passendem Base-SHA geprüft wurde
+oder eine ausdrücklich genehmigte Copilot-Nichtverfügbarkeitsausnahme vorliegt. Sie
+bestätigt nur diese Prüfung und ist ausdrücklich keine GitHub-Approval. Die
 Owner-Attestierung ist davon getrennt die Merge-Freigabe. Das Skript liest diese
 Nachweise ausschließlich und besitzt keinen Pfad, um Kommentare oder Labels anzulegen;
 Codex darf sie weder erzeugen noch als menschliche Nachweise ausgeben. Fehlende,
@@ -136,6 +170,21 @@ dennoch einen eigenen Aufruf mit `-Mode OWNER-APPROVED -ConfirmMerge` und verwen
 GitHubs SHA-Bindung `--match-head-commit`. Verlangt Branch-Protection oder ein wirksames
 Ruleset formelle GitHub-Approvals, muss GitHubs `reviewDecision` diese als erfüllt melden;
 das Einzelentwicklerverfahren ersetzt oder umgeht sie niemals.
+
+### Folgeauftrag: T3.5 technisch durchsetzen
+
+Der beschriebene T3.5-Ablauf ist derzeit eine verbindliche Prozesspflicht, aber noch
+kein technisch erzwungenes Gate. `Invoke-DevPr.ps1` prüft in `preflight` und `merge`
+lediglich die bestehende `technical-reviewed`-Attestierung; es validiert weder den
+strukturierten T3.5-Bericht noch Review-Tool, Base-SHA, Ergebnis, Zähler oder eine
+genehmigte Nichtverfügbarkeitsausnahme.
+
+Ein separater Folgeauftrag muss das Skript und seine Tests fail-closed erweitern: T3.5-
+Nachweis für PR, aktuellen Head-SHA und tatsächlichen Base-SHA laden und validieren,
+nur `REVIEW_PASS` ohne BLOCKER/MAJOR oder eine ausdrücklich eigentümergenehmigte,
+SHA-gebundene `SKIPPED_COPILOT_UNAVAILABLE`-Ausnahme akzeptieren und diese Prüfung in
+`preflight` sowie `merge` vor der technischen Attestierung erzwingen. Dieser Auftrag
+ändert das Skript bewusst nicht.
 
 Klassische Branch-Protection wird mit einem separaten HTTP-Status-Probe geprüft. Nur ein
 eindeutiger HTTP-404 bei fehlgeschlagenem API-Aufruf bedeutet „nicht vorhanden“; 401, 403,
