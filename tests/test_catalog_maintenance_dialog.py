@@ -821,6 +821,103 @@ def test_height_layout_waits_until_results_body_is_initialized() -> None:
     assert scheduled == [dialog._apply_height_layout]
 
 
+def test_height_budget_uses_main_viewport_instead_of_compressed_grid_rows() -> None:
+    row_configuration: dict[int, dict[str, int]] = {}
+    applied_heights: list[int] = []
+
+    class MainViewport:
+        def winfo_height(self) -> int:
+            return 500
+
+    class ResultsPanel:
+        def grid_bbox(self, *_args: int) -> tuple[int, int, int, int]:
+            return (0, 0, 100, 190)
+
+        def winfo_height(self) -> int:
+            return 230
+
+    class ResultsBody:
+        def winfo_height(self) -> int:
+            return 190
+
+    class Panel:
+        def height_request(self) -> tuple[int, int]:
+            return (120, 180)
+
+        def height_floor(self) -> int:
+            return 120
+
+        def apply_allocated_height(self, height: int) -> None:
+            applied_heights.append(height)
+
+        def finish_layout_update(self) -> None:
+            pass
+
+    class Dialog:
+        _closed = False
+        _layout_running = False
+        _layout_requested = False
+        _layout_after_id = "layout"
+        _main_content = MainViewport()
+        _results_panel = ResultsPanel()
+        _results_body = ResultsBody()
+        _filter_analysis_panel = Panel()
+
+        def _active(self) -> bool:
+            return True
+
+        def _configure_content_row(self, row: int, **options: int) -> None:
+            row_configuration[row] = options
+
+        def _request_height_layout(self) -> None:
+            raise AssertionError("stable height allocation must not schedule another layout")
+
+    CatalogMaintenanceDialog._apply_height_layout(cast(Any, Dialog()))
+
+    assert applied_heights == [180]
+    assert row_configuration == {
+        0: {"weight": 0, "minsize": 180},
+        1: {"weight": 1, "minsize": 230},
+    }
+
+
+@pytest.mark.parametrize(
+    ("view", "units", "expected"),
+    [
+        ((0.2, 0.7), -3, "inner"),
+        ((0.2, 0.7), 3, "inner"),
+        ((0.0, 0.5), -3, "outer"),
+        ((0.0, 0.5), 3, "inner"),
+        ((0.5, 1.0), -3, "inner"),
+        ((0.5, 1.0), 3, "outer"),
+        ((0.0, 1.0), -3, "outer"),
+        ((0.0, 1.0), 3, "outer"),
+    ],
+)
+def test_nested_mousewheel_scrolls_inner_until_directional_boundary(
+    view: tuple[float, float], units: int, expected: str
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class Canvas:
+        def __init__(self, name: str, current_view: tuple[float, float]) -> None:
+            self.name = name
+            self.current_view = current_view
+
+        def yview(self) -> tuple[float, float]:
+            return self.current_view
+
+        def yview_scroll(self, amount: int, _kind: str) -> None:
+            calls.append((self.name, amount))
+
+    inner = Canvas("inner", view)
+    outer = Canvas("outer", (0.0, 0.8))
+
+    CatalogMaintenanceDialog._scroll_nested_canvas(cast(Any, inner), cast(Any, outer), units)
+
+    assert calls == [(expected, units)]
+
+
 def test_height_layout_coalesces_request_without_recursive_idle_processing() -> None:
     callbacks: list[object] = []
     applied_heights: list[int] = []

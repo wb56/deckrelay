@@ -61,6 +61,27 @@ Submit = Callable[
 LOGGER = logging.getLogger(__name__)
 _RESULTS_BASE_MINIMUM = 190
 _RESULTS_CONSTRAINED_MINIMUM = 80
+_CONTENT_OUTER_VERTICAL_PADDING = 43
+
+
+class _CatalogMainScrollableFrame(ctk.CTkScrollableFrame):  # type: ignore[misc]
+    """Own mouse-wheel routing for the dialog's nested vertical viewports."""
+
+    def __init__(self, master: Any, dialog: "CatalogMaintenanceDialog") -> None:
+        self._dialog = dialog
+        super().__init__(master, fg_color="transparent")
+
+    def _mouse_wheel_all(self, event: Any) -> str | None:
+        if not self.check_if_master_is_canvas(event.widget):
+            return None
+        units = (
+            -round(float(event.delta) / 120) * 3
+            if sys.platform == "win32"
+            else -round(float(event.delta))
+        )
+        if units:
+            self._dialog._route_mousewheel(event.widget, units)
+        return "break"
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,8 +388,9 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self.protocol("WM_DELETE_WINDOW", self._close)
         bind_dialog_escape(self, self._close)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
         self._build()
+        self.bind("<FocusIn>", self._keep_focused_control_visible, add="+")
         self.deiconify()
         _enable_windows_dialog_controls(self)
         self.lift()
@@ -386,8 +408,14 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
             )
             return frame
 
+        main_content = _CatalogMainScrollableFrame(self, self)
+        self._main_content = main_content
+        main_content.grid(row=0, column=0, padx=0, pady=0, sticky="nsew")
+        main_content.grid_columnconfigure(0, weight=1)
+        main_content.grid_rowconfigure(1, weight=1)
+
         self._filter_analysis_panel = CatalogMaintenanceFilterAnalysisPanel(
-            self,
+            main_content,
             title=WORKFLOW_SECTIONS[0],
             work_queue_labels=WORK_QUEUE_LABELS,
             field_labels=FIELD_LABELS,
@@ -437,7 +465,7 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._compact_filter_layout = False
         self.bind("<Configure>", self._on_filter_resize, add="+")
 
-        results = section(self, WORKFLOW_SECTIONS[1])
+        results = section(main_content, WORKFLOW_SECTIONS[1])
         self._results_panel = results
         results.grid(row=1, column=0, padx=12, pady=6, sticky="nsew")
         results.grid_columnconfigure(0, weight=1)
@@ -490,7 +518,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         )
         self._selection_label = ctk.CTkLabel(selection, text="0 ausgewählt")
         self._selection_label.pack(side="left", padx=10)
-        actions = section(self, WORKFLOW_SECTIONS[2])
+        actions = section(main_content, WORKFLOW_SECTIONS[2])
+        self._actions_panel = actions
         actions.grid(row=2, column=0, padx=12, pady=6, sticky="ew")
         actions.grid_columnconfigure(0, weight=1)
         actions.grid_columnconfigure(1, weight=1)
@@ -535,7 +564,8 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._action.grid(row=1, column=1, padx=3, pady=3, sticky="ew")
         self._value = ctk.CTkEntry(action, placeholder_text="Zielwert")
         self._value.grid(row=1, column=2, padx=3, pady=3, sticky="ew")
-        checks = section(self, WORKFLOW_SECTIONS[3])
+        checks = section(main_content, WORKFLOW_SECTIONS[3])
+        self._checks_panel = checks
         checks.grid(row=3, column=0, padx=12, pady=(3, 2), sticky="ew")
         action_row = ctk.CTkFrame(checks, fg_color="transparent")
         action_row.grid(row=1, column=0, columnspan=4, padx=3, pady=3, sticky="w")
@@ -559,13 +589,61 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._result.grid(row=2, column=0, columnspan=4, padx=6, pady=(3, 5), sticky="ew")
         footer = ctk.CTkFrame(self, fg_color="transparent")
         self._footer = footer
-        footer.grid(row=4, column=0, padx=12, pady=(0, 2), sticky="ew")
+        footer.grid(row=1, column=0, padx=12, pady=(0, 2), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
         ctk.CTkButton(footer, text="Schließen", command=self._close).grid(
             row=0, column=1, padx=6, pady=2, sticky="e"
         )
         self._action_changed()
         self._request_height_layout()
+
+    @staticmethod
+    def _scroll_nested_canvas(inner: Any, outer: Any, units: int) -> None:
+        """Scroll the inner viewport, handing off only at its directional boundary."""
+        first, last = inner.yview()
+        can_scroll = (units < 0 and first > 0.0) or (units > 0 and last < 1.0)
+        target = inner if can_scroll else outer
+        target.yview_scroll(units, "units")
+
+    def _route_mousewheel(self, widget: Any, units: int) -> None:
+        outer = self._main_content._parent_canvas
+        for frame in (self._results_body, self._filter_details):
+            if frame.check_if_master_is_canvas(widget):
+                self._scroll_nested_canvas(frame._parent_canvas, outer, units)
+                return
+        outer.yview_scroll(units, "units")
+
+    def _configure_content_row(self, row: int, **options: int) -> None:
+        self._main_content.grid_rowconfigure(row, **options)
+
+    def _keep_focused_control_visible(self, event: Any) -> None:
+        """Reveal a keyboard-focused descendant in the main scroll viewport."""
+        widget = event.widget
+        if not self._main_content.check_if_master_is_canvas(widget):
+            return
+        canvas = self._main_content._parent_canvas
+        try:
+            viewport_top = canvas.winfo_rooty()
+            viewport_height = canvas.winfo_height()
+            widget_top = widget.winfo_rooty()
+            widget_bottom = widget_top + widget.winfo_height()
+            offset = 0
+            if widget_top < viewport_top:
+                offset = widget_top - viewport_top
+            elif widget_bottom > viewport_top + viewport_height:
+                offset = widget_bottom - (viewport_top + viewport_height)
+            scroll_region = canvas.bbox("all")
+            if offset == 0 or scroll_region is None:
+                return
+            region_top = float(scroll_region[1])
+            region_bottom = float(scroll_region[3])
+            region_height = region_bottom - region_top
+            maximum_top = max(region_top, region_bottom - viewport_height)
+            target_top = min(max(float(canvas.canvasy(0)) + offset, region_top), maximum_top)
+            if region_height > 0:
+                canvas.yview_moveto((target_top - region_top) / region_height)
+        except TclError:
+            return
 
     def _toggle_analysis_panel(self) -> None:
         self._filter_analysis_panel.toggle_analysis()
@@ -625,15 +703,39 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
         self._layout_running = True
         self._layout_requested = False
         try:
-            client_height = self.winfo_height()
-            fixed_height = sum(self.grid_bbox(0, row, 0, row)[3] for row in (2, 3, 4))
-            filter_panel_padding = sum(FILTER_ANALYSIS_PANEL_VERTICAL_PADDING)
-            combined_height = max(1, client_height - fixed_height - filter_panel_padding)
-            results_row_height = self._results_panel.grid_bbox(0, 1, 0, 1)[3]
+            if hasattr(self, "_main_content"):
+                canvas = cast(
+                    Any, getattr(self._main_content, "_parent_canvas", self._main_content)
+                )
+                viewport_height = canvas.winfo_height()
+                fixed_panels = tuple(
+                    panel
+                    for panel in (
+                        getattr(self, "_actions_panel", None),
+                        getattr(self, "_checks_panel", None),
+                    )
+                    if panel is not None
+                )
+                fixed_height = sum(panel.winfo_reqheight() for panel in fixed_panels)
+                if fixed_panels:
+                    fixed_height += _CONTENT_OUTER_VERTICAL_PADDING
+                combined_height = max(1, viewport_height - fixed_height)
+            else:
+                client_height = self.winfo_height()
+                fixed_height = sum(self.grid_bbox(0, row, 0, row)[3] for row in (2, 3, 4))
+                filter_panel_padding = sum(FILTER_ANALYSIS_PANEL_VERTICAL_PADDING)
+                combined_height = max(1, client_height - fixed_height - filter_panel_padding)
+            results_row_height = getattr(
+                self._results_body, "winfo_reqheight", self._results_body.winfo_height
+            )()
             results_chrome = max(
                 0,
-                self._results_panel.winfo_height()
-                - max(results_row_height, self._results_body.winfo_height()),
+                getattr(
+                    self._results_panel,
+                    "winfo_reqheight",
+                    self._results_panel.winfo_height,
+                )()
+                - results_row_height,
             )
             panel_minimum, panel_preferred = self._filter_analysis_panel.height_request()
             panel_floor = getattr(
@@ -647,12 +749,16 @@ class CatalogMaintenanceDialog(ctk.CTkToplevel):  # type: ignore[misc]
                 ),
             )
             results_minimum = results_chrome + list_minimum
+            combined_height = max(combined_height, panel_floor + results_minimum)
             panel_limit = max(panel_floor, combined_height - results_minimum)
             panel_height = min(panel_preferred, panel_limit)
             results_height = max(1, combined_height - panel_height)
 
-            self.grid_rowconfigure(0, weight=0, minsize=panel_height)
-            self.grid_rowconfigure(1, weight=1, minsize=min(results_minimum, results_height))
+            configure_row = getattr(self, "_configure_content_row", None)
+            if configure_row is None:
+                configure_row = self.grid_rowconfigure
+            configure_row(0, weight=0, minsize=panel_height)
+            configure_row(1, weight=1, minsize=min(results_minimum, results_height))
             self._filter_analysis_panel.apply_allocated_height(panel_height)
             self._filter_analysis_panel.finish_layout_update()
         except TclError:
