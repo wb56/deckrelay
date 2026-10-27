@@ -225,9 +225,62 @@ function Assert-ExpectedHead {
     }
 }
 
+function Assert-PrContext {
+    param([string]$Name, $Pr)
+    Assert-ExpectedHead $Pr
+
+    $gitRoot = (Invoke-Git @("rev-parse", "--show-toplevel")).Text.Trim()
+    $resolvedGitRoot = [System.IO.Path]::GetFullPath($gitRoot).TrimEnd("\", "/")
+    $resolvedRepositoryRoot = $RepositoryRoot.TrimEnd("\", "/")
+    if (-not $resolvedGitRoot.Equals($resolvedRepositoryRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-Blocked "RepositoryRoot bezeichnet nicht den aktuellen Git-Worktree."
+    }
+
+    $branch = Get-CurrentBranch
+    if ([string]::IsNullOrWhiteSpace($branch) -or $branch -cne [string]$Pr.headRefName) {
+        Stop-Blocked "Lokaler Branch und ausdrücklich ausgewählter PR stimmen nicht überein."
+    }
+    $localHead = (Invoke-Git @("rev-parse", "--verify", "HEAD^{commit}")).Text.Trim()
+    if ($localHead -notmatch '^[0-9a-f]{40}$' -or $localHead -ine $ExpectedHeadSha) {
+        Stop-Blocked "Lokaler HEAD stimmt nicht mit dem vollständigen erwarteten PR-Head überein."
+    }
+
+    $remoteUrlResult = Invoke-Git @("remote", "get-url", $Remote) -AllowFailure
+    if ($remoteUrlResult.Code -ne 0) { Stop-Blocked "Der ausgewählte Git-Remote ist nicht verfügbar." }
+    $remoteMatch = [regex]::Match($remoteUrlResult.Text.Trim(), 'github\.com[:/](?<name>[^/\s]+/[^/\s]+?)(?:\.git)?/?\z')
+    if (-not $remoteMatch.Success -or
+        -not $remoteMatch.Groups["name"].Value.Equals($Name, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-Blocked "Git-Remote und ausdrücklich ausgewähltes GitHub-Repository stimmen nicht überein."
+    }
+
+    $remoteHeadResult = Invoke-Git @(
+        "rev-parse", "--verify", "refs/remotes/$Remote/$branch`^{commit}"
+    ) -AllowFailure
+    if ($remoteHeadResult.Code -ne 0 -or $remoteHeadResult.Text.Trim() -ine $ExpectedHeadSha) {
+        Stop-Blocked "Remote-Tracking-Head stimmt nicht mit dem vollständigen erwarteten PR-Head überein."
+    }
+}
+
 function Get-GateState {
     param([string]$Name, $Pr)
     Assert-ExpectedHead $Pr
+    $qualityResponse = Invoke-Gh @(
+        "api", "repos/$Name/commits/$ExpectedHeadSha/check-runs?per_page=100",
+        "--paginate", "--slurp"
+    )
+    $qualityPages = @(ConvertFrom-JsonSafe $qualityResponse.Text "aggregierter Quality Check")
+    $qualityRuns = @($qualityPages | ForEach-Object { $_.check_runs } |
+        Where-Object { $_.name -ceq "quality" })
+    if ($qualityRuns.Count -ne 1) {
+        Stop-Blocked "Der aggregierte Check quality ist für den PR-Head nicht eindeutig vorhanden."
+    }
+    $quality = $qualityRuns[0]
+    if ($quality.app.slug -cne "github-actions" -or $quality.head_sha -ine $ExpectedHeadSha) {
+        Stop-Blocked "Der aggregierte Check quality ist GitHub Actions und dem PR-Head nicht eindeutig zugeordnet."
+    }
+    if ($quality.status -cne "completed" -or $quality.conclusion -cne "success") {
+        Stop-Blocked "Der aggregierte Check quality ist nicht erfolgreich abgeschlossen."
+    }
     $response = Invoke-Gh @(
         "pr", "checks", [string]$PrNumber, "--repo", $Name, "--json", "name,state,bucket"
     )
@@ -358,7 +411,7 @@ function Assert-OwnerApprovedMergeReadiness {
     }
     Assert-PushPermission $Name
     $pr = Get-PrData $Name
-    Assert-ExpectedHead $pr
+    Assert-PrContext $Name $pr
     if ($pr.state -ne "OPEN" -or $pr.isDraft -eq $true) {
         Stop-Blocked "PR ist nicht offen und review-bereit."
     }
@@ -461,6 +514,7 @@ switch ($Action) {
     "gates" {
         $name = Resolve-Repository
         $pr = Get-PrData $name
+        Assert-PrContext $name $pr
         Get-GateState $name $pr
         Write-Result "PASS" "GATES: PASS`nHEAD: $ExpectedHeadSha`nLOG: $script:LogPath"
     }

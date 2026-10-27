@@ -93,6 +93,13 @@ und ändert keine globale Git-Konfiguration.
 .\scripts\Invoke-DevPr.ps1 -Action preflight -Repository wb56/deckrelay -PrNumber 54 -ExpectedHeadSha <40-stelliger-sha> -Mode OWNER-APPROVED
 ```
 
+`gates`, `preflight` und `merge` gleichen zusätzlich Git-Root, Worktree-Branch,
+lokalen HEAD, den konfigurierten Remote, dessen Tracking-Head und den ausgewählten PR
+ab. Der Remote muss auf dasselbe GitHub-Repository zeigen; jede Zuordnung muss zum
+vollständigen aktuellen PR-Head passen. Der Gate-Nachweis verlangt genau einen
+erfolgreich abgeschlossenen Check `quality` von GitHub Actions für diesen Head. Fehlende,
+mehrdeutige, laufende, fehlgeschlagene oder übersprungene `quality`-Checks blockieren.
+
 Ein erfolgreicher `preflight` meldet `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION`. Diese
 Meldung ist ausschließlich das Ergebnis der vollständigen, SHA-gebundenen Vorprüfung und
 keine Merge-Autorisierung. Die Aktion führt weder Merge, Push, Commit, GitHub-Schreibzugriff

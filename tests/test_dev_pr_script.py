@@ -116,6 +116,11 @@ def repository(tmp_path: Path) -> Path:
     git(repo, "add", ".gitignore", "tracked one.txt", "tracked two.txt")
     git(repo, "commit", "-m", "initial")
     git(repo, "checkout", "-b", "feature/test")
+    (repo / "feature.txt").write_text("feature\n", encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-m", "feature")
+    git(repo, "remote", "add", "DeckRelay", "https://github.com/acme/project.git")
+    git(repo, "update-ref", "refs/remotes/DeckRelay/feature/test", "HEAD")
     return repo
 
 
@@ -212,7 +217,8 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'view') {
     $state = if ($scenario -eq 'pr-closed') { 'CLOSED' } else { 'OPEN' }
     $draft = $scenario -eq 'pr-draft'
     $reviewDecision = if ($scenario -eq 'protected-success') { 'APPROVED' } else { '' }
-    $pr = @{number=$number;state=$state;isDraft=$draft;headRefOid=$sha;headRefName='feature/test';baseRefName='main';author=@{login='author'};labels=@($labels | ConvertFrom-Json);mergeable=$mergeable;reviewDecision=$reviewDecision;commits=@($commit)}
+    $headBranch = if ($scenario -eq 'pr-branch-mismatch') { 'feature/other' } else { 'feature/test' }
+    $pr = @{number=$number;state=$state;isDraft=$draft;headRefOid=$sha;headRefName=$headBranch;baseRefName='main';author=@{login='author'};labels=@($labels | ConvertFrom-Json);mergeable=$mergeable;reviewDecision=$reviewDecision;commits=@($commit)}
     ConvertTo-Json -InputObject $pr -Compress -Depth 6
     exit 0
 }
@@ -220,6 +226,19 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'checks') {
     if ($scenario -eq 'gates-running') { '[{"name":"quality","state":"IN_PROGRESS","bucket":"pending"}]' }
     elseif ($scenario -eq 'gates-failed') { '[{"name":"quality","state":"FAILURE","bucket":"fail"}]' }
     else { '[{"name":"quality","state":"SUCCESS","bucket":"pass"}]' }
+    exit 0
+}
+if ($joined.Contains("commits/$sha/check-runs")) {
+    $quality = @{name='quality';head_sha=$sha;status='completed';conclusion='success';app=@{slug='github-actions'}}
+    if ($scenario -eq 'quality-missing') { $runs = @() }
+    elseif ($scenario -eq 'quality-duplicate') { $runs = @($quality, $quality) }
+    elseif ($scenario -eq 'quality-wrong-source') { $quality.app.slug = 'external-ci'; $runs = @($quality) }
+    elseif ($scenario -eq 'quality-wrong-sha') { $quality.head_sha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; $runs = @($quality) }
+    elseif ($scenario -eq 'quality-running') { $quality.status = 'in_progress'; $quality.conclusion = $null; $runs = @($quality) }
+    elseif ($scenario -eq 'quality-skipped') { $quality.conclusion = 'skipped'; $runs = @($quality) }
+    elseif ($scenario -eq 'quality-failed') { $quality.conclusion = 'failure'; $runs = @($quality) }
+    else { $runs = @($quality) }
+    ConvertTo-Json -InputObject (, @{total_count=$runs.Count;check_runs=$runs}) -Compress -Depth 5
     exit 0
 }
 if ($joined.Contains('reviews')) {
@@ -288,7 +307,7 @@ if ($args[0] -eq 'pr' -and $args[1] -eq 'merge') {
         encoding="utf-8",
     )
     env = os.environ.copy()
-    env["FAKE_HEAD_SHA"] = "a" * 40
+    env["FAKE_HEAD_SHA"] = git(tmp_path / "repository with spaces", "rev-parse", "HEAD")
     env["FAKE_MERGE_FILE"] = str(tmp_path / "merge invocation.txt")
     env["FAKE_CALLS_FILE"] = str(tmp_path / "gh calls.txt")
     env["FAKE_OWNER_LOOKUP_FILE"] = str(tmp_path / "owner lookup arguments.json")
@@ -309,10 +328,87 @@ def owner_approved_args(repository: Path, gh: Path, action: str) -> tuple[str, .
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
     )
+
+
+def test_gates_require_unique_successful_quality_check_from_github_actions(
+    repository: Path, tmp_path: Path
+) -> None:
+    gh, env = write_fake_gh(tmp_path)
+
+    result = run(*owner_approved_args(repository, gh, "gates"), cwd=repository, env=env)
+
+    assert result.returncode == 0, combined(result)
+    assert "GATES: PASS" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "quality-missing",
+        "quality-duplicate",
+        "quality-wrong-source",
+        "quality-wrong-sha",
+        "quality-running",
+        "quality-skipped",
+        "quality-failed",
+    ],
+)
+def test_gates_block_without_unambiguous_successful_quality_check(
+    repository: Path, tmp_path: Path, scenario: str
+) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    env["FAKE_GH_SCENARIO"] = scenario
+
+    result = run(*owner_approved_args(repository, gh, "gates"), cwd=repository, env=env)
+
+    assert result.returncode != 0
+    assert "quality" in combined(result).lower()
+
+
+@pytest.mark.parametrize("action", ["gates", "merge"])
+@pytest.mark.parametrize(
+    "scenario",
+    ["pr-branch-mismatch", "remote-repository-mismatch", "remote-head-mismatch"],
+)
+def test_gates_and_merge_reject_inconsistent_local_pr_context(
+    repository: Path, tmp_path: Path, action: str, scenario: str
+) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    if scenario == "pr-branch-mismatch":
+        env["FAKE_GH_SCENARIO"] = scenario
+    elif scenario == "remote-repository-mismatch":
+        git(repository, "remote", "set-url", "DeckRelay", "https://github.com/acme/other.git")
+    else:
+        git(
+            repository,
+            "update-ref",
+            "refs/remotes/DeckRelay/feature/test",
+            git(repository, "rev-parse", "HEAD^"),
+        )
+    extra = ("-ConfirmMerge",) if action == "merge" else ()
+
+    result = run(*owner_approved_args(repository, gh, action), *extra, cwd=repository, env=env)
+
+    assert result.returncode != 0
+    assert not Path(env["FAKE_MERGE_FILE"]).exists()
+
+
+def test_gates_reject_repository_root_that_is_only_a_subdirectory(
+    repository: Path, tmp_path: Path
+) -> None:
+    gh, env = write_fake_gh(tmp_path)
+    nested = repository / "nested"
+    nested.mkdir()
+    args = list(owner_approved_args(repository, gh, "gates"))
+    args[args.index(str(repository))] = str(nested)
+
+    result = run(*args, cwd=repository, env=env)
+
+    assert result.returncode != 0
 
 
 def test_preflight_reports_ready_and_never_mutates(repository: Path, tmp_path: Path) -> None:
@@ -440,7 +536,7 @@ def test_github_safety_failures_are_closed(
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
         "-ConfirmMerge",
@@ -492,7 +588,7 @@ def test_merge_succeeds_with_distinct_sha_bound_attestations_and_no_formal_appro
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
         "-ConfirmMerge",
@@ -501,7 +597,7 @@ def test_merge_succeeds_with_distinct_sha_bound_attestations_and_no_formal_appro
     )
     assert result.returncode == 0, combined(result)
     invocation = Path(env["FAKE_MERGE_FILE"]).read_text(encoding="utf-8")
-    assert "--match-head-commit " + "a" * 40 in invocation
+    assert "--match-head-commit " + git(repository, "rev-parse", "HEAD") in invocation
 
 
 @pytest.mark.parametrize(
@@ -513,6 +609,13 @@ def test_owner_lookup_uses_positional_repository_and_blocks_merge_on_failure(
 ) -> None:
     gh, env = write_fake_gh(tmp_path)
     repository_name = "example/custom-project"
+    git(
+        repository,
+        "remote",
+        "set-url",
+        "DeckRelay",
+        f"https://github.com/{repository_name}.git",
+    )
     env["FAKE_EXPECTED_REPOSITORY"] = repository_name
     env["FAKE_GH_SCENARIO"] = scenario
     result = run(
@@ -527,7 +630,7 @@ def test_owner_lookup_uses_positional_repository_and_blocks_merge_on_failure(
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
         "-ConfirmMerge",
@@ -562,7 +665,7 @@ def test_attestations_use_short_labels_and_read_only_pr_comments(
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
         "-ConfirmMerge",
@@ -592,7 +695,7 @@ def test_no_effective_ruleset_allows_attested_merge(repository: Path, tmp_path: 
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
         "-ConfirmMerge",
@@ -617,7 +720,7 @@ def test_logs_never_persist_api_payloads_or_error_details(repository: Path, tmp_
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
         "-ConfirmMerge",
@@ -650,7 +753,7 @@ def test_attestation_timestamp_decisions_are_culture_independent(
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
         "-ConfirmMerge",
@@ -694,7 +797,7 @@ def test_invalid_and_out_of_order_attestation_timestamps_block(
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
         "-ConfirmMerge",
@@ -725,7 +828,7 @@ def test_utc_and_offset_timestamps_compare_as_the_same_instant(
         "-PrNumber",
         "7",
         "-ExpectedHeadSha",
-        "a" * 40,
+        git(repository, "rev-parse", "HEAD"),
         "-Mode",
         "OWNER-APPROVED",
         "-ConfirmMerge",
