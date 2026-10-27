@@ -117,6 +117,13 @@ class PlayerMode(StrEnum):
     AUTOMATIC = "automatic"
 
 
+class DeckOrigin(StrEnum):
+    """Persisted origin of a queue entry's deck assignment."""
+
+    MANUAL = "MANUAL"
+    AUTO = "AUTO"
+
+
 class SessionStatus(StrEnum):
     ACTIVE = "active"
     PAUSED = "paused"

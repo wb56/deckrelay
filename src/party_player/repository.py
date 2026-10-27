@@ -8,8 +8,8 @@ from datetime import datetime
 from typing import cast
 
 from party_player.database.connection import Database
-from party_player.enums import CompletionStatus, QueueSource, QueueStatus, SessionStatus
-from party_player.models import PartySession, QueueEntry
+from party_player.enums import CompletionStatus, DeckOrigin, QueueSource, QueueStatus, SessionStatus
+from party_player.models import PartySession, QueueEntry, SessionRecoverySummary
 
 
 class PartyPlayerRepository:
@@ -83,10 +83,28 @@ class PartyPlayerRepository:
             ).fetchall()
         return {int(row["entity_id"]) for row in rows}
 
-    def recover_queue_after_restart(self, session_id: int) -> None:
+    def recover_queue_after_restart(self, session_id: int) -> SessionRecoverySummary:
         """Atomically turn volatile deck states into safe waiting entries."""
         recovered_at = datetime.now().isoformat()
+        keep_reservation = (
+            "(status = 'ready' AND COALESCE(deck_origin, '') = 'MANUAL' "
+            "AND COALESCE(loaded_deck, '') IN ('A', 'B'))"
+        )
         with self._database.connect() as connection:
+            counts = connection.execute(
+                f"""SELECT
+                       SUM(CASE WHEN status IN ('waiting', 'preparing', 'ready') THEN 1 ELSE 0 END)
+                           AS pending_entries,
+                       SUM(CASE WHEN status IN ('preparing', 'ready')
+                                 AND NOT ({keep_reservation}) THEN 1 ELSE 0 END)
+                           AS reset_preparations,
+                       SUM(CASE WHEN {keep_reservation} THEN 1 ELSE 0 END)
+                           AS preserved_deck_reservations,
+                       SUM(CASE WHEN status = 'playing' THEN 1 ELSE 0 END)
+                           AS interrupted_playbacks
+                   FROM party_queue WHERE session_id = ?""",
+                (session_id,),
+            ).fetchone()
             connection.execute(
                 """INSERT INTO play_history
                    (session_id, track_id, deck_id, started_at, finished_at,
@@ -116,29 +134,14 @@ class PartyPlayerRepository:
                 (recovered_at, session_id),
             )
             connection.execute(
-                """UPDATE party_queue
-                   SET status = CASE
-                           WHEN status = 'playing' AND EXISTS (
-                               SELECT 1 FROM automatic_selection_plan_steps s
-                               WHERE s.executed_queue_entry_id = party_queue.id
-                           ) THEN 'skipped'
-                           ELSE 'waiting'
-                       END,
+                f"""UPDATE party_queue
+                   SET status = CASE WHEN status = 'playing' THEN 'skipped' ELSE 'waiting' END,
                        loaded_deck = NULL,
-                       skip_reason = CASE
-                           WHEN status = 'playing' AND EXISTS (
-                               SELECT 1 FROM automatic_selection_plan_steps s
-                               WHERE s.executed_queue_entry_id = party_queue.id
-                           ) THEN 'Wiedergabe durch Neustart unterbrochen'
-                           ELSE skip_reason
-                       END,
-                       skip_code = CASE
-                           WHEN status = 'playing' AND EXISTS (
-                               SELECT 1 FROM automatic_selection_plan_steps s
-                               WHERE s.executed_queue_entry_id = party_queue.id
-                           ) THEN 'RECOVERY_INTERRUPTED_PLAYBACK'
-                           ELSE skip_code
-                       END,
+                       deck_origin = NULL,
+                       skip_reason = CASE WHEN status = 'playing'
+                           THEN 'Wiedergabe durch Neustart unterbrochen' ELSE skip_reason END,
+                       skip_code = CASE WHEN status = 'playing'
+                           THEN 'RECOVERY_INTERRUPTED_PLAYBACK' ELSE skip_code END,
                        locked = CASE
                            WHEN lock_source IN ('MANUAL', 'MANUAL_SYSTEM') THEN 1
                            ELSE 0
@@ -149,7 +152,8 @@ class PartyPlayerRepository:
                        END,
                        updated_at = ?
                    WHERE session_id = ?
-                     AND status IN ('preparing', 'ready', 'playing')""",
+                     AND status IN ('preparing', 'ready', 'playing')
+                     AND NOT ({keep_reservation})""",
                 (recovered_at, session_id),
             )
             connection.execute(
@@ -159,11 +163,27 @@ class PartyPlayerRepository:
                 (
                     session_id,
                     json.dumps(
-                        {"audio_started": False, "volatile_states_reset": True},
+                        {
+                            "audio_started": False,
+                            "volatile_states_reset": True,
+                            "pending_entries": int(counts["pending_entries"] or 0),
+                            "reset_preparations": int(counts["reset_preparations"] or 0),
+                            "preserved_deck_reservations": int(
+                                counts["preserved_deck_reservations"] or 0
+                            ),
+                            "interrupted_playbacks": int(counts["interrupted_playbacks"] or 0),
+                        },
                         sort_keys=True,
                     ),
                 ),
             )
+        return SessionRecoverySummary(
+            restored_session_id=session_id,
+            pending_entries=int(counts["pending_entries"] or 0),
+            reset_preparations=int(counts["reset_preparations"] or 0),
+            interrupted_playbacks=int(counts["interrupted_playbacks"] or 0),
+            preserved_deck_reservations=int(counts["preserved_deck_reservations"] or 0),
+        )
 
     def latest_unfinished_session(self) -> PartySession | None:
         with self._database.connect() as connection:
@@ -303,7 +323,7 @@ class PartyPlayerRepository:
                            cue_out_override, fade_duration_override, cue_override_source,
                            priority, locked, request_count, lock_source,
                            unique_requester_count, last_requested_at, updated_at,
-                           preparation_attempts, failure_code, skip_code
+                           preparation_attempts, failure_code, skip_code, deck_origin
                     FROM party_queue WHERE session_id = ? {clause}
                     ORDER BY priority DESC, position, added_at, id""",
                 (session_id,),
@@ -325,7 +345,7 @@ class PartyPlayerRepository:
                           cue_out_override, fade_duration_override, cue_override_source,
                           priority, locked, request_count, lock_source,
                           unique_requester_count, last_requested_at, updated_at,
-                          preparation_attempts, failure_code, skip_code
+                          preparation_attempts, failure_code, skip_code, deck_origin
                    FROM party_queue WHERE id = ?""",
                 (queue_id,),
             ).fetchone(),
@@ -351,7 +371,7 @@ class PartyPlayerRepository:
                           cue_out_override, fade_duration_override, cue_override_source,
                           priority, locked, request_count, lock_source,
                           unique_requester_count, last_requested_at, updated_at,
-                          preparation_attempts, failure_code, skip_code
+                          preparation_attempts, failure_code, skip_code, deck_origin
                    FROM party_queue
                    WHERE session_id = ? AND track_id = ?
                      AND status IN ('waiting', 'preparing', 'ready', 'playing')
@@ -496,6 +516,7 @@ class PartyPlayerRepository:
         *,
         expected_status: QueueStatus,
         loaded_deck: str | None = None,
+        deck_origin: DeckOrigin | None = None,
         skip_reason: str | None = None,
         failure_code: str | None = None,
         skip_code: str | None = None,
@@ -506,6 +527,7 @@ class PartyPlayerRepository:
             if status in {QueueStatus.PLAYED, QueueStatus.PLAYING}
             else None
         )
+        origin = deck_origin.value if deck_origin is not None else None
         try:
             with self._database.connect() as connection:
                 cursor = connection.execute(
@@ -514,6 +536,11 @@ class PartyPlayerRepository:
                            loaded_deck = CASE
                                WHEN ? IN ('removed', 'failed', 'skipped') THEN NULL
                                ELSE COALESCE(?, loaded_deck)
+                           END,
+                           deck_origin = CASE
+                               WHEN ? IN ('waiting', 'removed', 'failed', 'skipped', 'played')
+                                   THEN NULL
+                               ELSE COALESCE(?, deck_origin)
                            END,
                            skip_reason = ?,
                            played_at = COALESCE(?, played_at),
@@ -527,6 +554,8 @@ class PartyPlayerRepository:
                         status.value,
                         status.value,
                         loaded_deck,
+                        status.value,
+                        origin,
                         skip_reason,
                         played_at,
                         failure_code,
@@ -621,7 +650,8 @@ class PartyPlayerRepository:
         with self._database.connect() as connection:
             cursor = connection.execute(
                 """UPDATE party_queue
-                   SET loaded_deck = NULL, updated_at = CURRENT_TIMESTAMP
+                   SET loaded_deck = NULL, deck_origin = NULL,
+                       updated_at = CURRENT_TIMESTAMP
                    WHERE id = ?
                      AND status IN (?, ?)
                      AND loaded_deck = ?""",
@@ -640,7 +670,7 @@ class PartyPlayerRepository:
         with self._database.connect() as connection:
             cursor = connection.execute(
                 """UPDATE party_queue
-                   SET status = ?, loaded_deck = NULL,
+                   SET status = ?, loaded_deck = NULL, deck_origin = NULL,
                        played_at = COALESCE(?, played_at),
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = ? AND status = ? AND loaded_deck = ?""",
@@ -694,7 +724,7 @@ class PartyPlayerRepository:
     def clear_waiting_queue(self, session_id: int) -> int:
         with self._database.connect() as connection:
             cursor = connection.execute(
-                """UPDATE party_queue SET status = 'removed'
+                """UPDATE party_queue SET status = 'removed', deck_origin = NULL
                    WHERE session_id = ? AND status = 'waiting' AND locked = 0""",
                 (session_id,),
             )
@@ -703,7 +733,7 @@ class PartyPlayerRepository:
     def clear_complete_queue(self, session_id: int) -> int:
         with self._database.connect() as connection:
             cursor = connection.execute(
-                """UPDATE party_queue SET status = 'removed'
+                """UPDATE party_queue SET status = 'removed', deck_origin = NULL
                    WHERE session_id = ?
                      AND status NOT IN ('playing', 'removed')""",
                 (session_id,),
@@ -714,7 +744,7 @@ class PartyPlayerRepository:
         with self._database.connect() as connection:
             cursor = connection.execute(
                 """UPDATE party_queue
-                   SET status = 'waiting', loaded_deck = NULL, played_at = NULL,
+                   SET status = 'waiting', loaded_deck = NULL, deck_origin = NULL, played_at = NULL,
                        skip_reason = NULL, failure_code = NULL, skip_code = NULL,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = ? AND status = 'failed'""",
@@ -728,7 +758,7 @@ class PartyPlayerRepository:
         with self._database.connect() as connection:
             cursor = connection.execute(
                 """UPDATE party_queue
-                   SET status = 'waiting', loaded_deck = NULL, played_at = NULL,
+                   SET status = 'waiting', loaded_deck = NULL, deck_origin = NULL, played_at = NULL,
                        skip_reason = NULL, failure_code = NULL, skip_code = NULL,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE session_id = ?
@@ -743,7 +773,7 @@ class PartyPlayerRepository:
         with self._database.connect() as connection:
             connection.execute(
                 """UPDATE party_queue
-                   SET status = 'waiting', loaded_deck = NULL, played_at = NULL
+                   SET status = 'waiting', loaded_deck = NULL, deck_origin = NULL, played_at = NULL
                        , failure_code = NULL, skip_code = NULL,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = ? AND status IN ('preparing', 'ready', 'playing')""",
@@ -755,7 +785,7 @@ class PartyPlayerRepository:
         with self._database.connect() as connection:
             cursor = connection.execute(
                 """UPDATE party_queue
-                   SET status = 'waiting', loaded_deck = NULL, played_at = NULL,
+                   SET status = 'waiting', loaded_deck = NULL, deck_origin = NULL, played_at = NULL,
                        skip_reason = NULL, failure_code = NULL, skip_code = NULL,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = ? AND status = 'played'""",
@@ -769,7 +799,7 @@ class PartyPlayerRepository:
         with self._database.connect() as connection:
             cursor = connection.execute(
                 """UPDATE party_queue
-                   SET status = 'waiting', loaded_deck = NULL, played_at = NULL,
+                   SET status = 'waiting', loaded_deck = NULL, deck_origin = NULL, played_at = NULL,
                        skip_reason = NULL, failure_code = NULL, skip_code = NULL,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = ? AND status = 'skipped'
@@ -914,4 +944,5 @@ class PartyPlayerRepository:
             failure_code=row["failure_code"],
             skip_code=row["skip_code"],
             source_detail=str(row["source"]),
+            deck_origin=DeckOrigin(row["deck_origin"]) if row["deck_origin"] else None,
         )

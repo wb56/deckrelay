@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from party_player.enums import DeckState, QueueSource, QueueStatus, SessionStatus
+from party_player.enums import DeckOrigin, DeckState, QueueSource, QueueStatus, SessionStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +83,7 @@ class QueueEntry:
     failure_code: str | None = None
     skip_code: str | None = None
     source_detail: str = ""
+    deck_origin: DeckOrigin | None = None
 
     @property
     def has_cue_overrides(self) -> bool:
@@ -105,6 +106,18 @@ class PartySession:
     status: SessionStatus = SessionStatus.ACTIVE
     selected_playlist: int | None = None
     settings_snapshot: str = "{}"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRecoverySummary:
+    """Operator-facing facts produced by one safe startup recovery."""
+
+    restored_session_id: int
+    pending_entries: int
+    reset_preparations: int
+    interrupted_playbacks: int
+    copied_from_finished_session: bool = False
+    preserved_deck_reservations: int = 0
 
 
 @dataclass(slots=True)
