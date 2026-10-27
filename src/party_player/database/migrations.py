@@ -4,7 +4,7 @@ import sqlite3
 
 from party_player.database.connection import Database
 
-LATEST_SCHEMA_VERSION = 45
+LATEST_SCHEMA_VERSION = 46
 
 
 def migrate(database: Database) -> None:
@@ -207,6 +207,22 @@ def migrate(database: Database) -> None:
                 connection.execute("BEGIN IMMEDIATE")
             _migrate_to_v45(connection)
             _set_version(connection, 45)
+            version = 45
+        if version < 46:
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            _migrate_to_v46(connection)
+            _set_version(connection, 46)
+
+
+def _migrate_to_v46(connection: sqlite3.Connection) -> None:
+    """Add the nullable persisted origin of a deck assignment."""
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(party_queue)")}
+    if columns and "deck_origin" not in columns:
+        connection.execute(
+            """ALTER TABLE party_queue ADD COLUMN deck_origin TEXT
+               CHECK (deck_origin IS NULL OR deck_origin IN ('MANUAL', 'AUTO'))"""
+        )
 
 
 def _migrate_to_v1(connection: sqlite3.Connection) -> None:

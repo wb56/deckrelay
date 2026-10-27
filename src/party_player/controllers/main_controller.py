@@ -45,6 +45,7 @@ from party_player.diagnostic_scenario import DiagnosticScenario
 from party_player.diagnostic_retention import retain_latest
 from party_player.enums import (
     CompletionStatus,
+    DeckOrigin,
     DeckState,
     HistoryReasonCode,
     PlayerMode,
@@ -1489,9 +1490,19 @@ class MainController:
         )
         self._view.show_restored_queue_entries(restored_queue_ids)
         for deck in (self.deck_a, self.deck_b):
-            if deck.model.loaded_track is not None:
+            track = deck.model.loaded_track
+            if track is not None:
+                self._apply_resolved_equalizer(
+                    deck,
+                    self._resolve_equalizer(
+                        deck,
+                        track,
+                        self._deck_queue_ids[deck.model.deck_id],
+                    ),
+                )
                 self._apply_cue_points(deck)
-                self._load_cover_async(deck.model.deck_id, deck.model.loaded_track)
+                self._apply_loudness(deck)
+                self._load_cover_async(deck.model.deck_id, track)
         self._refresh_queue()
         self._schedule_source_availability_checks()
         self._refresh_all()
@@ -1504,6 +1515,30 @@ class MainController:
         self._view.show_fade_settings(self.fade_duration, self.fade_out_stops_deck)
         if self._session is not None:
             self._view.show_session(self._session)
+        if self._session_service is not None:
+            recovery = self._session_service.last_recovery_summary
+            if recovery is not None:
+                message = (
+                    "Session wiederhergestellt: "
+                    f"{recovery.pending_entries} offene Queue-Titel übernommen"
+                )
+                if recovery.reset_preparations:
+                    message += (
+                        f", {recovery.reset_preparations} vorbereitete Titel "
+                        "sicher zurückgesetzt"
+                    )
+                if recovery.preserved_deck_reservations:
+                    message += (
+                        f", {recovery.preserved_deck_reservations} manuell geladene Titel "
+                        "bleiben ihrem Deck vorgemerkt (nicht gestartet)"
+                    )
+                if recovery.interrupted_playbacks:
+                    message += (
+                        f". {recovery.interrupted_playbacks} beim Absturz laufende Titel "
+                        "wurden abgebrochen und nicht erneut eingeplant; eine Wiederholung "
+                        "erfordert eine manuelle Entscheidung"
+                    )
+                self._view.show_queue_warning(message + ". Wiedergabe und Automatik bleiben aus.")
         if self._settings is not None:
             self._view.show_start_settings(
                 self._settings.restore_last_session(), self._settings.fullscreen_on_start()
@@ -1765,7 +1800,7 @@ class MainController:
         if not self._load_track(track, self._deck(deck_id), queue_id=queue_id):
             return
         try:
-            self._queue_service.mark_loaded(queue_id, deck_id)
+            self._queue_service.mark_loaded(queue_id, deck_id, deck_origin=DeckOrigin.MANUAL)
         except ValueError as exc:
             self._view.show_queue_warning(str(exc))
             return
@@ -3756,7 +3791,11 @@ class MainController:
                                 )
                                 if generation != self._preload_generation or self._closed:
                                     return
-                                self._queue_service.mark_loaded(entry.queue_id, deck.model.deck_id)
+                                self._queue_service.mark_loaded(
+                                    entry.queue_id,
+                                    deck.model.deck_id,
+                                    deck_origin=DeckOrigin.AUTO,
+                                )
                             except Exception as error:
 
                                 def persistence_failed(

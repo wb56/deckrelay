@@ -10,8 +10,8 @@ from typing import cast
 
 from party_player.deck_controller import DeckController
 from party_player.cue_points import CuePointService, ResolvedTrackBoundaries
-from party_player.enums import EmptyQueuePolicy, GuestPriority, QueueSource, QueueStatus
-from party_player.models import QueueEntry, SavedQueueEntry, Track
+from party_player.enums import DeckOrigin, EmptyQueuePolicy, GuestPriority, QueueSource, QueueStatus
+from party_player.models import QueueEntry, SavedQueueEntry, SessionRecoverySummary, Track
 from party_player.repositories.track_repository import TrackRepository
 from party_player.repository import PartyPlayerRepository
 from party_player.track_selection import SelectionDecision, TrackSelectionService
@@ -93,9 +93,9 @@ class QueueService:
     def recover_persisted_session(
         repository: PartyPlayerRepository,
         session_id: int,
-    ) -> None:
+    ) -> SessionRecoverySummary:
         """Run restart recovery through the queue mutation boundary."""
-        repository.recover_queue_after_restart(session_id)
+        return repository.recover_queue_after_restart(session_id)
 
     @staticmethod
     def copy_persisted_pending_queue(
@@ -601,8 +601,19 @@ class QueueService:
         self._repository.reset_played_queue_entry_to_waiting(queue_id)
         self._set_lock_components(queue_id, system=False)
 
-    def mark_loaded(self, queue_id: int, deck_id: str) -> None:
-        self._transition(queue_id, QueueStatus.READY, loaded_deck=deck_id)
+    def mark_loaded(
+        self,
+        queue_id: int,
+        deck_id: str,
+        deck_origin: DeckOrigin | None = None,
+    ) -> None:
+        """Mark an entry ready and optionally record who chose its deck."""
+        self._transition(
+            queue_id,
+            QueueStatus.READY,
+            loaded_deck=deck_id,
+            deck_origin=deck_origin,
+        )
 
     def mark_preparing(self, queue_id: int, deck_id: str | None = None) -> None:
         self._transition(
@@ -818,7 +829,10 @@ class QueueService:
                 self.mark_error(waiting.queue_id)
                 continue
             self._transition(
-                waiting.queue_id, QueueStatus.READY, loaded_deck=free_deck.model.deck_id
+                waiting.queue_id,
+                QueueStatus.READY,
+                loaded_deck=free_deck.model.deck_id,
+                deck_origin=DeckOrigin.AUTO,
             )
             updated = self._repository.get_queue_entry(waiting.queue_id)
             assert updated is not None
@@ -1419,6 +1433,7 @@ class QueueService:
         *,
         expected_status: QueueStatus | None = None,
         loaded_deck: str | None = None,
+        deck_origin: DeckOrigin | None = None,
         skip_reason: str | None = None,
         failure_code: str | None = None,
         skip_code: str | None = None,
@@ -1431,6 +1446,7 @@ class QueueService:
             target,
             expected_status=current.status,
             loaded_deck=loaded_deck,
+            deck_origin=deck_origin,
             skip_reason=skip_reason,
             failure_code=failure_code,
             skip_code=skip_code,
