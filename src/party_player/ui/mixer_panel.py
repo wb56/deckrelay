@@ -30,7 +30,6 @@ class MixerPanel:
         on_fade_duration: Callable[[float], None],
         on_fade_stop: Callable[[bool], None],
         on_fullscreen_start: Callable[[bool], None],
-        on_automatic_plan: Callable[[], None],
     ) -> None:
         self._render_cache: dict[str, object] = {}
         self._updating = False
@@ -133,15 +132,8 @@ class MixerPanel:
             self.status_group, text="Fortlaufende Automatik: Wird geladen …", anchor="w"
         )
         self.automatic_plan_status.grid(
-            row=2, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew"
+            row=2, column=0, columnspan=4, padx=12, pady=(0, 10), sticky="ew"
         )
-        self.automatic_plan_button = ctk.CTkButton(
-            self.status_group,
-            text="Automatik anpassen…",
-            width=150,
-            command=on_automatic_plan,
-        )
-        self.automatic_plan_button.grid(row=2, column=3, padx=12, pady=(0, 10), sticky="e")
 
         self.playback_group = ctk.CTkFrame(self.body, corner_radius=8)
         self.playback_group.grid(row=1, column=0, padx=(12, 6), pady=(4, 6), sticky="nsew")

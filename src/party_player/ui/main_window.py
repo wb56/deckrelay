@@ -1347,7 +1347,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
             on_fade_duration=self._fade_duration_changed,
             on_fade_stop=self._fade_stop_changed,
             on_fullscreen_start=self._fullscreen_start_changed,
-            on_automatic_plan=self._show_automatic_preview,
         )
         self._static_tooltips.extend(self._mixer_component.tooltips)
         self._mixer_container = self._mixer_component.container
@@ -1364,7 +1363,6 @@ class MainWindow(ctk.CTk):  # type: ignore[misc]
         self._preparation_queue_status = self._mixer_component.queue_status
         self._preparation_automatic_status = self._mixer_component.automatic_status
         self._automatic_plan_status = self._mixer_component.automatic_plan_status
-        self._automatic_plan_button = self._mixer_component.automatic_plan_button
         self._preparation_playback_group = self._mixer_component.playback_group
         self._master = self._mixer_component.master
         self._master_label = self._mixer_component.master_label

@@ -186,6 +186,21 @@ def test_mixer_component_emits_explicit_presentation_values() -> None:
     assert masters == [0.6]
 
 
+def test_preparation_mixer_omits_automatic_adjust_action_in_both_layouts() -> None:
+    signature = inspect.signature(MixerPanel.__init__)
+    source = inspect.getsource(MixerPanel.__init__)
+
+    assert "on_automatic_plan" not in signature.parameters
+    assert "Automatik anpassen…" not in source
+
+
+def test_queue_keeps_new_automatic_preview_action() -> None:
+    source = inspect.getsource(MainWindow.show_automatic_status)
+
+    assert '"Neue Automatik…"' in source
+    assert "_show_automatic_preview" in inspect.getsource(MainWindow._show_automatic_preview)
+
+
 @pytest.mark.parametrize(
     "state,menu,retry,confirm",
     [
