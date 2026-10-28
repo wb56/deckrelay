@@ -24,6 +24,10 @@ from party_player.models import Track
 
 class EdgePcmBackend:
     name = "edge-fake"
+    worker_started: Event | None = None
+
+    def __init__(self, started: Event | None = None) -> None:
+        self.worker_started = started
 
     def is_available(self) -> bool:
         return True
@@ -33,6 +37,8 @@ class EdgePcmBackend:
 
     def probe(self, file_path: Path) -> AudioFileInfo:
         del file_path
+        if self.worker_started is not None:
+            self.worker_started.set()
         return AudioFileInfo(120.0, 10, 1, "pcm")
 
     def decode_segments(
@@ -85,7 +91,9 @@ class BlockingBackend(EdgePcmBackend):
         yield from super().decode_segments(file_path, segments, cancellation)
 
 
-def build_service(tmp_path: Path) -> tuple[CueAnalysisService, CuePointService, Track]:
+def build_service(
+    tmp_path: Path, *, worker_started: Event | None = None
+) -> tuple[CueAnalysisService, CuePointService, Track]:
     database = Database(tmp_path / "analysis.db")
     migrate(database)
     audio = tmp_path / "song.wav"
@@ -99,7 +107,7 @@ def build_service(tmp_path: Path) -> tuple[CueAnalysisService, CuePointService, 
         )
     cue_points = CuePointService(CuePointRepository(database))
     service = CueAnalysisService(
-        EdgePcmBackend(),
+        EdgePcmBackend(worker_started),
         cue_points,
         signal_settings=SignalDetectionSettings(
             minimum_signal_seconds=0.2,
@@ -111,9 +119,11 @@ def build_service(tmp_path: Path) -> tuple[CueAnalysisService, CuePointService, 
 
 
 def test_service_runs_complete_pipeline_and_persists_result(tmp_path: Path) -> None:
-    service, cue_points, track = build_service(tmp_path)
+    worker_started = Event()
+    service, cue_points, track = build_service(tmp_path, worker_started=worker_started)
 
     job = service.analyze(track)
+    assert worker_started.wait(timeout=10)
     result = job.future.result(timeout=2)
     service.close()
 
